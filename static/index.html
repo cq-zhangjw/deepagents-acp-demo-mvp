@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DeepAgents + ACP + FastAPI Demo</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; margin: 24px; }
+  textarea { width: 720px; height: 100px; }
+  pre { background: #f5f5f5; padding: 10px; border-radius: 6px; min-height: 40px; white-space: pre-wrap; }
+  #log { color: #b00; font-size: 12px; background:#fff5f5; border:1px solid #fcc; padding:6px; min-height:120px; max-height:300px; overflow:auto; white-space:pre-wrap; }
+  .modal {
+    display: none; position: fixed; top: 25%; left: 25%; width: 50%;
+    padding: 20px; background: #fff; border: 1px solid #ccc;
+    border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.2); z-index: 999;
+  }
+  button { margin: 4px 8px 4px 0; }
+  .toolcard { background:#eef4ff; border:1px solid #bcd; border-radius:4px; padding:6px; margin:4px 0; font-size:13px; }
+</style>
+</head>
+<body>
+<h2>DeepAgents + ACP + FastAPI</h2>
+
+<textarea id="taskInput">帮我分析上传的图片，并生成一份项目配置。</textarea>
+<br/>
+<input type="file" id="fileInput" accept="image/*">
+<button id="btnStart">提交任务</button>
+<button id="btnCancel" disabled>取消任务</button>
+<button id="btnNewSession">新建会话</button>
+<hr/>
+<div>状态：<span id="state">未连接</span></div>
+<div>执行计划：<pre id="plan">（等待 Agent 生成计划）</pre></div>
+<div>输出结果：<pre id="result">（等待 Agent 输出）</pre></div>
+<div id="errorArea" style="display:none;color:#c00;background:#fff0f0;border:1px solid #f99;padding:10px;border-radius:6px;margin-top:8px;white-space:pre-wrap;"></div>
+<pre id="log">（JS 日志将显示在这里）</pre>
+
+<!-- 权限审批弹窗（session/request_permission，request/response 模式） -->
+<div id="permModal" class="modal">
+  <h4>Agent 请求权限</h4>
+  <p id="permText"></p>
+  <button id="btnApprove">允许</button>
+  <button id="btnReject">拒绝</button>
+  <button id="btnAlways">始终允许</button>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * 手写 ACP(Agent Client Protocol) WebSocket Client
+ * 不依赖任何第三方库：直接收发 ACP JSON-RPC 报文。
+ * 协议版本：ACP v2（protocolVersion=2）
+ * ===================================================================== */
+
+// ---------- 全局状态 ----------
+var ws = null;
+var nextId = 1;
+var pending = {};          // id -> {resolve, reject}（request 的响应）
+var sessionId = null;      // 首次提交创建后复用，实现多轮对话
+var initialized = false;   // initialize 只做一次
+var permReqId = null;      // 待响应的权限请求 id
+var connected = false;
+
+var $ = function (id) { return document.getElementById(id); };
+
+function log(msg) {
+  $("log").textContent += "[JS] " + msg + "\n";
+}
+
+// ---------- 连接与收发 ----------
+function connectACP() {
+  return new Promise(function (resolve, reject) {
+    var url = "ws://" + location.host + "/acp-ws";
+    ws = new WebSocket(url);
+    ws.onopen = function () {
+      connected = true;
+      $("state").innerText = "已连接";
+      log("WebSocket 已连接: " + url);
+      resolve();
+    };
+    ws.onerror = function (e) {
+      log("WebSocket 错误: " + JSON.stringify(e));
+      reject(new Error("WebSocket error"));
+    };
+    ws.onclose = function () {
+      connected = false;
+      sessionId = null;      // 连接断开后旧会话失效，下次提交自动开新会话
+      initialized = false;
+      $("state").innerText = "连接已断开（再次提交将自动重建）";
+      log("WebSocket 已断开");
+    };
+    ws.onmessage = function (evt) {
+      var msg;
+      try { msg = JSON.parse(evt.data); } catch (err) { log("无法解析消息: " + evt.data); return; }
+      handleMessage(msg);
+    };
+  });
+}
+
+// 发送一个 ACP request（等待响应）
+function acpCall(method, params) {
+  return new Promise(function (resolve, reject) {
+    var id = nextId++;
+    pending[id] = { resolve: resolve, reject: reject };
+    var payload = { jsonrpc: "2.0", id: id, method: method, params: params };
+    ws.send(JSON.stringify(payload));
+  });
+}
+
+// 发送一个 notification（无响应）
+function acpNotify(method, params) {
+  var payload = { jsonrpc: "2.0", method: method, params: params };
+  ws.send(JSON.stringify(payload));
+}
+
+// 回复一个由 Agent 发起的 request（权限审批用）
+function acpRespond(id, result) {
+  ws.send(JSON.stringify({ jsonrpc: "2.0", id: id, result: result }));
+}
+
+// ---------- 消息分发 ----------
+function handleMessage(msg) {
+  // 1) 先判断 Agent 发起的 request（带 method）。
+  //    JSON-RPC 中请求与响应的 id 空间相互独立，Agent 的 request_permission
+  //    id 可能与我们的 acpCall id 相同（如都到 3），必须先按 method 分流，
+  //    否则会把权限请求误判成 prompt 的响应（resolve undefined）。
+  if (msg.id !== undefined && msg.id !== null && msg.method) {
+    handleAgentRequest(msg);
+    return;
+  }
+  // 2) 请求响应（无 method，匹配我们发出的 id）
+  if (msg.id !== undefined && msg.id !== null && pending[msg.id]) {
+    var p = pending[msg.id];
+    delete pending[msg.id];
+    if (msg.error) {
+      // 提取完整错误信息（message + data.details），不要只显示 "Internal error"
+      var detail = "";
+      if (msg.error.data && typeof msg.error.data === "object") {
+        detail = msg.error.data.details || msg.error.data.message || JSON.stringify(msg.error.data);
+      } else if (msg.error.data) {
+        detail = String(msg.error.data);
+      }
+      p.reject(new Error((msg.error.message || "ACP error") + (detail ? " — " + detail : "")));
+    } else p.resolve(msg.result);
+    return;
+  }
+  // 3) notification（如 session/update）
+  if (msg.method) {
+    handleNotification(msg);
+    return;
+  }
+  log("未知消息: " + JSON.stringify(msg));
+}
+
+function handleAgentRequest(msg) {
+  if (msg.method === "session/request_permission") {
+    permReqId = msg.id;
+    var p = msg.params || {};
+    var tool = p.toolCall || {};
+    var opts = (p.options || []).map(function (o) { return o.name; }).join(" / ");
+    $("permText").innerHTML =
+      "<b>工具调用：</b>" + (tool.title || tool.toolCallId || "(未知)") + "<br/>" +
+      "<b>输入：</b>" + JSON.stringify(tool.rawInput || {}) + "<br/>" +
+      "<b>可选：</b>" + opts;
+    $("permModal").style.display = "block";
+    $("state").innerText = "等待用户审批权限";
+    log("收到权限请求 #" + msg.id);
+  } else {
+    log("收到未处理的 Agent 请求: " + msg.method);
+  }
+}
+
+function handleNotification(msg) {
+  if (msg.method === "session/update") {
+    handleSessionUpdate(msg.params || {});
+  } else {
+    log("收到通知: " + msg.method);
+  }
+}
+
+// ---------- session/update 事件 ----------
+function handleSessionUpdate(params) {
+  var u = params.update || {};
+  switch (u.sessionUpdate) {
+    case "agent_message_chunk":
+      $("state").innerText = "Agent 生成中…";
+      if (u.content && u.content.text) {
+        $("result").innerText += u.content.text;
+      }
+      break;
+    case "agent_thought_chunk":
+      $("state").innerText = "Agent 思考中…";
+      if (u.content && u.content.text) {
+        var t = $("result");
+        t.innerHTML += "<span style='color:#888'>[思考] " + escapeHtml(u.content.text) + "</span>";
+      }
+      break;
+    case "plan": {
+      var entries = u.entries || [];
+      if (entries.length === 0) { $("plan").innerText = "（计划已清空）"; break; }
+      var lines = entries.map(function (e, i) {
+        var icon = e.status === "completed" ? "✅" : (e.status === "running" ? "⏳" : "⬜");
+        return (i + 1) + ". " + icon + " " + (e.title || e.task || JSON.stringify(e));
+      });
+      $("plan").innerText = lines.join("\n");
+      $("state").innerText = "执行中（计划 " + entries.length + " 步）";
+      break;
+    }
+    case "tool_call":
+    case "tool_call_start": {
+      var card = document.createElement("div");
+      card.className = "toolcard";
+      card.id = "tool-" + (u.toolCallId || Date.now());
+      card.textContent = "🔧 调用工具: " + (u.toolName || u.toolCallId || "(工具)") +
+        (u.title ? " — " + u.title : "") +
+        (u.rawInput ? "\n⚙️ 参数: " + JSON.stringify(u.rawInput, null, 1) : "");
+      $("result").appendChild(card);
+      break;
+    }
+    case "tool_call_update": {
+      // 更新已有工具卡片，并显示工具参数与返回内容（如 Read 的文件内容）
+      var uid = u.toolCallId || "";
+      var card = document.getElementById("tool-" + uid);
+      var text = "";
+      if (u.content) text = extractText(u.content);
+      if (card) {
+        card.textContent = "🔧 " + (u.title || card.textContent) +
+          (u.rawInput ? "\n⚙️ 参数: " + JSON.stringify(u.rawInput, null, 1) : "") +
+          (text ? "\n📄 返回:\n" + text : "");
+      } else if (text || u.rawInput) {
+        var c2 = document.createElement("div");
+        c2.className = "toolcard";
+        c2.textContent = "🔧 " + (u.title || uid) +
+          (u.rawInput ? "\n⚙️ 参数: " + JSON.stringify(u.rawInput, null, 1) : "") +
+          (text ? "\n📄 返回:\n" + text : "");
+        $("result").appendChild(c2);
+      }
+      break;
+    }
+    case "session_info_update":
+      log("session_info_update: " + JSON.stringify(u));
+      break;
+    default:
+      if (u.sessionUpdate) log("session/update: " + u.sessionUpdate);
+  }
+}
+
+function escapeHtml(s) {
+  var d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// 从 ACP content 块（可能嵌套）中提取纯文本，用于显示工具返回结果
+function extractText(blocks) {
+  if (!blocks) return "";
+  var out = [];
+  (Array.isArray(blocks) ? blocks : [blocks]).forEach(function (b) {
+    if (typeof b === "string") { out.push(b); return; }
+    if (b && b.content) {
+      var c = b.content;
+      if (typeof c === "string") out.push(c);
+      else if (c && c.text) out.push(c.text);
+      else if (Array.isArray(c)) out.push(extractText(c));
+    } else if (b && b.text) {
+      out.push(b.text);
+    }
+  });
+  return out.filter(Boolean).join("\n");
+}
+
+// ---------- 权限响应（request/response：用相同 id 回 outcome） ----------
+function respondPermission(optionId) {
+  if (permReqId === null) { log("无待审批的权限请求"); return; }
+  acpRespond(permReqId, {
+    outcome: { outcome: "selected", optionId: optionId }
+  });
+  $("permModal").style.display = "none";
+  permReqId = null;
+  $("state").innerText = "已审批，任务继续…";
+  log("权限已响应: " + optionId);
+}
+
+// ---------- 业务流程 ----------
+var resourceRef = null;
+
+$("fileInput").addEventListener("change", function (e) {
+  var file = e.target.files[0];
+  if (!file) return;
+  var fd = new FormData();
+  fd.append("file", file);
+  fetch("/upload", { method: "POST", body: fd })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      resourceRef = data;
+      log("上传成功: " + data.uri);
+    })
+    .catch(function (err) { log("上传失败: " + err.message); });
+});
+
+$("btnStart").addEventListener("click", async function () {
+  log("提交任务按钮被点击");
+  try {
+    if (!connected) await connectACP();
+
+    // 1. initialize 握手（每条连接只做一次）
+    if (!initialized) {
+      var init = await acpCall("initialize", {
+        protocolVersion: 2,
+        clientCapabilities: {},
+        clientInfo: { name: "web-demo", version: "1.0" }
+      });
+      initialized = true;
+      log("initialize 完成: " + JSON.stringify(init));
+    }
+
+    // 2. 会话：首次创建，之后复用（同一会话内 Agent 有记忆，可多轮问答）
+    if (!sessionId) {
+      var ns = await acpCall("session/new", {
+        sessionId: "web-" + Date.now(),
+        cwd: ".",
+        mcpServers: []
+      });
+      sessionId = ns.sessionId;
+      log("新会话已创建: " + sessionId);
+      $("state").innerText = "新会话就绪: " + sessionId.slice(0, 8) + "…";
+    } else {
+      log("继续当前会话: " + sessionId);
+      $("state").innerText = "继续会话: " + sessionId.slice(0, 8) + "…";
+    }
+
+    // 3. 提交任务（ACP v2：prompt 为内容块列表）
+    var content = [{ type: "text", text: $("taskInput").value }];
+    if (resourceRef) {
+      content.push({
+        type: "resource_link",
+        uri: resourceRef.uri,
+        name: resourceRef.name,
+        mimeType: resourceRef.mimeType
+      });
+    }
+    if (!sessionId) $("result").innerText = "";
+    $("errorArea").style.display = "none";
+    $("btnStart").disabled = true;
+    $("btnCancel").disabled = false;
+
+    var resp = await acpCall("session/prompt", {
+      sessionId: sessionId,
+      prompt: content
+    });
+    log("prompt 完成, stopReason=" + (resp.stopReason || "(无)"));
+    $("state").innerText = "完成: " + (resp.stopReason || "done") +
+      "（可继续输入回复 Agent，或点「新建会话」重开）";
+    // 恢复按钮：同一会话内可继续多轮对话
+    $("btnStart").disabled = false;
+    $("btnCancel").disabled = true;
+    // 清空输入框，方便直接输入对 Agent 的回复
+    $("taskInput").value = "";
+  } catch (err) {
+    var reason = err.message || String(err);
+    log("流程错误: " + reason);
+    // 状态栏显示错误摘要
+    $("state").innerText = "出错: " + reason.slice(0, 50);
+    // 错误详情显示在界面（输出区下方红框）
+    var ea = $("errorArea");
+    var friendly = "";
+    if (/Missing credentials|api[_ ]?key/i.test(reason)) {
+      friendly = "\n\n💡 提示：未检测到有效的 OPENAI_API_KEY。\n请在启动网关前设置：\n    $env:OPENAI_API_KEY = \"sk-你的真实key\"\n然后重启网关并刷新页面。";
+    } else if (/Connection error/i.test(reason)) {
+      friendly = "\n\n💡 提示：Agent 无法连接 OpenAI（网络或 Key 无效）。请检查网络与 API Key 后重启网关。";
+    }
+    ea.textContent = "❌ 任务执行失败：" + reason + friendly;
+    ea.style.display = "block";
+    $("btnStart").disabled = false;
+    $("btnCancel").disabled = true;
+  }
+});
+
+$("btnCancel").addEventListener("click", async function () {
+  try {
+    if (sessionId) await acpCall("session/cancel", { sessionId: sessionId });
+    log("已发送取消请求");
+  } catch (err) {
+    log("取消失败: " + err.message);
+  }
+});
+
+// 新建会话：重置 sessionId，下次提交时创建全新对话
+$("btnNewSession").addEventListener("click", function () {
+  sessionId = null;
+  resourceRef = null;
+  $("result").innerText = "（等待 Agent 输出）";
+  $("plan").innerText = "（等待 Agent 生成计划）";
+  $("errorArea").style.display = "none";
+  $("state").innerText = "已重置，下次提交将创建全新会话";
+  log("已重置为全新会话（旧会话 Agent 记忆将丢弃）");
+});
+
+// 权限弹窗按钮
+$("btnApprove").addEventListener("click", function () { respondPermission("approve"); });
+$("btnReject").addEventListener("click", function () { respondPermission("reject"); });
+$("btnAlways").addEventListener("click", function () { respondPermission("approve_always"); });
+
+/* ---- 全局错误捕获（便于排查问题） ---- */
+window.addEventListener("error", function (e) {
+  log("全局错误: " + e.message + " @" + e.lineno + ":" + e.colno);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+node_modules/
+logs
+# 操作系统生成的文件
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+
+# Logs
+*.log
+
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# 环境配置
+.env
+**/.env
+
+**/tmp/
+**/~$*
+
+**/cookie.json
+**/token.txt
+**/output/
+**/outputs/
+**/mcp_servers.json
