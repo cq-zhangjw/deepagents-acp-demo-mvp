@@ -14,15 +14,25 @@ Note: The default model is openai:gpt-4o, so OPENAI_API_KEY must be set.
 """
 
 import asyncio
+import os
 
+import aiosqlite
 from acp import run_agent
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from utils.model_util import MODEL
+
+# 会话状态持久化文件：checkpoint 落盘（sqlite），跨进程/跨网关重启保留，
+# 前端可用 session/load 加载历史会话并继续对话。
+
+DB_ROOT = os.getenv("DB_ROOT") if os.getenv("DB_ROOT") else "./db"
+os.makedirs(DB_ROOT, exist_ok=True)
+DB_PATH = os.path.join(DB_ROOT, "agent_state.sqlite")
+
 
 SYSTEM_PROMPT = (
     "你是一个智能任务Agent。\n"
@@ -34,11 +44,13 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+def build_agent(
+    context: AgentSessionContext, checkpointer=None
+) -> CompiledStateGraph:
     """Agent factory: build a DeepAgent from the session context (each session has independent state and working directory).
 
-    Uses a virtual filesystem backend: when the agent reads or writes files/resources, ACP
-    session/request_permission is triggered and must be approved by the frontend user.
+    Uses a virtual filesystem backend: when the agent reads/writes files or executes commands,
+    ACP session/request_permission is triggered and must be approved by the frontend user.
     """
     agent_root_dir = getattr(context, "cwd", None) or "."
 
@@ -64,7 +76,9 @@ def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
         model=MODEL,
         # tools=mcp_loader._global_mcp_tools,  # use cached tools
         tools=None,
-        checkpointer=MemorySaver(),
+        # 持久化 checkpointer（AsyncSqliteSaver）：会话状态落盘 agent_state.sqlite，
+        # 配合 AgentServerACP(load_sessions=True) 支持 session/load 加载历史并继续对话。
+        checkpointer=checkpointer,
         backend=backend,
         system_prompt=SYSTEM_PROMPT,
         # Trigger HITL interrupt before risky tool calls -> deepagents_acp converts it to ACP
@@ -82,7 +96,14 @@ def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
 
 async def main() -> None:
     """Start the stdio ACP service; deepagents_acp handles ACP protocol encoding/decoding and event publishing."""
-    acp_agent = AgentServerACP(agent=build_agent)
+    conn = await aiosqlite.connect(DB_PATH)
+    checkpointer = AsyncSqliteSaver(conn)
+    acp_agent = AgentServerACP(
+        # 每个 session 复用同一个持久化 checkpointer；load_sessions=True 使 initialize
+        # 广告 loadSession:true，并实现 session/load（重放历史 update 事件）。
+        agent=lambda ctx: build_agent(ctx, checkpointer),
+        load_sessions=True,
+    )
     await run_agent(acp_agent)
 
 

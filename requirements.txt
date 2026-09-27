@@ -4,3 +4,4 @@ python-multipart
 deepagents
 deepagents-acp
 langchain-openai
+langgraph-checkpoint-sqlite

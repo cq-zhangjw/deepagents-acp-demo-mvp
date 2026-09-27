@@ -26,6 +26,12 @@
 <button id="btnStart">提交任务</button>
 <button id="btnCancel" disabled>取消任务</button>
 <button id="btnNewSession">新建会话</button>
+<br/>
+<div>历史会话：
+  <select id="sessionSelect"></select>
+  <button id="btnLoadSession">加载/继续</button>
+  <span style="font-size:12px;color:#888">（选择历史会话可查看记录并继续对话）</span>
+</div>
 <hr/>
 <div>状态：<span id="state">未连接</span></div>
 <div>执行计划：<pre id="plan">（等待 Agent 生成计划）</pre></div>
@@ -54,15 +60,67 @@
 var ws = null;
 var nextId = 1;
 var pending = {};          // id -> {resolve, reject}（request 的响应）
-var sessionId = null;      // 首次提交创建后复用，实现多轮对话
+var sessionId = null;      // 当前会话 id（复用同一 id 实现多轮对话/继续历史）
 var initialized = false;   // initialize 只做一次
 var permReqId = null;      // 待响应的权限请求 id
 var connected = false;
+var sessions = [];         // 历史会话列表 [{sid, title, time}]，持久化在 localStorage
 
 var $ = function (id) { return document.getElementById(id); };
 
 function log(msg) {
   $("log").textContent += "[JS] " + msg + "\n";
+}
+
+// ---------- 历史会话登记（localStorage） ----------
+var SESSIONS_KEY = "acp_sessions_v1";
+
+function loadSessions() {
+  try {
+    sessions = JSON.parse(localStorage.getItem(SESSIONS_KEY) || "[]");
+    if (!Array.isArray(sessions)) sessions = [];
+  } catch (e) { sessions = []; }
+}
+
+function saveSessions() {
+  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch (e) {}
+}
+
+function refreshSessionSelect() {
+  var sel = $("sessionSelect");
+  sel.innerHTML = "";
+  if (!sessions.length) {
+    var o = document.createElement("option");
+    o.value = "";
+    o.textContent = "（暂无历史会话，完成任务后自动登记）";
+    sel.appendChild(o);
+    return;
+  }
+  sessions.forEach(function (s) {
+    var opt = document.createElement("option");
+    opt.value = s.sid;
+    opt.textContent = (s.sid === sessionId ? "▶ " : "") +
+      s.sid.slice(0, 8) + "… " + s.title + " " + s.time;
+    sel.appendChild(opt);
+  });
+}
+
+// 登记/更新会话（新会话加入列表，已存在则更新时间与标题）
+function registerSession(sid, title) {
+  if (!sid) return;
+  var now = new Date();
+  var time = now.getMonth() + 1 + "-" + now.getDate() + " " +
+    String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+  var hit = sessions.filter(function (s) { return s.sid === sid; });
+  if (hit.length) {
+    hit[0].time = time;
+    if (title) hit[0].title = title;
+  } else {
+    sessions.unshift({ sid: sid, title: title || "未命名会话", time: time });
+    if (sessions.length > 30) sessions.pop();
+  }
+  saveSessions();
+  refreshSessionSelect();
 }
 
 // ---------- 连接与收发 ----------
@@ -279,6 +337,50 @@ function respondPermission(optionId) {
   log("权限已响应: " + optionId);
 }
 
+// ---------- 历史会话：加载并继续 ----------
+// 原理：ACP session/load 会让 Agent 从持久化 checkpoint 重放历史
+//       （以 session/update 事件流形式推送），前端复用现有渲染逻辑即可；
+//       加载完成后 sessionId 指向该会话，直接提交即可继续对话。
+async function loadHistory(sid) {
+  if (!sid) { log("请先选择要加载的历史会话"); return; }
+  if (sid === sessionId && $("result").innerText && $("result").innerText.indexOf("等待 Agent") < 0) {
+    log("该会话已是当前会话，无需重新加载"); return;
+  }
+  try {
+    if (!connected) await connectACP();
+    if (!initialized) {
+      var init = await acpCall("initialize", {
+        protocolVersion: 2,
+        clientCapabilities: {},
+        clientInfo: { name: "web-demo", version: "1.0" }
+      });
+      initialized = true;
+      log("initialize 完成 (loadSession=" + ((init.agentCapabilities || {}).loadSession) + ")");
+    }
+
+    // 清空渲染区，历史重放事件将按序追加
+    $("result").innerText = "";
+    $("plan").innerText = "（正在加载历史…）";
+    $("errorArea").style.display = "none";
+    $("state").innerText = "正在加载历史会话…";
+
+    var resp = await acpCall("session/load", {
+      cwd: ".",
+      sessionId: sid,
+      mcpServers: []
+    });
+    sessionId = sid;
+    $("state").innerText = "已加载历史会话，可直接输入消息继续对话";
+    log("session/load 完成: " + sid);
+    refreshSessionSelect();
+  } catch (err) {
+    var reason = err.message || String(err);
+    $("errorArea").textContent = "❌ 加载历史失败：" + reason;
+    $("errorArea").style.display = "block";
+    log("加载历史失败: " + reason);
+  }
+}
+
 // ---------- 业务流程 ----------
 var resourceRef = null;
 
@@ -298,6 +400,7 @@ $("fileInput").addEventListener("change", function (e) {
 
 $("btnStart").addEventListener("click", async function () {
   log("提交任务按钮被点击");
+  var taskText = $("taskInput").value || "";
   try {
     if (!connected) await connectACP();
 
@@ -309,10 +412,10 @@ $("btnStart").addEventListener("click", async function () {
         clientInfo: { name: "web-demo", version: "1.0" }
       });
       initialized = true;
-      log("initialize 完成: " + JSON.stringify(init));
+      log("initialize 完成 (loadSession=" + ((init.agentCapabilities || {}).loadSession) + ")");
     }
 
-    // 2. 会话：首次创建，之后复用（同一会话内 Agent 有记忆，可多轮问答）
+    // 2. 会话：首次创建并登记到历史列表；之后复用同一 sessionId（多轮/继续）
     if (!sessionId) {
       var ns = await acpCall("session/new", {
         sessionId: "web-" + Date.now(),
@@ -320,9 +423,11 @@ $("btnStart").addEventListener("click", async function () {
         mcpServers: []
       });
       sessionId = ns.sessionId;
-      log("新会话已创建: " + sessionId);
+      registerSession(sessionId, taskText.slice(0, 24));
+      log("新会话已创建并登记: " + sessionId);
       $("state").innerText = "新会话就绪: " + sessionId.slice(0, 8) + "…";
     } else {
+      registerSession(sessionId, taskText.slice(0, 24));
       log("继续当前会话: " + sessionId);
       $("state").innerText = "继续会话: " + sessionId.slice(0, 8) + "…";
     }
@@ -383,7 +488,7 @@ $("btnCancel").addEventListener("click", async function () {
   }
 });
 
-// 新建会话：重置 sessionId，下次提交时创建全新对话
+// 新建会话：重置 sessionId，下次提交时创建全新对话（历史记录保留在列表中）
 $("btnNewSession").addEventListener("click", function () {
   sessionId = null;
   resourceRef = null;
@@ -391,8 +496,19 @@ $("btnNewSession").addEventListener("click", function () {
   $("plan").innerText = "（等待 Agent 生成计划）";
   $("errorArea").style.display = "none";
   $("state").innerText = "已重置，下次提交将创建全新会话";
-  log("已重置为全新会话（旧会话 Agent 记忆将丢弃）");
+  refreshSessionSelect();
+  log("已重置为全新会话（历史列表保留，可从下拉重新加载旧会话）");
 });
+
+// 加载/继续历史会话
+$("btnLoadSession").addEventListener("click", function () {
+  var sid = $("sessionSelect").value;
+  loadHistory(sid);
+});
+
+// 页面加载时恢复历史会话列表
+loadSessions();
+refreshSessionSelect();
 
 // 权限弹窗按钮
 $("btnApprove").addEventListener("click", function () { respondPermission("approve"); });

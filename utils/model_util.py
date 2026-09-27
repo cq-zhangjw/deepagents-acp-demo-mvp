@@ -14,7 +14,7 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS")) if os.getenv("MAX_TOKENS") else 65535
 MAX_RETRY = int(os.getenv("MAX_RETRY")) if os.getenv("MAX_RETRY") else 3
 MODEL_PROVIDER = os.getenv("MODEL_PROVIDER") if os.getenv("MODEL_PROVIDER") else "openai"
 MODEL_NAME = os.getenv("MODEL_NAME") if os.getenv("MODEL_NAME") else "qwen3.8-9b"
-TIMEOUT = os.getenv("TIMEOUT") if os.getenv("TIMEOUT") else None
+TIMEOUT = float(os.getenv("TIMEOUT")) if os.getenv("TIMEOUT") else None
 
 MODEL = init_chat_model(
     MODEL_NAME,

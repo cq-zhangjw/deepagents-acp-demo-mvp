@@ -42,3 +42,4 @@ __pycache__/
 **/output/
 **/outputs/
 **/mcp_servers.json
+db/
