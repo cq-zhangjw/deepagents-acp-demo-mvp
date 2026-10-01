@@ -1,0 +1,906 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import MarkdownIt from 'markdown-it'
+import {
+  AddOutline,
+  AttachOutline,
+  CodeSlashOutline,
+  CopyOutline,
+  EllipsisHorizontalOutline,
+  LanguageOutline,
+  MenuOutline,
+  PaperPlaneOutline,
+  RefreshOutline,
+  StopCircleOutline,
+  TrashOutline
+} from '@vicons/ionicons5'
+import {
+  NAlert,
+  NAvatar,
+  NButton,
+  NCard,
+  NDrawer,
+  NDrawerContent,
+  NDropdown,
+  NIcon,
+  NInput,
+  NModal,
+  NSelect,
+  NSpin,
+  NTooltip,
+  useMessage
+} from 'naive-ui'
+import { useI18n } from 'vue-i18n'
+import { storageKey, type SupportedLocale } from '../i18n'
+import ExecutionProcess from '../components/ExecutionProcess.vue'
+import MarkdownMessage from '../components/MarkdownMessage.vue'
+
+type TaskStatus = 'pending' | 'streaming' | 'completed' | 'cancelled' | 'failed' | 'waiting_permission'
+type ToolStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_permission'
+
+interface AttachmentRef {
+  path?: string
+  uri?: string
+  name: string
+  mimeType?: string
+  kind?: 'file' | 'image'
+  data?: string
+  previewUrl?: string
+}
+
+interface AnalysisEntry {
+  id: string
+  text: string
+}
+
+interface PlanEntry {
+  title: string
+  status: string
+}
+
+interface ToolCallEntry {
+  id: string
+  name: string
+  title?: string
+  status: ToolStatus
+  rawInput?: unknown
+  output?: unknown
+}
+
+interface ExecutionProcess {
+  startedAt: number
+  completedAt?: number
+  plan: PlanEntry[]
+  analyses: AnalysisEntry[]
+  toolCalls: ToolCallEntry[]
+}
+
+interface TextSegment { id: string; type: 'text'; text: string }
+interface ProcessSegment { id: string; type: 'process' }
+type AssistantSegment = TextSegment | ProcessSegment
+
+interface UserMessage {
+  id: string
+  role: 'user'
+  text: string
+  attachments: AttachmentRef[]
+  createdAt: number
+}
+
+interface AssistantMessage {
+  id: string
+  role: 'assistant'
+  finalText: string
+  status: TaskStatus
+  process: ExecutionProcess
+  segments: AssistantSegment[]
+  createdAt: number
+}
+
+type ChatMessage = UserMessage | AssistantMessage
+
+interface Conversation {
+  id: string
+  agentSessionId?: string
+  title: string
+  updatedAt: number
+  messages: ChatMessage[]
+}
+
+interface PermissionRequest {
+  id: number | string
+  toolName: string
+  rawInput: unknown
+}
+
+const STORE_KEY = 'deepagents-acp-ui-sessions-v1'
+const message = useMessage()
+const { t, locale } = useI18n()
+const markdown = new MarkdownIt()
+const ws = ref<WebSocket | null>(null)
+const connected = ref(false)
+const initialized = ref(false)
+const socketPromise = ref<Promise<void> | null>(null)
+const initializedSessions = new Set<string>()
+const restoringHistory = ref(false)
+const requestId = ref(1)
+const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void }>()
+const conversations = ref<Conversation[]>(loadConversations())
+const activeConversationId = ref(conversations.value[0]?.id ?? '')
+const input = ref('')
+const attachments = ref<AttachmentRef[]>([])
+const isUploading = ref(false)
+const dragActive = ref(false)
+const permissionRequest = ref<PermissionRequest | null>(null)
+const sidebarVisible = ref(false)
+const errorText = ref('')
+const timeline = ref<HTMLElement | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const localeOptions = computed(() => [
+  { label: '中文', value: 'zh' },
+  { label: '日本語', value: 'ja' },
+  { label: 'English', value: 'en' }
+])
+const actionLabels = computed(() => ({
+  retry: locale.value === 'zh' ? '重新生成' : locale.value === 'ja' ? '再生成' : 'Regenerate',
+  copyText: locale.value === 'zh' ? '复制纯文本' : locale.value === 'ja' ? 'テキストをコピー' : 'Copy text',
+  copyMarkdown: locale.value === 'zh' ? '复制 Markdown' : locale.value === 'ja' ? 'Markdown をコピー' : 'Copy Markdown',
+  copied: locale.value === 'zh' ? '已复制' : locale.value === 'ja' ? 'コピーしました' : 'Copied'
+}))
+
+const currentConversation = computed(() =>
+  conversations.value.find((conversation) => conversation.id === activeConversationId.value)
+)
+const currentMessages = computed(() => currentConversation.value?.messages ?? [])
+const isRunning = computed(() => currentMessages.value.some(
+  (item) => item.role === 'assistant'
+    && (item.status === 'pending' || item.status === 'waiting_permission' || (item.status === 'streaming' && !item.finalText))
+))
+const currentTitle = computed(() => currentConversation.value?.title ?? t('newSessionTitle'))
+const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
+
+function loadConversations(): Conversation[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]')
+    if (!Array.isArray(saved)) return []
+    return saved.map((conversation) => ({
+      ...conversation,
+      messages: (conversation.messages ?? []).map((item: ChatMessage) => {
+        if (item.role !== 'assistant' || Array.isArray(item.segments)) return item
+        const segments: AssistantSegment[] = []
+        if (item.finalText) segments.push({ id: createId('text'), type: 'text', text: item.finalText })
+        if (item.process?.plan?.length || item.process?.analyses?.length || item.process?.toolCalls?.length) {
+          segments.push({ id: createId('process'), type: 'process' })
+        }
+        return { ...item, segments }
+      })
+    }))
+  } catch {
+    return []
+  }
+}
+
+function persistConversations() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(conversations.value))
+}
+
+function createId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createConversation() {
+  const conversation: Conversation = {
+    id: `web-${Date.now()}`,
+    title: t('newSessionTitle'),
+    updatedAt: Date.now(),
+    messages: []
+  }
+  conversations.value.unshift(conversation)
+  activeConversationId.value = conversation.id
+  attachments.value = []
+  input.value = ''
+  errorText.value = ''
+  sidebarVisible.value = false
+  persistConversations()
+  nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
+}
+
+function selectConversation(id: string) {
+  activeConversationId.value = id
+  attachments.value = []
+  sidebarVisible.value = false
+  errorText.value = ''
+  nextTick(scrollToBottom)
+}
+
+function deleteConversation(id: string) {
+  conversations.value = conversations.value.filter((conversation) => conversation.id !== id)
+  if (activeConversationId.value === id) {
+    activeConversationId.value = conversations.value[0]?.id ?? ''
+  }
+  persistConversations()
+}
+
+function moveConversationToTop(conversation: Conversation) {
+  conversations.value = [conversation, ...conversations.value.filter((item) => item.id !== conversation.id)]
+}
+
+function websocketUrl() {
+  if (import.meta.env.VITE_ACP_WS_URL) return import.meta.env.VITE_ACP_WS_URL
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/acp-ws`
+}
+
+function connect() {
+  if (connected.value && ws.value?.readyState === WebSocket.OPEN) return Promise.resolve()
+  if (socketPromise.value) return socketPromise.value
+
+  socketPromise.value = new Promise((resolve, reject) => {
+    const socket = new WebSocket(websocketUrl())
+    ws.value = socket
+    socket.onopen = () => {
+      connected.value = true
+      socketPromise.value = null
+      resolve()
+    }
+    socket.onerror = () => {
+      socketPromise.value = null
+      reject(new Error(t('connectionFailed')))
+    }
+    socket.onclose = () => {
+      connected.value = false
+      initialized.value = false
+      initializedSessions.clear()
+      ws.value = null
+      pendingRequests.forEach(({ reject }) => reject(new Error(t('connectionClosed'))))
+      pendingRequests.clear()
+    }
+    socket.onmessage = (event) => handleAcpMessage(event.data)
+  })
+  return socketPromise.value
+}
+
+function callAcp(method: string, params: Record<string, unknown>) {
+  return new Promise<any>((resolve, reject) => {
+    const socket = ws.value
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      reject(new Error(t('connectionNotReady')))
+      return
+    }
+    const id = requestId.value++
+    pendingRequests.set(id, { resolve, reject })
+    socket.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+  })
+}
+
+function respondAcp(id: number | string, result: Record<string, unknown>) {
+  ws.value?.send(JSON.stringify({ jsonrpc: '2.0', id, result }))
+}
+
+async function initialize() {
+  if (initialized.value) return
+  await callAcp('initialize', {
+    protocolVersion: 2,
+    clientCapabilities: {},
+    clientInfo: { name: 'deepagents-acp-ui', version: '1.0.0' }
+  })
+  initialized.value = true
+}
+
+function handleAcpMessage(raw: string) {
+  let payload: any
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (payload.id !== undefined && payload.method) {
+    if (payload.method === 'session/request_permission') {
+      const toolCall = payload.params?.toolCall ?? {}
+      permissionRequest.value = {
+        id: payload.id,
+        toolName: toolCall.title ?? toolCall.toolName ?? toolCall.toolCallId ?? '工具调用',
+        rawInput: toolCall.rawInput ?? {}
+      }
+      const active = activeAssistantMessage()
+      if (active) active.status = 'waiting_permission'
+    }
+    return
+  }
+  if (payload.id !== undefined && pendingRequests.has(payload.id)) {
+    const request = pendingRequests.get(payload.id)!
+    pendingRequests.delete(payload.id)
+    if (payload.error) request.reject(new Error(payload.error.message ?? t('requestFailed')))
+    else request.resolve(payload.result)
+    return
+  }
+  if (payload.method === 'session/update') handleSessionUpdate(payload.params?.update ?? {})
+}
+
+function activeAssistantMessage() {
+  const items = currentConversation.value?.messages ?? []
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index].role === 'assistant') return items[index] as AssistantMessage
+  }
+  return undefined
+}
+
+function appendTextSegment(assistant: AssistantMessage, text: string) {
+  if (!text) return
+  assistant.finalText += text
+  const last = assistant.segments.at(-1)
+  if (last?.type === 'text') last.text += text
+  else assistant.segments.push({ id: createId('text'), type: 'text', text })
+}
+
+function ensureProcessSegment(assistant: AssistantMessage) {
+  if (!assistant.segments.some((segment) => segment.type === 'process')) {
+    assistant.segments.push({ id: createId('process'), type: 'process' })
+  }
+}
+
+function textFromContent(content: any): string {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map(textFromContent).filter(Boolean).join('\n')
+  if (typeof content.text === 'string') return content.text
+  if (content.content) return textFromContent(content.content)
+  return ''
+}
+
+function normalizeToolStatus(status?: string): ToolStatus {
+  if (status === 'failed' || status === 'error') return 'failed'
+  if (status === 'cancelled') return 'cancelled'
+  if (status === 'waiting_permission') return 'waiting_permission'
+  if (status === 'completed' || status === 'success') return 'completed'
+  return 'running'
+}
+
+function handleSessionUpdate(update: any) {
+  if (restoringHistory.value) return
+  const assistant = activeAssistantMessage()
+  if (!assistant) return
+  const process = assistant.process
+  switch (update.sessionUpdate) {
+    case 'agent_message_chunk':
+      assistant.status = 'streaming'
+      appendTextSegment(assistant, textFromContent(update.content))
+      break
+    case 'agent_thought_chunk': {
+      const text = textFromContent(update.content)
+      if (text) {
+        ensureProcessSegment(assistant)
+        process.analyses.push({ id: createId('analysis'), text })
+      }
+      break
+    }
+    case 'plan':
+      ensureProcessSegment(assistant)
+      process.plan = (update.entries ?? []).map((entry: any) => ({
+        title: entry.title ?? entry.task ?? '执行步骤',
+        status: entry.status ?? 'pending'
+      }))
+      break
+    case 'tool_call':
+    case 'tool_call_start': {
+      ensureProcessSegment(assistant)
+      const id = update.toolCallId ?? createId('tool')
+      if (!process.toolCalls.some((tool) => tool.id === id)) {
+        process.toolCalls.push({
+          id,
+          name: update.toolName ?? update.title ?? '工具调用',
+          title: update.title,
+          status: 'running',
+          rawInput: update.rawInput
+        })
+      }
+      break
+    }
+    case 'tool_call_update': {
+      ensureProcessSegment(assistant)
+      const id = update.toolCallId ?? createId('tool')
+      let tool = process.toolCalls.find((item) => item.id === id)
+      if (!tool) {
+        tool = { id, name: update.toolName ?? update.title ?? '工具调用', status: 'running' }
+        process.toolCalls.push(tool)
+      }
+      tool.title = update.title ?? tool.title
+      tool.rawInput = update.rawInput ?? tool.rawInput
+      tool.output = textFromContent(update.content) || update.content || tool.output
+      tool.status = normalizeToolStatus(update.status)
+      break
+    }
+  }
+  nextTick(scrollToBottom)
+}
+
+async function ensureAgentSession(conversation: Conversation, isNewConversation: boolean) {
+  if (initializedSessions.has(conversation.id)) return
+  if (isNewConversation) {
+    const response = await callAcp('session/new', { sessionId: conversation.id, cwd: '.', mcpServers: [] })
+    if (!response?.sessionId) throw new Error(t('invalidSession'))
+    conversation.agentSessionId = response.sessionId
+  } else {
+    const agentSessionId = conversation.agentSessionId ?? conversation.id
+    restoringHistory.value = true
+    try {
+      await callAcp('session/load', { sessionId: agentSessionId, cwd: '.', mcpServers: [] })
+    } finally {
+      restoringHistory.value = false
+    }
+  }
+  initializedSessions.add(conversation.id)
+}
+
+async function sendAgentPrompt(
+  conversation: Conversation,
+  text: string,
+  resources: AttachmentRef[],
+  assistantMessage: AssistantMessage,
+  isNewConversation: boolean
+) {
+  try {
+    await connect()
+    await initialize()
+    await ensureAgentSession(conversation, isNewConversation)
+    const fileAttachmentContext = resources
+      .filter((resource) => resource.kind !== 'image')
+      .map((resource) => `附件虚拟路径：${resource.path ?? resource.uri}\n请直接使用本地文件工具读取该路径；不要转换为 Windows 路径或 HTTP 地址。`)
+      .join('\n\n')
+    const promptText = [text, fileAttachmentContext].filter(Boolean).join('\n\n')
+    const content: Array<Record<string, unknown>> = []
+    if (promptText || !resources.some((resource) => resource.kind === 'image')) {
+      content.push({ type: 'text', text: promptText })
+    }
+    resources
+      .filter((resource) => resource.kind === 'image' && resource.data)
+      .forEach((resource) => content.push({
+        type: 'image',
+        data: resource.data,
+        mimeType: resource.mimeType ?? 'image/png'
+      }))
+    await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content })
+    if (assistantMessage.status !== 'cancelled' && assistantMessage.status !== 'failed') {
+      assistantMessage.status = 'completed'
+      assistantMessage.process.completedAt = Date.now()
+      if (!assistantMessage.finalText) appendTextSegment(assistantMessage, t('taskComplete'))
+    }
+  } catch (error) {
+    if (assistantMessage.status !== 'cancelled') {
+      assistantMessage.status = 'failed'
+      assistantMessage.process.completedAt = Date.now()
+      errorText.value = error instanceof Error ? error.message : '任务执行失败。'
+    }
+  } finally {
+    conversation.updatedAt = Date.now()
+    persistConversations()
+    nextTick(scrollToBottom)
+  }
+}
+
+async function submitPrompt() {
+  const conversation = currentConversation.value
+  const text = input.value.trim()
+  if (!conversation || (!text && !attachments.value.length) || isRunning.value || isUploading.value) return
+
+  const isNewConversation = conversation.messages.length === 0
+  errorText.value = ''
+  const resources = [...attachments.value]
+  const userMessage: UserMessage = { id: createId('user'), role: 'user', text, attachments: resources, createdAt: Date.now() }
+  const assistantMessage: AssistantMessage = {
+    id: createId('assistant'),
+    role: 'assistant',
+    finalText: '',
+    status: 'pending',
+    process: { startedAt: Date.now(), plan: [], analyses: [], toolCalls: [] },
+    segments: [],
+    createdAt: Date.now()
+  }
+  conversation.messages.push(userMessage, assistantMessage)
+  conversation.title = conversation.title === t('newSessionTitle') ? (text || resources[0]?.name || t('attachmentTask')).slice(0, 24) : conversation.title
+  conversation.updatedAt = Date.now()
+  moveConversationToTop(conversation)
+  input.value = ''
+  attachments.value = []
+  persistConversations()
+  await nextTick(scrollToBottom)
+  await sendAgentPrompt(conversation, text, resources, assistantMessage, isNewConversation)
+}
+
+function assistantSourceMessage(assistant: AssistantMessage) {
+  const conversation = currentConversation.value
+  const index = conversation?.messages.findIndex((item) => item.id === assistant.id) ?? -1
+  const source = index > 0 ? conversation?.messages[index - 1] : undefined
+  return source?.role === 'user' ? source : undefined
+}
+
+async function retryAssistant(assistant: AssistantMessage) {
+  const conversation = currentConversation.value
+  const source = assistantSourceMessage(assistant)
+  if (!conversation || !source || isRunning.value) return
+
+  errorText.value = ''
+  assistant.finalText = ''
+  assistant.status = 'pending'
+  assistant.process = { startedAt: Date.now(), plan: [], analyses: [], toolCalls: [] }
+  assistant.segments = []
+  conversation.updatedAt = Date.now()
+  persistConversations()
+  await nextTick(scrollToBottom)
+  await sendAgentPrompt(conversation, source.text, source.attachments, assistant, !conversation.agentSessionId)
+}
+
+async function copyText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+    message.success(actionLabels.value.copied)
+  } catch {
+    message.error(t('requestFailed'))
+  }
+}
+
+function copyAssistantText(assistant: AssistantMessage, asMarkdown: boolean) {
+  const value = asMarkdown
+    ? assistant.finalText
+    : new DOMParser().parseFromString(markdown.render(assistant.finalText), 'text/html').body.textContent?.trim() ?? ''
+  void copyText(value)
+}
+
+async function cancelTask() {
+  const conversation = currentConversation.value
+  const assistant = activeAssistantMessage()
+  if (!conversation || !assistant) return
+  try {
+    await callAcp('session/cancel', { sessionId: conversation.agentSessionId ?? conversation.id })
+  } catch {
+    // Some ACP servers omit session/cancel. Closing this dedicated connection terminates its Agent subprocess.
+  } finally {
+    assistant.status = 'cancelled'
+    assistant.process.completedAt = Date.now()
+    assistant.process.toolCalls.forEach((tool) => {
+      if (tool.status === 'running' || tool.status === 'waiting_permission') tool.status = 'cancelled'
+    })
+    ws.value?.close()
+    persistConversations()
+  }
+}
+
+function respondPermission(optionId: string) {
+  if (!permissionRequest.value) return
+  respondAcp(permissionRequest.value.id, { outcome: { outcome: 'selected', optionId } })
+  const assistant = activeAssistantMessage()
+  if (assistant) assistant.status = 'pending'
+  permissionRequest.value = null
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(t('uploadFailed')))
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error(t('uploadFailed')))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function addFiles(files: Iterable<File>) {
+  const selectedFiles = Array.from(files)
+  if (!selectedFiles.length) return
+  isUploading.value = true
+  try {
+    for (const file of selectedFiles) {
+      if (file.type.startsWith('image/')) {
+        const previewUrl = await fileToDataUrl(file)
+        attachments.value.push({
+          name: file.name,
+          mimeType: file.type,
+          kind: 'image',
+          data: previewUrl.slice(previewUrl.indexOf(',') + 1),
+          previewUrl
+        })
+        continue
+      }
+      const form = new FormData()
+      form.append('file', file)
+      const response = await fetch('/upload', { method: 'POST', body: form })
+      if (!response.ok) throw new Error(t('uploadFailed'))
+      attachments.value.push({ ...(await response.json()), kind: 'file' })
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('uploadFailed'))
+  } finally {
+    isUploading.value = false
+  }
+}
+
+async function uploadFile(event: Event) {
+  const inputElement = event.target as HTMLInputElement
+  await addFiles(inputElement.files ?? [])
+  inputElement.value = ''
+}
+
+function dropFiles(event: DragEvent) {
+  dragActive.value = false
+  void addFiles(event.dataTransfer?.files ?? [])
+}
+
+function removeAttachment(index: number) {
+  attachments.value.splice(index, 1)
+}
+
+function statusText(status: TaskStatus | ToolStatus) {
+  return t(`status.${status}`)
+}
+
+function isAssistantActive(status: TaskStatus) {
+  return status === 'pending' || status === 'streaming' || status === 'waiting_permission'
+}
+
+function formatTime(timestamp: number) {
+  const language = ({ zh: 'zh-CN', ja: 'ja-JP', en: 'en-US' } as Record<string, string>)[locale.value] ?? 'en-US'
+  return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit' }).format(timestamp)
+}
+
+function duration(process: ExecutionProcess) {
+  const end = process.completedAt ?? Date.now()
+  return Math.max(0, Math.round((end - process.startedAt) / 1000))
+}
+
+function scrollToBottom() {
+  if (timeline.value) timeline.value.scrollTop = timeline.value.scrollHeight
+}
+
+function submitOnEnter(event: KeyboardEvent) {
+  if (!event.shiftKey) {
+    event.preventDefault()
+    submitPrompt()
+  }
+}
+
+watch(conversations, persistConversations, { deep: true })
+watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
+onMounted(() => {
+  if (!conversations.value.length) createConversation()
+})
+onBeforeUnmount(() => ws.value?.close())
+</script>
+
+<template>
+  <main class="chat-app">
+    <aside class="sidebar" :class="{ 'sidebar--mobile-open': sidebarVisible }">
+      <div class="brand-row">
+        <div class="brand-mark"><NIcon :component="CodeSlashOutline" /></div>
+        <div>
+          <strong>ACP client base</strong>
+          <span>{{ t('brandSubline') }}</span>
+        </div>
+      </div>
+
+      <NButton class="new-conversation" type="primary" block @click="createConversation">
+        <template #icon><NIcon :component="AddOutline" /></template>
+        {{ t('newConversation') }}
+      </NButton>
+
+      <div class="conversation-label">{{ t('recentConversations') }}</div>
+      <nav class="conversation-list" :aria-label="t('recentConversations')">
+        <button
+          v-for="conversation in conversations"
+          :key="conversation.id"
+          class="conversation-item"
+          :class="{ active: conversation.id === activeConversationId }"
+          @click="selectConversation(conversation.id)"
+        >
+          <span class="conversation-title">{{ conversation.title }}</span>
+          <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+          <NTooltip>
+            <template #trigger>
+              <span class="conversation-delete" role="button" tabindex="0" @click.stop="deleteConversation(conversation.id)">
+                <NIcon :component="TrashOutline" />
+              </span>
+            </template>
+            {{ t('deleteConversation') }}
+          </NTooltip>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="connection-dot" :class="{ connected }" />
+        {{ connectionLabel }}
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="workspace-header">
+        <div class="header-title">
+          <NTooltip>
+            <template #trigger>
+              <NButton class="mobile-menu" quaternary circle :aria-label="t('openConversations')" @click="sidebarVisible = true">
+                <template #icon><NIcon :component="MenuOutline" /></template>
+              </NButton>
+            </template>
+            {{ t('openConversations') }}
+          </NTooltip>
+          <div>
+            <h1>{{ currentTitle }}</h1>
+            <span>{{ isRunning ? t('taskRunning') : connectionLabel }}</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <NIcon :component="LanguageOutline" class="language-icon" />
+          <NSelect v-model:value="locale" class="locale-select" size="small" :options="localeOptions" :aria-label="t('language')" />
+          <NDropdown :options="[{ label: t('newConversation'), key: 'new' }]" @select="createConversation">
+            <NButton quaternary circle :aria-label="t('moreActions')">
+              <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+            </NButton>
+          </NDropdown>
+        </div>
+      </header>
+
+      <section ref="timeline" class="timeline" aria-live="polite">
+        <div v-if="!currentMessages.length" class="welcome">
+          <div class="welcome-symbol"><NIcon :component="CodeSlashOutline" /></div>
+          <h2>{{ t('startTask') }}</h2>
+          <p>{{ t('startTaskHint') }}</p>
+        </div>
+
+        <div v-else class="message-column">
+          <article v-for="item in currentMessages" :key="item.id" class="message" :class="`message--${item.role}`">
+            <NAvatar round :size="30" :color="item.role === 'user' ? '#2563eb' : '#1d2733'">
+              {{ item.role === 'user' ? '我' : 'AI' }}
+            </NAvatar>
+            <div class="message-body">
+              <div class="message-meta">
+                <strong>{{ item.role === 'user' ? t('you') : t('assistant') }}</strong>
+                <span>{{ formatTime(item.createdAt) }}</span>
+              </div>
+              <div v-if="item.role === 'user'" class="message-bubble user-bubble">
+                <p v-if="item.text">{{ item.text }}</p>
+                <div v-if="item.attachments.length" class="attachment-list">
+                  <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }">
+                    <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
+                    <NIcon :component="AttachOutline" />{{ attachment.name }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="item.role === 'user'" class="message-actions message-actions--user">
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
+                      <template #icon><NIcon :component="CopyOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ actionLabels.copyText }}
+                </NTooltip>
+              </div>
+              <template v-else>
+                <div v-if="!item.segments.length && isAssistantActive(item.status)" class="assistant-pending">
+                  <NSpin size="small" />
+                  <span>{{ item.status === 'waiting_permission' ? t('waitingPermission') : t('processing') }}</span>
+                </div>
+                <template v-for="segment in item.segments" :key="segment.id">
+                  <MarkdownMessage v-if="segment.type === 'text'" class="assistant-content" :content="segment.text" />
+                  <ExecutionProcess v-else :process="item.process" />
+                </template>
+                <span v-if="item.status === 'failed' || item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
+                <div v-if="item.finalText && !isRunning" class="message-actions">
+                  <NTooltip>
+                    <template #trigger>
+                      <NButton quaternary circle size="tiny" :aria-label="actionLabels.retry" @click="retryAssistant(item)">
+                        <template #icon><NIcon :component="RefreshOutline" /></template>
+                      </NButton>
+                    </template>
+                    {{ actionLabels.retry }}
+                  </NTooltip>
+                  <NTooltip>
+                    <template #trigger>
+                      <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyAssistantText(item, false)">
+                        <template #icon><NIcon :component="CopyOutline" /></template>
+                      </NButton>
+                    </template>
+                    {{ actionLabels.copyText }}
+                  </NTooltip>
+                  <NTooltip>
+                    <template #trigger>
+                      <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyMarkdown" @click="copyAssistantText(item, true)">
+                        <template #icon><NIcon :component="CodeSlashOutline" /></template>
+                      </NButton>
+                    </template>
+                    {{ actionLabels.copyMarkdown }}
+                  </NTooltip>
+                </div>
+              </template>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <div class="composer-wrap">
+        <div class="composer-column">
+          <NAlert v-if="errorText" type="error" closable class="task-error" @close="errorText = ''">
+            {{ errorText }}
+          </NAlert>
+          <div v-if="attachments.length" class="pending-attachments">
+            <span v-for="(attachment, index) in attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }">
+              <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
+              <NIcon :component="AttachOutline" />{{ attachment.name }}
+              <button aria-label="移除附件" @click="removeAttachment(index)">×</button>
+            </span>
+          </div>
+          <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles">
+            <input ref="fileInput" class="hidden-input" type="file" multiple @change="uploadFile" />
+            <NTooltip>
+              <template #trigger>
+                <NButton quaternary circle :loading="isUploading" :aria-label="t('upload')" @click="fileInput?.click()">
+                  <template #icon><NIcon :component="AttachOutline" /></template>
+                </NButton>
+              </template>
+              {{ t('upload') }}
+            </NTooltip>
+            <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" />
+            <NTooltip v-if="isRunning">
+              <template #trigger>
+                <NButton circle type="error" :aria-label="t('cancel')" @click="cancelTask">
+                  <template #icon><NIcon :component="StopCircleOutline" /></template>
+                </NButton>
+              </template>
+              {{ t('cancel') }}
+            </NTooltip>
+            <NTooltip v-else>
+              <template #trigger>
+                <NButton circle type="primary" :aria-label="t('send')" :disabled="(!input.trim() && !attachments.length) || isUploading" @click="submitPrompt">
+                  <template #icon><NIcon :component="PaperPlaneOutline" /></template>
+                </NButton>
+              </template>
+              {{ t('send') }}
+            </NTooltip>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <NDrawer v-model:show="sidebarVisible" placement="left" :width="280">
+      <NDrawerContent :title="t('recentConversations')">
+        <div class="drawer-list">
+          <NButton type="primary" block @click="createConversation"><template #icon><NIcon :component="AddOutline" /></template>{{ t('newConversation') }}</NButton>
+          <NButton v-for="conversation in conversations" :key="conversation.id" text class="drawer-item" @click="selectConversation(conversation.id)">
+            {{ conversation.title }}
+          </NButton>
+        </div>
+      </NDrawerContent>
+    </NDrawer>
+
+    <NModal :show="Boolean(permissionRequest)" :mask-closable="false">
+      <NCard :title="t('permissionTitle')" :bordered="false" class="permission-card" role="dialog">
+        <p>{{ t('permissionPrefix') }} <strong>{{ permissionRequest?.toolName }}</strong></p>
+        <pre class="permission-code">{{ JSON.stringify(permissionRequest?.rawInput ?? {}, null, 2) }}</pre>
+        <template #footer>
+          <div class="permission-actions">
+            <NButton @click="respondPermission('reject')">{{ t('reject') }}</NButton>
+            <NButton type="primary" @click="respondPermission('approve')">{{ t('approve') }}</NButton>
+            <NButton type="warning" @click="respondPermission('approve_always')">{{ t('approveAlways') }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+  </main>
+</template>
+
+<style scoped>
+.chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
+.sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); }
+.brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; }
+.brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
+.new-conversation { justify-content:flex-start; margin-bottom:26px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; }
+.conversation-list { display:flex; flex:1; flex-direction:column; gap:3px; overflow:auto; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 10px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
+.conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
+.sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
+.workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .language-icon { color:var(--subtle); font-size:17px; } .locale-select { width:102px; }
+.timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
+.message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
+.assistant-content { margin-bottom:12px; } .assistant-pending { display:flex; gap:9px; align-items:center; min-height:32px; color:var(--subtle); font-size:14px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
+.message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; }
+.attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
+.process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
+.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; gap:10px; align-items:flex-end; padding:8px 9px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input { flex:1; } .composer-input :deep(textarea) { padding-top:6px; padding-bottom:6px; } .hidden-input { display:none; }
+.permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
+@media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
+</style>

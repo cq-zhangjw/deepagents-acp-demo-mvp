@@ -38,7 +38,9 @@ SYSTEM_PROMPT = (
     "你是一个智能任务Agent。\n"
     "1. 先拆解任务，生成执行计划，分步执行。\n"
     "2. 缺少必要信息时主动向用户发起提问（request_input），不要编造信息。\n"
-    "3. 读取外部 http 资源（图片/文件）前，请求用户权限。\n"
+    "3. 图片附件会作为图片内容直接提供，请直接分析图片，不要调用 read_file。"
+    "其他上传附件会以虚拟路径（如 /uploads/example.txt）提供；"
+    "请使用本地文件工具读取该路径，不要将其当作 http 资源或 Windows 文件路径访问。\n"
     "4. 需要执行高风险工具操作时发起权限请求（request_permission）。\n" \
     "5. 全体任务执行完毕后，你始终需要向用户进行报告。"
 )
@@ -57,13 +59,13 @@ def build_agent(
     ephemeral_backend = StateBackend()
     backend = CompositeBackend(
         # LocalShellBackend = file operations (inherits FilesystemBackend) + execute (shell commands)
-        # virtual_mode=False: no working-directory restriction — absolute paths are accessed as-is (entire disk),
-        #   relative paths are resolved from cwd; shell commands also run in cwd and are unrestricted by path.
+        # virtual_mode=True maps virtual paths such as /uploads/example.txt to files under root_dir.
+        # Shell commands still run in root_dir and are unrestricted by this filesystem mapping.
         # inherit_env=True: inherit the parent process environment (PATH/USERPROFILE, etc.); otherwise the child process
         #   has an empty environment and cannot even find powershell/whoami.
         default=LocalShellBackend(
             root_dir=agent_root_dir,
-            virtual_mode=False,
+            virtual_mode=True,
             inherit_env=True
         ),
         routes={

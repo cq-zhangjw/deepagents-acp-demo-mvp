@@ -1,0 +1,25 @@
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+	width: 100%;
+	min-width: 320px;
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	overflow: hidden;
+	color: #1d2733;
+	background: #f7f8fa;
+	font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+button,
+input,
+textarea {
+	font: inherit;
+}

@@ -5,7 +5,7 @@ Responsibilities:
 2. WS   /acp-ws          —— bidirectional forwarding between the frontend ACP client and the ACP agent subprocess
                            ACP JSON-RPC messages (including session/update, request_permission,
                            request_input, and other events)
-3. /static, /uploads     —— static resource hosting (frontend page + uploaded files)
+3. /, /uploads           —— built Vue client and uploaded-file hosting
 
 Usage: python gateway.py
 """
@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from dotenv import load_dotenv
@@ -24,31 +24,30 @@ load_dotenv()
 
 
 BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
+# Keep static/ for the legacy demo assets; the active SPA is built into web/dist.
+WEB_DIST_DIR = BASE_DIR / "web" / "dist"
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 # ACP agent subprocess startup command
 AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 
-app = FastAPI(title="DeepAgents ACP FastAPI Gateway")
+app = FastAPI(title="ACP client base")
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 @app.post("/upload")
-async def upload_file(request: Request, file: UploadFile = File(...)):
-    """Save the uploaded file and return an HTTP URL usable by ACP ResourceLink."""
+async def upload_file(file: UploadFile = File(...)):
+    """Save an upload and return its project-relative path for local Agent tools."""
     # Prevent path traversal: keep only the file name
     filename = Path(file.filename or "upload.bin").name
     save_path = UPLOAD_DIR / filename
     with save_path.open("wb") as f:
         f.write(await file.read())
 
-    base = str(request.base_url).rstrip("/")
     return {
-        "uri": f"{base}/uploads/{filename}",
+        "path": f"/uploads/{filename}",
         "name": filename,
         "mimeType": file.content_type,
     }
@@ -63,6 +62,9 @@ async def acp_bridge(websocket: WebSocket):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        cwd=str(BASE_DIR),
+        # ACP JSON-RPC messages can include Base64 image blocks and exceed asyncio's 64 KiB default.
+        limit=16 * 1024 * 1024,
     )
 
     async def forward_stdout():
@@ -78,6 +80,14 @@ async def acp_bridge(websocket: WebSocket):
                 except Exception:
                     break
 
+    async def forward_stderr():
+        """Keep agent diagnostics visible without mixing them into ACP stdout."""
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            print(f"[acp-agent] {line.decode('utf-8', errors='replace').rstrip()}")
+
     async def forward_ws():
         """Frontend WebSocket (ACP requests) -> subprocess stdin"""
         try:
@@ -89,10 +99,11 @@ async def acp_bridge(websocket: WebSocket):
             pass
 
     forwarder = asyncio.create_task(forward_stdout())
+    error_forwarder = asyncio.create_task(forward_stderr())
     ws_reader = asyncio.create_task(forward_ws())
     # If either direction completes (usually the WS disconnects), terminate the subprocess to avoid agent leaks
     done, pending = await asyncio.wait(
-        {ws_reader, forwarder}, return_when=asyncio.FIRST_COMPLETED
+        {ws_reader, forwarder, error_forwarder}, return_when=asyncio.FIRST_COMPLETED
     )
     for task in pending:
         task.cancel()
@@ -125,6 +136,10 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
     except asyncio.TimeoutError:
         proc.kill()
+
+
+# Mount the SPA after API and WebSocket routes so it only handles client asset requests.
+app.mount("/", StaticFiles(directory=str(WEB_DIST_DIR), html=True), name="web-client")
 
 
 if __name__ == "__main__":
