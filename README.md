@@ -11,24 +11,29 @@ Browser frontend (ACP Client)
 
 - **ACP layer**: Uses `deepagents-acp` and `agent-client-protocol` to automatically handle protocol messages such as `session/update` and `session/request_permission`, without requiring manual JSON-RPC handling.
 - **Gateway layer**: `app.py` handles bidirectional `WebSocket ⇄ stdio` forwarding and file uploads, without parsing business logic.
-- **Frontend**: `static/index.html` is a native ACP WebSocket client written in vanilla JavaScript without third-party libraries, allowing direct sending and receiving of ACP v2 messages.
+- **Frontend**: `web/` is a Vue 3 + TypeScript SPA (Vite build, Naive UI) that implements the ACP v2 client; its build output (`web/dist`) is served by the gateway at the root path `/`. `static/index.html` is kept only as a legacy demo page.
 
 ## Project structure
 
 ```text
 ./
-├─ app.py                # FastAPI gateway (/upload + /acp-ws)
+├─ app.py                # FastAPI gateway (/upload + /acp-ws, serves web/dist at /)
 ├─ acp_agent.py          # DeepAgents ACP agent (stdio service)
 ├─ utils/
 │  └─ model_util.py     # Model initialization configuration (OpenAI-compatible API)
+├─ web/                  # Vue 3 + TypeScript ACP client (Vite build → web/dist)
+│  ├─ src/              # components: ChatPage / ExecutionProcess / ToolCallCard / MarkdownMessage
+│  └─ dist/             # build output, served by app.py at the root path
 ├─ static/
-│  └─ index.html        # Frontend demo page
+│  └─ index.html        # Legacy demo page (no longer the active frontend)
+├─ docs/                # Design documents (DESIGN_ZH.md, UI_DESIGN.md)
 ├─ uploads/              # Uploaded file storage directory (created automatically)
+├─ db/                   # SQLite checkpoint directory (created automatically)
 ├─ .env                  # Application configuration (HOST/PORT/model endpoint)
 ├─ requirements.txt
 ├─ LICENSE
 ├─ README.md
-├─ README_EN.md
+├─ README_ZH.md
 ├─ README_JA.md
 └─ .venv/                # Optional local virtual environment
 ```
@@ -69,13 +74,13 @@ TAVILY_API_KEY=-
 TIMEOUT=300
 MAX_RETRY=2
 
-# [Chat AI settings]
+# [AI settings]
 API_KEY=-
 ENDPOINT=http://192.168.3.28:8088
-MODEL_NAME=qwen3.5-9b
+MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
 TOP_P=0.5
-MAX_TOKENS=32768
+MAX_TOKENS=10240
 ```
 
 Notes:
@@ -97,8 +102,10 @@ Default listening address:
 ### 4) Open the frontend page
 
 ```text
-http://127.0.0.1:8000/static/index.html
+http://127.0.0.1:8000/
 ```
+
+The root path serves the built Vue SPA (`web/dist`).
 
 ## Frontend interaction flow
 
@@ -121,7 +128,7 @@ A typical response is:
 }
 ```
 
-The frontend then adds this resource as a `resource_link` to the `session/prompt` content list.
+The frontend then adds this resource to the `session/prompt` content list: plain files as a virtual-path text context (e.g. `/uploads/xxx.png`), images as ACP `image` content blocks.
 
 ### ACP session flow
 
@@ -135,17 +142,17 @@ The frontend executes the following sequence:
 
 ## Session reuse behavior
 
-The frontend already supports multi-turn conversation reuse:
+The frontend supports multi-turn conversation reuse and history restoration:
 
 - First submission: creates a new session automatically
 - Subsequent submissions: reuse the current `sessionId` and the agent retains prior memory
-- Clicking “New Session”: resets the session and discards old memory
-- Refreshing the page or disconnecting the WebSocket invalidates the old session; the next submission creates a new one automatically
+- Clicking "New Session": starts a fresh session and discards old memory
+- Refreshing the page or reconnecting the WebSocket: the UI restores conversations from `localStorage` and calls `session/load` to replay the agent history from the SQLite checkpoint
 
 Core principle:
 - Each WebSocket connection starts a dedicated `acp_agent.py` subprocess
-- `AgentServerACP` stores state by `sessionId`
-- Repeated `session/prompt` calls on the same connection enable multi-turn interaction
+- `AgentServerACP` persists LangGraph checkpoints to `db/agent_state.sqlite` by `sessionId` (`load_sessions=True`)
+- Repeated `session/prompt` calls on the same connection enable multi-turn interaction; `session/load` restores history across reconnects
 
 ## Permission approval mechanism
 
@@ -153,8 +160,8 @@ Core principle:
 
 ```python
 interrupt_on={
-    "execute": True,
-    "delete": True,
+    "execute": False,     # shell commands run without approval (always allowed by command type)
+    "delete": True,       # delete operations require user approval
 }
 ```
 
@@ -248,7 +255,7 @@ The current implementation focuses on:
 
 - `app.py` as the FastAPI gateway
 - `acp_agent.py` as the ACP runtime
-- `static/index.html` as the web UI
+- `web/` as the Vue 3 SPA web UI (build output `web/dist` served by the gateway)
 - `.env` and [utils/model_util.py](utils/model_util.py) as model configuration entry points
 
 For developers, this project is both a practical ACP integration example and a solid template for web-to-agent bridging.

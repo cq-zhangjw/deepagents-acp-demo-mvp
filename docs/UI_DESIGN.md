@@ -5,13 +5,13 @@
 | 适用端 | 桌面浏览器优先，兼容平板与移动浏览器 |
 | 技术栈 | Vue 3、TypeScript、Naive UI |
 | 视觉依据 | `docs/imgs/home1.png`、`docs/imgs/home2.png`、`docs/imgs/Designer.png`、`docs/imgs/tool_call.png` |
-| 核心原则 | 聊天主线只呈现用户消息与 AI 最终回答；计划、分析和工具调用统一收纳为可展开的执行过程。 |
+| 核心原则 | 聊天主线按流式顺序交错呈现 AI 分析文本、执行计划面板与单个工具调用卡片：分析在前、工具调用紧随其后、最终回答收尾。过程信息不再整体收纳进单一折叠区。 |
 
 > 实现状态：本文反映当前 `web/src` 已实现行为。消息编辑、删除和服务端消息库为后续范围；当前会话展示状态保存在浏览器 localStorage，Agent checkpoint 由 SQLite 管理。
 
 ## 1. 设计目标
 
-界面服务于任务型 Agent 对话：用户快速发起任务、确认 Agent 的执行状态、阅读最终结果，并在需要时回溯任务的执行过程。页面不将模型思考分片、计划更新或工具返回直接混入聊天流，避免对话内容被过程信息淹没。
+界面服务于任务型 Agent 对话：用户快速发起任务、跟随 Agent 的分步分析与工具执行、阅读最终结果。分析文本与工具调用按流式顺序进入聊天流（分析在前、工具卡片紧随其后、最终回答收尾），让用户能看清每一步“为什么这样做、执行了什么”。
 
 设计采用参考图中的工作台式布局：左侧承载会话导航与创建动作，中央承载当前对话与输入动作；组件使用克制的圆角、细边框、柔和层次和明确的交互状态，保持工具型应用的连续工作感。
 
@@ -25,8 +25,11 @@ flowchart TD
 		Header[WorkspaceHeader]
 		Timeline[MessageTimeline]
 		User[UserMessage]
-		Assistant[AssistantFinalMessage]
-		Process[ExecutionProcess 折叠区]
+		Assistant[AssistantMessage]
+		Thought[分析文本段]
+		Plan[执行计划面板]
+		ToolCard[工具调用卡片]
+		Text[最终文本段]
 		Composer[PromptComposer]
 		Permission[PermissionModal]
 
@@ -36,7 +39,10 @@ flowchart TD
 		Workspace --> Timeline
 		Timeline --> User
 		Timeline --> Assistant
-		Assistant --> Process
+		Assistant --> Thought
+		Assistant --> Plan
+		Assistant --> ToolCard
+		Assistant --> Text
 		Workspace --> Composer
 		App --> Permission
 ```
@@ -47,7 +53,7 @@ flowchart TD
 | --- | --- | --- |
 | 左侧会话栏 | 品牌、创建会话、会话列表、底部设置入口 | 选择会话后加载其消息与执行记录；新建会话清空当前工作区。 |
 | 顶部工作区栏 | 当前会话标题、连接状态、更多操作 | 保持紧凑，不占用聊天区域；状态以图标和短标签显示。 |
-| 对话主区 | 欢迎态或消息时间线 | 仅显示用户消息、AI 最终回答和非侵入式运行状态。 |
+| 对话主区 | 欢迎态或消息时间线 | 显示用户消息与 AI 消息；AI 消息由分析文本段、执行计划面板、工具调用卡片和最终文本段按流式顺序组成。 |
 | 底部输入区 | 附件、文本输入、发送、取消 | 固定在工作区底部；支持多文件选择与拖拽；任务运行时输入框仍可编辑，仅显示取消按钮。 |
 | 权限层 | 工具权限说明与审批操作 | 使用模态框阻断当前任务的继续执行，不作为聊天消息插入。 |
 
@@ -64,7 +70,7 @@ flowchart TD
 | 搜索 / 会话列表     |                                                          |
 |                     | 对话滚动区，内容最大宽度 840px，居中对齐                 |
 |                     | 用户消息                                                  |
-|                     | AI 最终回答 + 可折叠执行过程                              |
+|                     | AI 分析文本段 → 执行计划面板 → 工具调用卡片 → 最终回答      |
 |                     |                                                          |
 | 底部辅助入口        +----------------------------------------------------------+
 |                     | 附件按钮 + 自适应输入框 + 发送 / 取消                    |
@@ -99,35 +105,37 @@ flowchart TD
 
 | 组件 | Naive UI 建议 | 显示规则 |
 | --- | --- | --- |
-| `MessageTimeline` | 原生滚动容器、`NEmpty`、`NSkeleton` | 仅渲染 `user` 与 `assistant-final` 两类消息；任务执行期间保留底部运行状态。 |
+| `MessageTimeline` | 原生滚动容器、`NEmpty`、`NSkeleton` | 仅渲染 `user` 与 `assistant` 两类消息；AI 消息内部按 `segments` 交错渲染各段；任务执行期间保留底部运行状态。 |
 | `UserMessage` | 原生容器、`NAvatar` | 右对齐，浅蓝背景，最大宽度 `72%`；附件以小型文件胶囊附在正文下方，图片显示缩略预览。 |
-| `AssistantFinalMessage` | 原生容器、`NAvatar`、`MarkdownMessage` | 左对齐，正文支持 Markdown、代码高亮、代码复制和 Mermaid 预览/源码切换。 |
+| `AssistantMessage` | 原生容器、`NAvatar`、`MarkdownMessage`、`ExecutionProcess`、`ToolCallCard` | 左对齐；按 `segments` 顺序渲染分析文本段、执行计划面板、工具调用卡片与最终文本段，正文支持 Markdown、代码高亮、代码复制和 Mermaid 预览/源码切换。 |
 | `AssistantPending` | `NSpin` | 仅在 `pending`、`streaming` 或 `waiting_permission` 状态显示；取消后必须移除加载指示。 |
 | `TaskError` | `NAlert` | 作为当前任务的状态块显示于输入区上方，可重试或关闭；不伪装为 AI 回答。 |
 
 消息时间线遵循以下规则：
 
 1. 用户提交后立即插入一条 `UserMessage`。
-2. 收到 `agent_thought_chunk`、`plan` 或工具事件时，不新增聊天消息，仅更新当前任务的执行过程数据。
-3. 收到 `agent_message_chunk` 时写入当前任务的最终答复缓冲区；页面可显示其流式生成文本，但始终只占用一条 `AssistantFinalMessage`。
-4. `session/prompt` 返回完成后，将缓冲区固化为最终回答；若无文本，显示简短完成状态而不制造空消息。
-5. 取消、错误或权限等待显示为任务状态，不计入“用户与 AI 的聊天消息”。
+2. 收到 `agent_thought_chunk` 时追加一条分析文本段；连续分片合并到同一段，若被工具事件隔断则另起一段。
+3. 收到 `plan` 时更新执行计划数据，并插入或保持唯一的执行计划面板段。
+4. 收到 `tool_call` / `tool_call_start` / `tool_call_update` 时，在工具调用列表注册/更新条目，并为每个工具调用插入或保持独立的工具调用卡片段，按流式顺序位于触发它的分析文本之后。
+5. 收到 `agent_message_chunk` 时写入最终文本段，页面显示其流式生成文本，连续分片合并。
+6. `session/prompt` 返回完成后固化最终回答；若无文本，显示简短完成状态而不制造空消息。
+7. 取消、错误或权限等待显示为任务状态，不计入“用户与 AI 的聊天消息”。
 
 每条用户消息提供复制文本按钮。已完成的 AI 消息提供重新生成、复制纯文本与复制 Markdown 按钮；重新生成复用紧邻用户消息的文本和附件，并原位替换该 AI 消息的执行过程与最终内容。纯文本复制通过 Markdown 解析结果生成，Markdown 复制保留原始文本。
 
-### 4.3 执行过程折叠区
+### 4.3 执行计划面板与工具调用卡片
 
-执行过程位于对应 AI 最终回答下方。它不是独立聊天消息，而是 `AssistantFinalMessage` 的从属信息。
+分析文本与工具调用不再收纳进整体折叠区，而是作为独立消息段按流式顺序进入聊天流；执行计划保留为可折叠面板。
 
-| 层级 | Naive UI 建议 | 默认状态 | 内容 |
+| 段类型 | Naive UI 建议 | 默认状态 | 内容 |
 | --- | --- | --- | --- |
-| `ExecutionProcess` | `NCollapse` | 折叠 | 触发文字为“查看执行过程”，同时显示步骤数、耗时和完成状态。 |
-| 计划项 | `NSteps` 或轻量列表 | 展开后可见 | 任务标题与 `pending`、`running`、`completed` 状态。 |
-| 分析项 | 嵌套 `NCollapseItem` | 折叠 | 仅显示阶段标题、时间和摘要；展开后显示该阶段的分析文本。 |
-| 工具调用项 | 嵌套 `NCollapseItem`、`NTag` | 折叠 | 工具名称、执行状态、耗时和结果摘要。 |
-| 工具参数 / 返回值 | `NCode`、`NTabs` | 工具项展开后可见 | 分为“参数”和“返回值”两个标签页，使用格式化 JSON 或纯文本。 |
+| 分析文本段 | `MarkdownMessage` | 始终可见 | 模型的思考/分析文本（`agent_thought_chunk`），按流式顺序显示在触发它的工具调用之前。 |
+| 执行计划面板 `ExecutionProcess` | `NCollapse` | 折叠 | 触发文字为“查看执行过程”，同时显示步骤数与耗时；展开后展示任务计划项及 `pending`、`in_progress`、`completed` 状态。 |
+| 工具调用卡片 `ToolCallCard` | `NCollapse`、`NTag` | 折叠 | 以图标、工具名、状态标签组成紧凑标题行；展开后分为“参数”与“返回值”两个标签页。 |
+| 工具参数 | `MarkdownMessage` | 卡片展开后可见 | 始终为 JSON 字符串，以 `` ```json `` 代码块 + markdown 渲染，带语法高亮与复制按钮。 |
+| 工具返回值 | `MarkdownMessage` | 卡片展开后可见 | 输出可能携带 markdown（如 execute 的 Command/Output/Status 结构），直接以 markdown 渲染；非字符串对象回退为 `` ```json `` 代码块。 |
 
-整体过程区默认收起，避免抢占最终回答的阅读注意力。展开整体过程后，每一条分析和工具调用仍保持收起；用户只需点击某一项即可查看其完整参数与返回值。工具调用视觉参考 `tool_call.png`：以图标、工具名、状态标签和一行摘要组成紧凑标题行，详情区域采用等宽字体与弱对比底色。
+工具调用卡片默认折叠，避免抢占阅读注意力；用户点击某一卡片即可查看其完整参数与返回值。工具调用视觉参考 `tool_call.png`：标题行由图标、工具名和状态标签组成，详情区域采用等宽字体与弱对比底色；卡片内边距 12px/16px，标题与 tab 栏不占满整宽。
 
 工具状态使用统一语义：`running` 为蓝色，`completed` 为绿色，`failed` 为红色，`cancelled` 为灰色，`waiting_permission` 为琥珀色。所有状态均同时提供文字，不能只依赖颜色。
 
@@ -181,19 +189,27 @@ interface UserMessage {
 	createdAt: number
 }
 
+type AssistantSegment =
+	| { id: string; type: 'text'; text: string }       // 最终文本段（连续分片合并）
+	| { id: string; type: 'thought'; text: string }    // 分析文本段（连续分片合并）
+	| { id: string; type: 'plan' }                     // 执行计划面板段
+	| { id: string; type: 'tool'; toolId: string }     // 工具调用卡片段，引用 toolCalls 条目
+
 interface AssistantMessage {
 	id: string
 	role: 'assistant'
 	finalText: string
 	status: 'pending' | 'streaming' | 'completed' | 'cancelled' | 'failed'
 	process: ExecutionProcess
+	segments: AssistantSegment[]
 	createdAt: number
 }
 
 interface ExecutionProcess {
-	summary: { stepCount: number; status: ProcessStatus; durationMs?: number }
+	startedAt: number
+	completedAt?: number
 	plan: PlanEntry[]
-	analyses: AnalysisEntry[]
+	analyses: AnalysisEntry[]   // 仅用于旧数据迁移，新数据不再写入
 	toolCalls: ToolCallEntry[]
 }
 
@@ -204,12 +220,10 @@ interface ToolCallEntry {
 	status: ProcessStatus
 	rawInput?: unknown
 	output?: unknown
-	startedAt?: number
-	endedAt?: number
 }
 ```
 
-`messages` 只保存 `UserMessage` 和 `AssistantMessage`；思考分片、计划和工具调用只写入 `AssistantMessage.process`，因此从数据结构上保证中间过程不会作为独立消息显示。
+`messages` 只保存 `UserMessage` 和 `AssistantMessage`。AI 消息的展示顺序由 `segments` 按流式事件到达顺序决定：分析文本、执行计划、工具调用卡片与最终文本交错排列；工具详情（参数/返回值）挂在 `process.toolCalls` 条目上，由卡片段按 `toolId` 引用。旧版本地数据在加载时自动迁移为新的分段结构（计划 → 分析 → 工具 → 最终文本）。
 
 ### 6.2 ACP 事件映射
 
@@ -217,22 +231,22 @@ interface ToolCallEntry {
 | --- | --- | --- |
 | `initialize` | 设置 Agent 能力与连接状态 | 顶部栏连接状态。 |
 | `session/new` | 创建当前会话 ID | 新会话进入可输入状态。 |
-| `session/load` | 载入会话并重建消息、过程记录 | 展示历史用户/最终回答；过程仍默认折叠。 |
-| `agent_thought_chunk` | 追加到 `process.analyses` | 仅在执行过程的分析项中可查看。 |
-| `plan` | 替换或更新 `process.plan` | 仅在执行过程展开后显示。 |
-| `tool_call` / `tool_call_start` | 新建工具调用条目 | 执行过程摘要增加步骤；工具详情默认折叠。 |
-| `tool_call_update` | 更新参数、返回值与状态 | 详情区域更新；主聊天流不新增内容。 |
-| `agent_message_chunk` | 追加到 `finalText` | 同一条 AI 回答流式更新。 |
+| `session/load` | 载入会话并重建消息、分段与工具记录 | 展示历史用户消息与 AI 分段；工具卡片默认折叠。 |
+| `agent_thought_chunk` | 追加分析文本段（连续分片合并） | 分析文本作为可见消息段，位于后续工具调用之前。 |
+| `plan` | 替换或更新 `process.plan`，插入计划面板段 | 唯一的“查看执行过程”折叠面板显示计划项。 |
+| `tool_call` / `tool_call_start` | 新建工具条目并插入工具卡片段 | 独立折叠卡片，按流式顺序位于触发它的分析文本之后。 |
+| `tool_call_update` | 更新参数、返回值与状态 | 对应卡片的状态标签与参数/返回值内容更新。 |
+| `agent_message_chunk` | 追加到 `finalText` 与最终文本段 | 最终文本段流式更新。 |
 | `session/request_permission` | 当前任务状态改为 `waiting_permission` | 打开权限弹窗。 |
-| `session/prompt` 成功响应 | 任务状态置为 `completed` | 固化最终回答，显示“查看执行过程”。 |
-| `session/cancel` 或异常 | 任务状态置为 `cancelled` 或 `failed` | 显示状态提示并保留已收集过程；取消时所有未完成工具状态同步改为 `cancelled`。 |
+| `session/prompt` 成功响应 | 任务状态置为 `completed` | 固化最终回答；若为空则显示“任务已完成”。 |
+| `session/cancel` 或异常 | 任务状态置为 `cancelled` 或 `failed` | 显示状态提示并保留已收集分段；取消时所有未完成工具状态同步改为 `cancelled`。 |
 
 ### 6.3 滚动与阅读位置
 
 - 用户提交任务后，将新用户消息和 `AssistantPending` 滚动至可视区域。
 - 用户停留在消息底部附近时，AI 最终回答流式更新自动跟随到底部。
 - 用户主动向上阅读历史后，停止自动滚动，显示“回到底部”图标按钮。
-- 展开执行过程不改变全局自动滚动策略；只在当前项底部超出可视区域时做最小量滚动。
+- 展开执行计划或工具卡片不改变全局自动滚动策略；只在当前项底部超出可视区域时做最小量滚动。
 
 ## 7. 交互与可访问性规范
 
@@ -246,28 +260,25 @@ interface ToolCallEntry {
 
 ## 8. 组件实现边界
 
-建议按以下 Vue 组件拆分，所有协议解析集中在组合式函数，展示组件不直接处理 WebSocket：
+当前 `web/src` 按以下组件拆分，协议解析集中在 `ChatPage.vue` 的组合式逻辑中，展示组件不直接处理 WebSocket：
 
 ```text
 src/
 	pages/ChatPage.vue
-	components/chat/ConversationSidebar.vue
-	components/chat/WorkspaceHeader.vue
-	components/chat/MessageTimeline.vue
-	components/chat/UserMessage.vue
-	components/chat/AssistantFinalMessage.vue
-	components/chat/ExecutionProcess.vue
-	components/chat/ToolCallDetail.vue
-	components/chat/PromptComposer.vue
-	components/chat/PermissionModal.vue
-	composables/useAcpSession.ts
-	stores/chat.ts
-	types/chat.ts
+	components/ConversationSidebar.vue
+	components/WorkspaceHeader.vue
+	components/MessageTimeline.vue
+	components/MarkdownMessage.vue
+	components/ExecutionProcess.vue
+	components/ToolCallCard.vue
+	components/PromptComposer.vue
+	components/PermissionModal.vue
 ```
 
-- `useAcpSession.ts` 负责 WebSocket、JSON-RPC 请求关联、ACP 事件归一化和取消逻辑。
-- `stores/chat.ts` 负责会话、消息与执行过程的持久化视图状态。
-- `ExecutionProcess.vue` 仅接收标准化 `ExecutionProcess` 数据，不感知 ACP 报文细节。
+- `ChatPage.vue` 负责 WebSocket、JSON-RPC 请求关联、ACP 事件归一化、分段（segments）构建与旧数据迁移。
+- `ExecutionProcess.vue` 仅接收标准化执行计划数据，渲染“查看执行过程”折叠面板，不感知 ACP 报文细节。
+- `ToolCallCard.vue` 渲染单个工具调用折叠卡片：参数 tab 以 `` ```json `` 代码块 + markdown 渲染，返回值 tab 以 markdown 渲染（非字符串回退 json 代码块），并显示统一状态标签。
+- `MarkdownMessage.vue` 提供 markdown 渲染管线（含语法高亮与复制按钮），供文本/分析段、参数和返回值共用。
 - 页面主题通过 `NConfigProvider` 的 `themeOverrides` 注入，并使用第 5 节令牌统一扩展页面 CSS。
 
 ## 9. 验收标准
@@ -275,9 +286,9 @@ src/
 | 编号 | 验收项 | 通过标准 |
 | --- | --- | --- |
 | UI-01 | 主布局 | 桌面端显示固定会话栏、顶部工作区栏、独立滚动消息区和底部输入区；窄屏端侧栏切换为抽屉。 |
-| UI-02 | 消息主线 | 聊天时间线只显示用户消息和 AI 最终回答；分析、计划和工具事件不作为独立气泡出现。 |
-| UI-03 | 最终回答 | Agent 流式文本在同一条 AI 消息中更新，任务完成后形成一条完整最终回答。 |
-| UI-04 | 执行过程 | AI 回答下方存在默认折叠的执行过程；整体展开后，分析和每个工具调用仍可独立展开。 |
-| UI-05 | 工具详情 | 每个工具调用可查看名称、状态、参数和返回值；参数与返回值以可复制、可滚动的格式化内容展示。 |
-| UI-06 | 权限流程 | 权限请求以模态框呈现，支持拒绝、允许和始终允许，结果同步写入执行过程。 |
-| UI-07 | 视觉一致性 | 页面使用定义的颜色令牌、8px 及以下圆角、明确焦点态和一致的状态语义色。 |
+| UI-02 | 交错渲染 | 分析文本与工具调用按流式顺序交错进入聊天流：分析在前、对应工具卡片紧随其后、最终回答收尾；每条工具调用是独立可折叠卡片。 |
+| UI-03 | 最终回答 | Agent 流式文本在同一条 AI 消息的最终文本段中更新，任务完成后形成一条完整最终回答。 |
+| UI-04 | 执行计划 | AI 消息中存在默认折叠的“查看执行过程”面板；展开后展示任务计划项与状态。 |
+| UI-05 | 工具详情 | 每个工具调用可查看名称、状态、参数和返回值；参数 tab 始终为 `` ```json `` 代码块（语法高亮、可复制），返回值 tab 以 markdown 渲染（非字符串回退 json 代码块）。 |
+| UI-06 | 权限流程 | 权限请求以模态框呈现，支持拒绝、允许和始终允许，结果同步写入工具状态。 |
+| UI-07 | 视觉一致性 | 页面使用定义的颜色令牌、统一卡片内边距（header 12px/16px、内容区 16px/14px、tab 5px/12px/7px）、明确焦点态和一致的状态语义色。 |

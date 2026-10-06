@@ -4,7 +4,7 @@
 | --- | --- |
 | 系统名称 | DeepAgents ACP Demo MVP |
 | 文档名称 | 系统设计说明书 |
-| 文档版本 | V1.1 |
+| 文档版本 | V1.2 |
 | 适用范围 | FastAPI 网关、ACP Agent、模型接入与 Vue Web 客户端 |
 | 不包含范围 | 模型服务的部署与鉴权实现 |
 
@@ -74,10 +74,10 @@ Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、�
 
 `build_agent` 选择 `CompositeBackend`：
 
-- 默认后端为 `LocalShellBackend`，根目录取 ACP 会话的 `cwd`，并以 `virtual_mode=True` 运行。文件工具中的 `/uploads/example.txt` 映射到项目根下的 `uploads/example.txt`；Shell 仍以根目录为工作目录执行。
+- 默认后端为 `PowerShellBackend`（Windows）/ `LocalShellBackend`（其他平台），根目录取 ACP 会话的 `cwd`，并以 `virtual_mode=True`、`inherit_env=True` 运行。文件工具中的 `/uploads/example.txt` 映射到项目根下的 `uploads/example.txt`；Shell 仍以根目录为工作目录执行。
 - `/memories/` 和 `/conversation_history/` 路由到内存态 `StateBackend`，不写入本地文件系统。
 - 当前未注入 MCP 工具，`tools=None`。
-- `execute` 与 `delete` 被配置到 `interrupt_on`，调用前必须由客户端对权限请求作答。
+- `delete` 配置到 `interrupt_on`，删除前必须由客户端对权限请求作答；`execute` 为 `False`（shell 命令按命令类型默认放行），`write_file`/`edit_file` 未启用审批。
 - 图片作为 ACP `image` 内容块直接传给模型，Agent 应直接分析，不调用文件读取工具；其他附件使用 `/uploads/...` 虚拟路径并由文件工具读取。
 
 ### 4.3 模型初始化：`utils/model_util.py`
@@ -105,9 +105,9 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 
 - 使用递增请求 ID 和 `pending` 表匹配调用结果。
 - 优先分派带 `method` 的服务端请求，避免服务端权限请求 ID 与客户端请求 ID 重合时误判。
-- 渲染 `session/update` 中的文本分片、思考分片、计划和工具调用信息。
+- 渲染 `session/update` 中的文本分片、思考分片、计划和工具调用信息，并按事件到达顺序交错呈现：分析文本段 → 执行计划面板 → 独立工具调用卡片 → 最终文本段。
 - 处理 `session/request_permission`，以相同 JSON-RPC ID 返回 `approve`、`reject` 或 `approve_always`。
-- 在浏览器 `localStorage` 中保存会话、消息、附件预览和执行过程的展示状态；实际 Agent 上下文仍以 SQLite checkpoint 为准。
+- 在浏览器 `localStorage` 中保存会话、消息、附件预览、执行过程与工具卡片的展示状态（`segments` 分段结构）；实际 Agent 上下文仍以 SQLite checkpoint 为准。
 - 图片在浏览器中转为 Base64，作为 ACP `image` 块发送；普通文件上传后以 `/uploads/...` 文本上下文发送。
 
 ## 4. 业务流程设计
@@ -169,7 +169,7 @@ sequenceDiagram
     A-->>C: session/update 或后续结果
 ```
 
-当前权限边界仅覆盖 `execute` 和 `delete`。读取、写入或编辑文件是否触发审批取决于工具配置；当前代码未对其启用 `interrupt_on`。
+当前权限边界仅覆盖 `delete`（`execute: False` 使 shell 命令默认放行）。读取、写入或编辑文件是否触发审批取决于工具配置；当前代码未对其启用 `interrupt_on`。
 
 ### 5.4 历史会话加载
 
@@ -193,8 +193,8 @@ sequenceDiagram
 
 - `/upload` 和 `/acp-ws` 无认证、无授权、无速率限制。
 - 上传文件和 Agent 工作能力共享同一宿主机环境。
-- `LocalShellBackend` 使用 `virtual_mode=True`，文件工具仅使用映射到项目根的虚拟路径；Shell 仍继承父进程环境且不受该映射约束，因此仅适用于受信任的本地演示环境。
-- 仅 shell 执行和删除工具默认要求人工审批，且“始终允许”会影响后续同类权限决策。
+- `PowerShellBackend`（Windows，继承 `LocalShellBackend`）使用 `virtual_mode=True`，文件工具仅使用映射到项目根的虚拟路径；Shell 仍继承父进程环境且不受该映射约束，因此仅适用于受信任的本地演示环境。
+- 仅删除工具默认要求人工审批（`execute: False` 默认放行 shell 命令），且“始终允许”会影响后续同类权限决策。
 - `/uploads` 以静态方式公开，无访问控制；上传文件名冲突会产生覆盖。
 - 模型端点和 API Key 由环境配置，日志、错误页和进程环境中应避免输出敏感凭据。
 

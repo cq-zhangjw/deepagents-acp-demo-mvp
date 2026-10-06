@@ -12,23 +12,30 @@
 - **ACP 层**：使用 `deepagents-acp` + `agent-client-protocol`，自动处理
   `session/update`、`session/request_permission` 等协议消息，无需手写底层 JSON-RPC。
 - **网关层**：`app.py` 负责 `WebSocket ⇄ stdio` 双向透传和文件上传，不解析业务协议。
-- **前端**：`static/index.html` 是一个不依赖第三方库的原生 ACP WebSocket Client，直接发送/接收 ACP v2 报文。
+- **前端**：`web/` 是基于 Vue 3 + TypeScript 的 SPA（Vite 构建、Naive UI），实现 ACP v2 客户端；构建产物 `web/dist` 由网关挂在根路径 `/` 上。`static/index.html` 仅作为遗留演示页保留。
 
 ## 目录结构
 
 ```text
 ./
-├─ app.py                # FastAPI 网关（/upload + /acp-ws）
+├─ app.py                # FastAPI 网关（/upload + /acp-ws，根路径托管 web/dist）
 ├─ acp_agent.py          # DeepAgents ACP Agent（stdio 服务）
 ├─ utils/
 │  └─ model_util.py     # 模型初始化配置（OpenAI 兼容接口）
+├─ web/                  # Vue 3 + TypeScript ACP 客户端（Vite 构建 → web/dist）
+│  ├─ src/              # 组件：ChatPage / ExecutionProcess / ToolCallCard / MarkdownMessage
+│  └─ dist/             # 构建产物，由 app.py 挂在根路径
 ├─ static/
-│  └─ index.html        # 前端演示页
+│  └─ index.html        # 遗留演示页（不再是活动前端）
+├─ docs/                # 设计文档（DESIGN_ZH.md、UI_DESIGN.md）
 ├─ uploads/              # 上传文件存储目录（自动创建）
+├─ db/                   # SQLite checkpoint 目录（自动创建）
 ├─ .env                  # 应用配置（HOST/PORT / 模型接口）
 ├─ requirements.txt
 ├─ LICENSE
 ├─ README.md
+├─ README_ZH.md
+├─ README_JA.md
 └─ .venv/                # 可选：本地虚拟环境
 ```
 
@@ -68,13 +75,13 @@ TAVILY_API_KEY=-
 TIMEOUT=300
 MAX_RETRY=2
 
-# [Chat AI settings]
+# [AI settings]
 API_KEY=-
 ENDPOINT=http://192.168.3.28:8088
-MODEL_NAME=qwen3.5-9b
+MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
 TOP_P=0.5
-MAX_TOKENS=32768
+MAX_TOKENS=10240
 ```
 
 其中：
@@ -96,8 +103,10 @@ MAX_TOKENS=32768
 ### 4）打开前端页面
 
 ```text
-http://127.0.0.1:8000/static/index.html
+http://127.0.0.1:8000/
 ```
+
+根路径托管构建好的 Vue SPA（`web/dist`）。
 
 ## 前端交互流程
 
@@ -120,7 +129,7 @@ Content-Type: multipart/form-data
 }
 ```
 
-随后前端把该资源作为 `resource_link` 加入 `session/prompt` 内容列表中。
+随后前端把该资源加入 `session/prompt` 内容列表：普通文件作为虚拟路径文本上下文（如 `/uploads/xxx.png`），图片作为 ACP `image` 内容块。
 
 ### ACP 会话链路
 
@@ -134,17 +143,17 @@ Content-Type: multipart/form-data
 
 ## 会话复用逻辑
 
-前端已实现多轮对话复用：
+前端已实现多轮对话复用与历史恢复：
 
 - 首次提交：自动创建新会话
 - 后续提交：复用当前 `sessionId`，Agent 会保留会话记忆
 - 若用户点击「新建会话」：重置会话并丢弃旧记忆
-- 刷新页面或 WebSocket 断开：旧会话失效，下一次提交自动重建
+- 刷新页面或 WebSocket 断开：界面从 `localStorage` 恢复会话，并通过 `session/load` 从 SQLite checkpoint 重放 Agent 历史
 
 核心原理：
 - 每个 WebSocket 连接都会 spawn 一个 `acp_agent.py` 子进程
-- 进程中 `AgentServerACP` 通过 `sessionId` 保存状态
-- 同一连接下多次 `session/prompt` 即可形成多轮交互
+- `AgentServerACP` 开启 `load_sessions=True`，按 `sessionId` 将 LangGraph checkpoint 持久化到 `db/agent_state.sqlite`
+- 同一连接下多次 `session/prompt` 即可形成多轮交互；重连后通过 `session/load` 恢复历史
 
 ## 权限审批机制
 
@@ -152,8 +161,8 @@ Content-Type: multipart/form-data
 
 ```python
 interrupt_on={
-    "execute": True,
-    "delete": True,
+    "execute": False,     # shell 命令默认放行（按命令类型始终允许）
+    "delete": True,       # 删除操作需要用户审批
 }
 ```
 
@@ -247,7 +256,7 @@ APP_PORT=8000
 
 - `app.py` 提供 FastAPI 网关
 - `acp_agent.py` 提供 ACP 运行时
-- `static/index.html` 提供 Web 交互界面
+- `web/` 提供 Vue 3 SPA 交互界面（构建产物 `web/dist` 由网关托管）
 - `.env` / `utils/model_util.py` 控制模型接入配置
 
 对于开发者而言，它既可以作为 ACP 接入样例，也可以作为前后端桥接的基础模板继续扩展。

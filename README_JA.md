@@ -11,24 +11,29 @@
 
 - **ACP 層**: `deepagents-acp` と `agent-client-protocol` を利用し、`session/update` や `session/request_permission` などのプロトコルメッセージを自動処理します。手動で JSON-RPC を書く必要はありません。
 - **ゲートウェイ層**: `app.py` は `WebSocket ⇄ stdio` の双方向転送とファイルアップロードを担当し、ビジネスロジックそのものは解析しません。
-- **フロントエンド**: `static/index.html` は、サードパーティ製ライブラリに依存しないネイティブの ACP WebSocket クライアントです。ACP v2 メッセージを直接送受信できます。
+- **フロントエンド**: `web/` は Vue 3 + TypeScript の SPA（Vite ビルド、Naive UI）で、ACP v2 クライアントを実装しています。ビルド成果物 `web/dist` はゲートウェイがルートパス `/` で配信します。`static/index.html` は旧デモページとしてのみ残されています。
 
 ## ディレクトリ構成
 
 ```text
 ./
-├─ app.py                # FastAPI ゲートウェイ（/upload + /acp-ws）
+├─ app.py                # FastAPI ゲートウェイ（/upload + /acp-ws、ルートパスで web/dist を配信）
 ├─ acp_agent.py          # DeepAgents ACP agent（stdio サービス）
 ├─ utils/
 │  └─ model_util.py     # モデル初期化設定（OpenAI 互換 API）
+├─ web/                  # Vue 3 + TypeScript ACP クライアント（Vite ビルド → web/dist）
+│  ├─ src/              # コンポーネント: ChatPage / ExecutionProcess / ToolCallCard / MarkdownMessage
+│  └─ dist/             # ビルド成果物（app.py がルートパスで配信）
 ├─ static/
-│  └─ index.html        # フロントエンドのデモページ
+│  └─ index.html        # 旧デモページ（アクティブなフロントエンドではない）
+├─ docs/                # 設計ドキュメント（DESIGN_ZH.md、UI_DESIGN.md）
 ├─ uploads/              # アップロードファイル保存先（自動作成）
+├─ db/                   # SQLite checkpoint ディレクトリ（自動作成）
 ├─ .env                  # アプリ設定（HOST/PORT / モデル API）
 ├─ requirements.txt
 ├─ LICENSE
 ├─ README.md
-├─ README_EN.md
+├─ README_ZH.md
 ├─ README_JA.md
 └─ .venv/                # 任意のローカル仮想環境
 ```
@@ -69,13 +74,13 @@ TAVILY_API_KEY=-
 TIMEOUT=300
 MAX_RETRY=2
 
-# [Chat AI settings]
+# [AI settings]
 API_KEY=-
 ENDPOINT=http://192.168.3.28:8088
-MODEL_NAME=qwen3.5-9b
+MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
 TOP_P=0.5
-MAX_TOKENS=32768
+MAX_TOKENS=10240
 ```
 
 補足:
@@ -97,8 +102,10 @@ OpenAI 公式 API に直接接続する場合でも、同じ考え方で環境�
 ### 4) フロントエンドページを開く
 
 ```text
-http://127.0.0.1:8000/static/index.html
+http://127.0.0.1:8000/
 ```
+
+ルートパスはビルド済みの Vue SPA（`web/dist`）を配信します。
 
 ## フロントエンドの対話フロー
 
@@ -121,7 +128,7 @@ Content-Type: multipart/form-data
 }
 ```
 
-その後、フロントエンドはこのリソースを `resource_link` として `session/prompt` のコンテンツ一覧に追加します。
+その後、フロントエンドはこのリソースを `session/prompt` のコンテンツ一覧に追加します。通常ファイルは仮想パスのテキストコンテキスト（例: `/uploads/xxx.png`）、画像は ACP の `image` コンテンツブロックとして扱います。
 
 ### ACP セッションの流れ
 
@@ -135,17 +142,17 @@ Content-Type: multipart/form-data
 
 ## セッション再利用
 
-フロントエンドにはマルチターン対話の再利用機能があります。
+フロントエンドにはマルチターン対話の再利用と履歴復元機能があります。
 
 - 初回送信: 自動的に新しいセッションを作成
 - 以降の送信: 現在の `sessionId` を再利用し、エージェントが過去の記憶を保持
 - 「新規セッション」クリック: セッションをリセットし、古い記憶を破棄
-- ページ更新や WebSocket 切断: 旧セッションは無効化され、次回送信時に自動で再作成
+- ページ更新や WebSocket 切断: UI は `localStorage` から会話を復元し、`session/load` で SQLite checkpoint からエージェント履歴をリプレイ
 
 基本原理:
 - 各 WebSocket 接続ごとに `acp_agent.py` のサブプロセスが起動する
-- `AgentServerACP` が `sessionId` ごとに状態を保持する
-- 同一接続で `session/prompt` を複数回呼ぶことでマルチターン対話が可能になる
+- `AgentServerACP` は `load_sessions=True` で、`sessionId` ごとに LangGraph checkpoint を `db/agent_state.sqlite` へ永続化する
+- 同一接続で `session/prompt` を複数回呼ぶことでマルチターン対話が可能になり、再接続時は `session/load` で履歴を復元する
 
 ## 権限承認メカニズム
 
@@ -153,8 +160,8 @@ Content-Type: multipart/form-data
 
 ```python
 interrupt_on={
-    "execute": True,
-    "delete": True,
+    "execute": False,     # shell コマンドは既定で許可（コマンド種別で常に許可）
+    "delete": True,       # 削除操作はユーザー承認が必要
 }
 ```
 
@@ -248,7 +255,7 @@ APP_PORT=8000
 
 - `app.py` が FastAPI ゲートウェイとして動作する
 - `acp_agent.py` が ACP ランタイムとして動作する
-- `static/index.html` が Web UI を提供する
+- `web/` が Vue 3 SPA のインターフェースを提供する（ビルド成果物 `web/dist` はゲートウェイが配信）
 - `.env` と [utils/model_util.py](utils/model_util.py) がモデル接続設定を担う
 
 開発者にとって、このプロジェクトは ACP 連携の実例としても、Web とエージェントの橋渡しテンプレートとしても役立ちます。

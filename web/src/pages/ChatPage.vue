@@ -34,6 +34,7 @@ import { useI18n } from 'vue-i18n'
 import { storageKey, type SupportedLocale } from '../i18n'
 import ExecutionProcess from '../components/ExecutionProcess.vue'
 import MarkdownMessage from '../components/MarkdownMessage.vue'
+import ToolCallCard from '../components/ToolCallCard.vue'
 
 type TaskStatus = 'pending' | 'streaming' | 'completed' | 'cancelled' | 'failed' | 'waiting_permission'
 type ToolStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_permission'
@@ -76,8 +77,10 @@ interface ExecutionProcess {
 }
 
 interface TextSegment { id: string; type: 'text'; text: string }
-interface ProcessSegment { id: string; type: 'process' }
-type AssistantSegment = TextSegment | ProcessSegment
+interface ThoughtSegment { id: string; type: 'thought'; text: string }
+interface PlanSegment { id: string; type: 'plan' }
+interface ToolSegment { id: string; type: 'tool'; toolId: string }
+type AssistantSegment = TextSegment | ThoughtSegment | PlanSegment | ToolSegment
 
 interface UserMessage {
   id: string
@@ -166,12 +169,20 @@ function loadConversations(): Conversation[] {
     return saved.map((conversation) => ({
       ...conversation,
       messages: (conversation.messages ?? []).map((item: ChatMessage) => {
-        if (item.role !== 'assistant' || Array.isArray(item.segments)) return item
+        if (item.role !== 'assistant') return item
+        const hasNewSegments = Array.isArray(item.segments)
+          && item.segments.some((segment) => segment.type === 'thought' || segment.type === 'tool' || segment.type === 'plan')
+        if (hasNewSegments) return item
+        // 旧数据迁移：按 计划 → 分析 → 工具调用 → 最终文本 重建交错段
         const segments: AssistantSegment[] = []
+        if (item.process?.plan?.length) segments.push({ id: createId('plan'), type: 'plan' })
+        ;(item.process?.analyses ?? []).forEach((analysis) => {
+          segments.push({ id: createId('thought'), type: 'thought', text: analysis.text })
+        })
+        ;(item.process?.toolCalls ?? []).forEach((tool) => {
+          segments.push({ id: createId('tool'), type: 'tool', toolId: tool.id })
+        })
         if (item.finalText) segments.push({ id: createId('text'), type: 'text', text: item.finalText })
-        if (item.process?.plan?.length || item.process?.analyses?.length || item.process?.toolCalls?.length) {
-          segments.push({ id: createId('process'), type: 'process' })
-        }
         return { ...item, segments }
       })
     }))
@@ -333,10 +344,32 @@ function appendTextSegment(assistant: AssistantMessage, text: string) {
   else assistant.segments.push({ id: createId('text'), type: 'text', text })
 }
 
-function ensureProcessSegment(assistant: AssistantMessage) {
-  if (!assistant.segments.some((segment) => segment.type === 'process')) {
-    assistant.segments.push({ id: createId('process'), type: 'process' })
+function appendThoughtSegment(assistant: AssistantMessage, text: string) {
+  if (!text) return
+  const last = assistant.segments.at(-1)
+  if (last?.type === 'thought') last.text += text
+  else assistant.segments.push({ id: createId('thought'), type: 'thought', text })
+}
+
+function ensurePlanSegment(assistant: AssistantMessage) {
+  if (!assistant.segments.some((segment) => segment.type === 'plan')) {
+    assistant.segments.push({ id: createId('plan'), type: 'plan' })
   }
+}
+
+function ensureToolSegment(assistant: AssistantMessage, toolId: string) {
+  if (!assistant.segments.some((segment) => segment.type === 'tool' && segment.toolId === toolId)) {
+    assistant.segments.push({ id: createId('tool'), type: 'tool', toolId })
+  }
+}
+
+function findTool(process: ExecutionProcess, toolId: string) {
+  return process.toolCalls.find((tool) => tool.id === toolId)
+}
+
+function segmentTool(assistant: AssistantMessage, segment: ToolSegment): ToolCallEntry {
+  return findTool(assistant.process, segment.toolId)
+    ?? { id: segment.toolId, name: '工具调用', status: 'running' }
 }
 
 function textFromContent(content: any): string {
@@ -369,21 +402,21 @@ function handleSessionUpdate(update: any) {
     case 'agent_thought_chunk': {
       const text = textFromContent(update.content)
       if (text) {
-        ensureProcessSegment(assistant)
-        process.analyses.push({ id: createId('analysis'), text })
+        assistant.status = 'streaming'
+        appendThoughtSegment(assistant, text)
       }
       break
     }
-    case 'plan':
-      ensureProcessSegment(assistant)
+    case 'plan': {
       process.plan = (update.entries ?? []).map((entry: any) => ({
-        title: entry.title ?? entry.task ?? '执行步骤',
+        title: entry.title ?? entry.task ?? entry.content ?? '执行步骤',
         status: entry.status ?? 'pending'
       }))
+      if (process.plan.length) ensurePlanSegment(assistant)
       break
+    }
     case 'tool_call':
     case 'tool_call_start': {
-      ensureProcessSegment(assistant)
       const id = update.toolCallId ?? createId('tool')
       if (!process.toolCalls.some((tool) => tool.id === id)) {
         process.toolCalls.push({
@@ -394,16 +427,17 @@ function handleSessionUpdate(update: any) {
           rawInput: update.rawInput
         })
       }
+      ensureToolSegment(assistant, id)
       break
     }
     case 'tool_call_update': {
-      ensureProcessSegment(assistant)
       const id = update.toolCallId ?? createId('tool')
       let tool = process.toolCalls.find((item) => item.id === id)
       if (!tool) {
         tool = { id, name: update.toolName ?? update.title ?? '工具调用', status: 'running' }
         process.toolCalls.push(tool)
       }
+      ensureToolSegment(assistant, id)
       tool.title = update.title ?? tool.title
       tool.rawInput = update.rawInput ?? tool.rawInput
       tool.output = textFromContent(update.content) || update.content || tool.output
@@ -777,8 +811,9 @@ onBeforeUnmount(() => ws.value?.close())
                   <span>{{ item.status === 'waiting_permission' ? t('waitingPermission') : t('processing') }}</span>
                 </div>
                 <template v-for="segment in item.segments" :key="segment.id">
-                  <MarkdownMessage v-if="segment.type === 'text'" class="assistant-content" :content="segment.text" />
-                  <ExecutionProcess v-else :process="item.process" />
+                  <MarkdownMessage v-if="segment.type === 'text' || segment.type === 'thought'" class="assistant-content" :content="segment.text" />
+                  <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
+                  <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
                 </template>
                 <span v-if="item.status === 'failed' || item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
                 <div v-if="item.finalText && !isRunning" class="message-actions">
