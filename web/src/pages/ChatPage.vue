@@ -6,6 +6,7 @@ import {
   AttachOutline,
   CodeSlashOutline,
   CopyOutline,
+  CreateOutline,
   EllipsisHorizontalOutline,
   LanguageOutline,
   MenuOutline,
@@ -160,6 +161,11 @@ const actionLabels = computed(() => ({
   copyMarkdown: locale.value === 'zh' ? '复制 Markdown' : locale.value === 'ja' ? 'Markdown をコピー' : 'Copy Markdown',
   copied: locale.value === 'zh' ? '已复制' : locale.value === 'ja' ? 'コピーしました' : 'Copied',
   more: locale.value === 'zh' ? '更多操作' : locale.value === 'ja' ? 'その他の操作' : 'More actions',
+  editMessage: locale.value === 'zh' ? '编辑消息' : locale.value === 'ja' ? 'メッセージを編集' : 'Edit message',
+  editTitle: locale.value === 'zh' ? '编辑消息' : locale.value === 'ja' ? 'メッセージを編集' : 'Edit message',
+  save: locale.value === 'zh' ? '保存' : locale.value === 'ja' ? '保存' : 'Save',
+  cancel: locale.value === 'zh' ? '取消' : locale.value === 'ja' ? 'キャンセル' : 'Cancel',
+  preview: locale.value === 'zh' ? '预览' : locale.value === 'ja' ? 'プレビュー' : 'Preview',
   deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message'
 }))
 
@@ -261,6 +267,46 @@ function toggleMessageMenu(id: string) {
 }
 function closeMessageMenu() {
   openMenuId.value = null
+}
+
+// 消息编辑（仅编辑文本，不触发重新执行）
+const editModalVisible = ref(false)
+const editTargetId = ref<string | null>(null)
+const editText = ref('')
+
+function isMessageBusy(item: ChatMessage) {
+  return item.role === 'assistant' &&
+    (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
+}
+
+function openEditMessage(item: ChatMessage) {
+  editTargetId.value = item.id
+  editText.value = item.role === 'user' ? item.text : (item.finalText ?? '')
+  openMenuId.value = null
+  editModalVisible.value = true
+}
+
+function saveEditMessage() {
+  const conversation = currentConversation.value
+  if (!conversation || !editTargetId.value) return
+  const message = conversation.messages.find((entry) => entry.id === editTargetId.value)
+  if (!message) return
+  const text = editText.value
+  if (message.role === 'user') {
+    message.text = text
+  } else {
+    message.finalText = text
+    const textSegment = message.segments.find((segment) => segment.type === 'text')
+    if (textSegment) {
+      textSegment.text = text
+    } else {
+      message.segments.push({ id: createId('seg'), type: 'text', text })
+    }
+  }
+  conversation.updatedAt = Date.now()
+  persistConversations()
+  editModalVisible.value = false
+  editTargetId.value = null
 }
 
 function moveConversationToTop(conversation: Conversation) {
@@ -885,7 +931,10 @@ onBeforeUnmount(() => {
                 <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
                   <template #icon><NIcon :component="CopyOutline" /></template>
                 </NButton>
-                <div class="message-menu-wrap" @click.stop>
+                <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" @click="openEditMessage(item)">
+                  <template #icon><NIcon :component="CreateOutline" /></template>
+                </NButton>
+                <div class="message-menu-wrap hidden-action" @click.stop>
                   <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
                     <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
                   </NButton>
@@ -932,7 +981,10 @@ onBeforeUnmount(() => {
                     </template>
                     {{ actionLabels.copyMarkdown }}
                   </NTooltip>
-                  <div class="message-menu-wrap" @click.stop>
+                  <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" :disabled="isMessageBusy(item)" @click="openEditMessage(item)">
+                    <template #icon><NIcon :component="CreateOutline" /></template>
+                  </NButton>
+                  <div class="message-menu-wrap hidden-action" @click.stop>
                     <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
                       <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
                     </NButton>
@@ -1020,6 +1072,31 @@ onBeforeUnmount(() => {
         </template>
       </NCard>
     </NModal>
+    <NModal :show="editModalVisible" :mask-closable="false" @after-leave="editTargetId = null">
+      <NCard :title="actionLabels.editTitle" :bordered="false" class="edit-card" role="dialog">
+        <div class="edit-body">
+          <NInput
+            v-model:value="editText"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 30 }"
+            :placeholder="'Markdown'"
+            class="edit-input"
+          />
+          <div class="edit-preview">
+            <div class="edit-preview-label">{{ actionLabels.preview }}</div>
+            <div class="edit-preview-body">
+              <MarkdownMessage :content="editText" />
+            </div>
+          </div>
+        </div>
+        <template #footer>
+          <div class="permission-actions">
+            <NButton @click="editModalVisible = false">{{ actionLabels.cancel }}</NButton>
+            <NButton type="primary" @click="saveEditMessage">{{ actionLabels.save }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
   </main>
 </template>
 
@@ -1040,6 +1117,9 @@ onBeforeUnmount(() => {
 .attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
 .composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; gap:10px; align-items:flex-end; padding:8px 9px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input { flex:1; } .composer-input :deep(textarea) { padding-top:6px; padding-bottom:6px; } .hidden-input { display:none; }
-.permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
+.permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
+/* TEMP-HIDE：编辑/删除消息入口暂隐藏（display:none），代码保留，后期 MooFile 方案升级时恢复 */
+.hidden-action { display: none; }
+.edit-card { width:70vw; } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
 </style>
