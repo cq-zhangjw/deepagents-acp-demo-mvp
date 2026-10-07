@@ -11,6 +11,7 @@ import {
   MenuOutline,
   PaperPlaneOutline,
   RefreshOutline,
+  SearchOutline,
   StopCircleOutline,
   TrashOutline
 } from '@vicons/ionicons5'
@@ -25,6 +26,7 @@ import {
   NIcon,
   NInput,
   NModal,
+  NPopconfirm,
   NSelect,
   NSpin,
   NTooltip,
@@ -130,6 +132,14 @@ const requestId = ref(1)
 const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void }>()
 const conversations = ref<Conversation[]>(loadConversations())
 const activeConversationId = ref(conversations.value[0]?.id ?? '')
+const conversationSearch = ref('')
+const filteredConversations = computed(() => {
+  const keyword = conversationSearch.value.trim().toLowerCase()
+  if (!keyword) return conversations.value
+  return conversations.value.filter((conversation) =>
+    conversation.title.toLowerCase().includes(keyword)
+  )
+})
 const input = ref('')
 const attachments = ref<AttachmentRef[]>([])
 const isUploading = ref(false)
@@ -148,7 +158,9 @@ const actionLabels = computed(() => ({
   retry: locale.value === 'zh' ? '重新生成' : locale.value === 'ja' ? '再生成' : 'Regenerate',
   copyText: locale.value === 'zh' ? '复制纯文本' : locale.value === 'ja' ? 'テキストをコピー' : 'Copy text',
   copyMarkdown: locale.value === 'zh' ? '复制 Markdown' : locale.value === 'ja' ? 'Markdown をコピー' : 'Copy Markdown',
-  copied: locale.value === 'zh' ? '已复制' : locale.value === 'ja' ? 'コピーしました' : 'Copied'
+  copied: locale.value === 'zh' ? '已复制' : locale.value === 'ja' ? 'コピーしました' : 'Copied',
+  more: locale.value === 'zh' ? '更多操作' : locale.value === 'ja' ? 'その他の操作' : 'More actions',
+  deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message'
 }))
 
 const currentConversation = computed(() =>
@@ -208,6 +220,7 @@ function createConversation() {
   }
   conversations.value.unshift(conversation)
   activeConversationId.value = conversation.id
+  conversationSearch.value = ''
   attachments.value = []
   input.value = ''
   errorText.value = ''
@@ -230,6 +243,24 @@ function deleteConversation(id: string) {
     activeConversationId.value = conversations.value[0]?.id ?? ''
   }
   persistConversations()
+}
+
+function deleteMessage(item: { id: string }) {
+  openMenuId.value = null
+  const conversation = currentConversation.value
+  if (!conversation) return
+  const index = conversation.messages.findIndex((message) => message.id === item.id)
+  if (index >= 0) conversation.messages.splice(index, 1)
+  conversation.updatedAt = Date.now()
+  persistConversations()
+}
+
+const openMenuId = ref<string | null>(null)
+function toggleMessageMenu(id: string) {
+  openMenuId.value = openMenuId.value === id ? null : id
+}
+function closeMessageMenu() {
+  openMenuId.value = null
 }
 
 function moveConversationToTop(conversation: Conversation) {
@@ -466,6 +497,43 @@ async function ensureAgentSession(conversation: Conversation, isNewConversation:
   initializedSessions.add(conversation.id)
 }
 
+// localStorage 只是会话展示态，Agent 上下文的权威来源是 SQLite checkpoint。
+// 页面加载后以后端为准逐个校验历史会话：checkpoint 缺失（如 db 被删除）时，
+// 清理对应本地会话，避免删除 db 后刷新仍显示历史记录。
+async function validateStoredSessions() {
+  if (!conversations.value.length) return
+  try {
+    await connect()
+    await initialize()
+  } catch {
+    // 后端未连接时不误删本地会话，保留至下次验证
+    return
+  }
+  const invalid: string[] = []
+  for (const conversation of conversations.value) {
+    if (!conversation.messages.length) continue
+    const agentSessionId = conversation.agentSessionId ?? conversation.id
+    restoringHistory.value = true
+    try {
+      await callAcp('session/load', { sessionId: agentSessionId, cwd: '.', mcpServers: [] })
+      initializedSessions.add(conversation.id)
+    } catch {
+      invalid.push(conversation.id)
+    } finally {
+      restoringHistory.value = false
+    }
+  }
+  if (invalid.length) {
+    conversations.value = conversations.value.filter((conversation) => !invalid.includes(conversation.id))
+    if (activeConversationId.value && invalid.includes(activeConversationId.value)) {
+      activeConversationId.value = conversations.value[0]?.id ?? ''
+    }
+    persistConversations()
+    // 全部会话失效（如 db 被删除）时自动新建一个空会话，保证输入区可用
+    if (!conversations.value.length) createConversation()
+  }
+}
+
 async function sendAgentPrompt(
   conversation: Conversation,
   text: string,
@@ -670,8 +738,9 @@ function isAssistantActive(status: TaskStatus) {
 }
 
 function formatTime(timestamp: number) {
-  const language = ({ zh: 'zh-CN', ja: 'ja-JP', en: 'en-US' } as Record<string, string>)[locale.value] ?? 'en-US'
-  return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit' }).format(timestamp)
+  const date = new Date(timestamp)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 function duration(process: ExecutionProcess) {
@@ -694,8 +763,13 @@ watch(conversations, persistConversations, { deep: true })
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 onMounted(() => {
   if (!conversations.value.length) createConversation()
+  void validateStoredSessions()
+  window.addEventListener('click', closeMessageMenu)
 })
-onBeforeUnmount(() => ws.value?.close())
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeMessageMenu)
+  ws.value?.close()
+})
 </script>
 
 <template>
@@ -714,10 +788,16 @@ onBeforeUnmount(() => ws.value?.close())
         {{ t('newConversation') }}
       </NButton>
 
+      <div class="conversation-search">
+        <NInput v-model:value="conversationSearch" size="small" clearable :placeholder="t('searchConversations')">
+          <template #prefix><NIcon :component="SearchOutline" /></template>
+        </NInput>
+      </div>
       <div class="conversation-label">{{ t('recentConversations') }}</div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
+        <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
         <button
-          v-for="conversation in conversations"
+          v-for="conversation in filteredConversations"
           :key="conversation.id"
           class="conversation-item"
           :class="{ active: conversation.id === activeConversationId }"
@@ -725,14 +805,20 @@ onBeforeUnmount(() => ws.value?.close())
         >
           <span class="conversation-title">{{ conversation.title }}</span>
           <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-          <NTooltip>
+          <NPopconfirm
+            :positive-text="t('deleteConfirmOk')"
+            :negative-text="t('deleteConfirmCancel')"
+            :positive-button-props="{ type: 'error' }"
+            @positive-click="deleteConversation(conversation.id)"
+          >
             <template #trigger>
-              <span class="conversation-delete" role="button" tabindex="0" @click.stop="deleteConversation(conversation.id)">
+              <span class="conversation-delete" role="button" tabindex="0">
                 <NIcon :component="TrashOutline" />
               </span>
             </template>
-            {{ t('deleteConversation') }}
-          </NTooltip>
+            <strong>{{ t('deleteConfirmTitle') }}</strong>
+            <span class="delete-confirm-body">{{ t('deleteConfirmBody') }}</span>
+          </NPopconfirm>
         </button>
       </nav>
 
@@ -796,14 +882,19 @@ onBeforeUnmount(() => ws.value?.close())
                 </div>
               </div>
               <div v-if="item.role === 'user'" class="message-actions message-actions--user">
-                <NTooltip>
-                  <template #trigger>
-                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
-                      <template #icon><NIcon :component="CopyOutline" /></template>
-                    </NButton>
-                  </template>
-                  {{ actionLabels.copyText }}
-                </NTooltip>
+                <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
+                  <template #icon><NIcon :component="CopyOutline" /></template>
+                </NButton>
+                <div class="message-menu-wrap" @click.stop>
+                  <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
+                    <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+                  </NButton>
+                  <div v-if="openMenuId === item.id" class="message-menu">
+                    <button type="button" class="message-menu-item" @click="deleteMessage(item)">
+                      <NIcon :component="TrashOutline" />{{ actionLabels.deleteMessage }}
+                    </button>
+                  </div>
+                </div>
               </div>
               <template v-else>
                 <div v-if="!item.segments.length && isAssistantActive(item.status)" class="assistant-pending">
@@ -841,6 +932,16 @@ onBeforeUnmount(() => ws.value?.close())
                     </template>
                     {{ actionLabels.copyMarkdown }}
                   </NTooltip>
+                  <div class="message-menu-wrap" @click.stop>
+                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
+                      <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+                    </NButton>
+                    <div v-if="openMenuId === item.id" class="message-menu">
+                      <button type="button" class="message-menu-item" @click="deleteMessage(item)">
+                        <NIcon :component="TrashOutline" />{{ actionLabels.deleteMessage }}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </template>
             </div>
@@ -896,7 +997,10 @@ onBeforeUnmount(() => ws.value?.close())
       <NDrawerContent :title="t('recentConversations')">
         <div class="drawer-list">
           <NButton type="primary" block @click="createConversation"><template #icon><NIcon :component="AddOutline" /></template>{{ t('newConversation') }}</NButton>
-          <NButton v-for="conversation in conversations" :key="conversation.id" text class="drawer-item" @click="selectConversation(conversation.id)">
+          <NInput v-model:value="conversationSearch" size="small" clearable :placeholder="t('searchConversations')">
+            <template #prefix><NIcon :component="SearchOutline" /></template>
+          </NInput>
+          <NButton v-for="conversation in filteredConversations" :key="conversation.id" text class="drawer-item" @click="selectConversation(conversation.id)">
             {{ conversation.title }}
           </NButton>
         </div>
@@ -924,7 +1028,7 @@ onBeforeUnmount(() => ws.value?.close())
 .sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
-.new-conversation { justify-content:flex-start; margin-bottom:26px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; }
+.new-conversation { justify-content:flex-start; margin-bottom:16px; } .conversation-search { padding:0 2px 8px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
 .conversation-list { display:flex; flex:1; flex-direction:column; gap:3px; overflow:auto; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 10px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
@@ -932,7 +1036,7 @@ onBeforeUnmount(() => ws.value?.close())
 .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .assistant-pending { display:flex; gap:9px; align-items:center; min-height:32px; color:var(--subtle); font-size:14px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
-.message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; }
+.message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
 .attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
 .composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; gap:10px; align-items:flex-end; padding:8px 9px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input { flex:1; } .composer-input :deep(textarea) { padding-top:6px; padding-bottom:6px; } .hidden-input { display:none; }

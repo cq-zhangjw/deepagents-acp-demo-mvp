@@ -108,6 +108,10 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 渲染 `session/update` 中的文本分片、思考分片、计划和工具调用信息，并按事件到达顺序交错呈现：分析文本段 → 执行计划面板 → 独立工具调用卡片 → 最终文本段。
 - 处理 `session/request_permission`，以相同 JSON-RPC ID 返回 `approve`、`reject` 或 `approve_always`。
 - 在浏览器 `localStorage` 中保存会话、消息、附件预览、执行过程与工具卡片的展示状态（`segments` 分段结构）；实际 Agent 上下文仍以 SQLite checkpoint 为准。
+- 会话栏提供标题关键字搜索过滤、删除二次确认（`NPopconfirm`）；时间统一显示为 `YYYY/MM/DD hh:mm:ss`；文本、Markdown 与代码块复制成功后均显示“已复制”提示。
+- AI 流式输出期间内容更新后自动滚动到底部，跟随最新输出；Mermaid 图流式期间代码块就绪即异步渲染，并按源码缓存结果复用（mermaidCache），模块预加载并仅初始化一次；消息工具栏提供“更多操作”下拉（含删除该消息）。
+- 界面字体随语言切换（中/日/英各自字体栈），naive-ui 组件与页面正文同步生效。
+- 页面加载后以后端 checkpoint 为准校验历史会话（`session/load`），失效会话（如 `db` 被删除）自动清理并新建空会话。
 - 图片在浏览器中转为 Base64，作为 ACP `image` 块发送；普通文件上传后以 `/uploads/...` 文本上下文发送。
 
 ## 4. 业务流程设计

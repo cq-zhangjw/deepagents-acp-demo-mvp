@@ -3,10 +3,34 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import { VueMarkdownIt } from '@f3ve/vue-markdown-it'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
+import { useMessage } from 'naive-ui'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{ content: string }>()
 const root = ref<HTMLElement | null>(null)
+const message = useMessage()
+const { t } = useI18n()
 let mermaidSequence = 0
+
+// 预加载 mermaid 并只初始化一次，避免每次渲染重新 import/initialize 的开销
+let mermaidInstance: any | null = null
+async function getMermaid() {
+  if (!mermaidInstance) {
+    const mermaid = (await import('mermaid')).default
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'default',
+      securityLevel: 'strict',
+      flowchart: { useMaxWidth: true, htmlLabels: false },
+      sequence: { useMaxWidth: true }
+    })
+    mermaidInstance = mermaid
+  }
+  return mermaidInstance
+}
+
+// 渲染结果缓存：流式期间 DOM 会被反复重建，相同源码的图直接复用 SVG，避免重复渲染
+const mermaidCache = new Map<string, string>()
 
 const markdownOptions = {
   linkAttributes: {
@@ -24,6 +48,7 @@ async function copyText(text: string, button: HTMLButtonElement) {
   try {
     await navigator.clipboard.writeText(text)
     button.textContent = 'Copied'
+    message.success(t('copied'))
   } catch {
     const textarea = document.createElement('textarea')
     textarea.value = text
@@ -32,6 +57,7 @@ async function copyText(text: string, button: HTMLButtonElement) {
     document.execCommand('copy')
     textarea.remove()
     button.textContent = 'Copied'
+    message.success(t('copied'))
   }
   window.setTimeout(() => { button.textContent = 'Copy' }, 1400)
 }
@@ -92,17 +118,15 @@ async function replaceMermaid(pre: HTMLElement, source: string) {
   })
 
   try {
-    const mermaid = (await import('mermaid')).default
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'default',
-      securityLevel: 'strict',
-      flowchart: { useMaxWidth: true, htmlLabels: false },
-      sequence: { useMaxWidth: true }
-    })
-    const { svg, bindFunctions } = await mermaid.render(`mermaid-${Date.now()}-${mermaidSequence++}`, source)
+    let svg = mermaidCache.get(source)
+    if (!svg) {
+      const mermaid = await getMermaid()
+      const { svg: rendered, bindFunctions } = await mermaid.render(`mermaid-${Date.now()}-${mermaidSequence++}`, source)
+      svg = rendered
+      mermaidCache.set(source, svg)
+      bindFunctions?.(preview)
+    }
     preview.innerHTML = svg
-    bindFunctions?.(preview)
   } catch {
     preview.textContent = 'Unable to render this Mermaid diagram.'
     sourceTab.click()
@@ -122,7 +146,7 @@ async function enhanceMarkdown() {
     const source = block.textContent ?? ''
     const language = languageOf(block)
     if (language === 'mermaid') {
-      await replaceMermaid(pre, source)
+      void replaceMermaid(pre, source)
       continue
     }
     hljs.highlightElement(block)

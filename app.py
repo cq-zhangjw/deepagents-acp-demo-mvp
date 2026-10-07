@@ -142,6 +142,15 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
 app.mount("/", StaticFiles(directory=str(WEB_DIST_DIR), html=True), name="web-client")
 
 
+@app.middleware("http")
+async def no_cache_spa_index(request, call_next):
+    """Prevent the SPA entry (index.html) from being cached so updates always take effect on refresh."""
+    response = await call_next(request)
+    if request.url.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 if __name__ == "__main__":
     import uvicorn
     HOST = os.getenv("APP_HOST") if os.getenv("APP_HOST") else "0.0.0.0"
