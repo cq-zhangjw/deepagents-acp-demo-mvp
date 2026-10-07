@@ -5,7 +5,7 @@ from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv
 load_dotenv()
 
-ENDPOINT = os.getenv("ENDPOINT") if os.getenv("ENDPOINT") else "http://192.168.3.28:8088"
+ENDPOINT = os.getenv("ENDPOINT") if os.getenv("ENDPOINT") else "http://127.0.0.1:8088"
 API_KEY = os.getenv("API_KEY") if os.getenv("API_KEY") else None
 TEMPERATURE = float(os.getenv("TEMPERATURE")) if os.getenv("TEMPERATURE") else 0.5
 TOP_P = float(os.getenv("TOP_P")) if os.getenv("TOP_P") else 0.5
