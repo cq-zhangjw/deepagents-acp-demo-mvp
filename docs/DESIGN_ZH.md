@@ -55,7 +55,7 @@ flowchart LR
 
 | 路径 | 协议 | 职责 |
 | --- | --- | --- |
-| `/upload` | HTTP `POST` | 接收非图片 multipart 文件，使用文件名基名写入 `uploads/`，返回虚拟路径、名称和 MIME 类型。 |
+| `/upload` | HTTP `POST` | 接收非图片 multipart 文件，使用文件名基名写入 `UPLOAD_ROOT` 指定目录（默认 `uploads/`），返回虚拟路径、名称和 MIME 类型。 |
 | `/acp-ws` | WebSocket | 创建 Agent 子进程，并在 WebSocket 与 stdio 之间透传 ACP JSON-RPC。 |
 | `/uploads` | HTTP 静态资源 | 供浏览器下载或预览已上传文件。 |
 | `/` | HTTP 静态资源 | 托管 `web/dist` 构建产物与 SPA 回退入口。 |
@@ -98,6 +98,8 @@ Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、�
 | `DB_ROOT` | SQLite 状态文件目录 | `./db` |
 | `APP_HOST` | 网关监听地址 | `0.0.0.0` |
 | `APP_PORT` | 网关监听端口 | `8000` |
+| `CONTENT_SIZE` | 上下文窗口大小（tokens），用于前端上下文用量百分比显示（经 `/api/config` 下发） | 未设置（前端不显示用量）；`.env` 示例 `32768` |
+| `UPLOAD_ROOT` | 文件上传存储根目录（相对项目根或绝对路径） | `uploads` |
 
 ### 4.4 Vue 客户端：`web/`
 
@@ -110,6 +112,9 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 在浏览器 `localStorage` 中保存会话、消息、附件预览、执行过程与工具卡片的展示状态（`segments` 分段结构）；实际 Agent 上下文仍以 SQLite checkpoint 为准。
 - 会话栏提供标题关键字搜索过滤、删除二次确认（`NPopconfirm`）；时间统一显示为 `YYYY/MM/DD hh:mm:ss`；文本、Markdown 与代码块复制成功后均显示“已复制”提示。
 - AI 流式输出期间内容更新后自动滚动到底部，跟随最新输出；Mermaid 图流式期间代码块就绪即异步渲染，并按源码缓存结果复用（mermaidCache），模块预加载并仅初始化一次；消息工具栏提供“更多操作”下拉（含删除该消息）；用户与 AI 历史消息均可编辑（编辑按钮位于“更多操作”之前），以 Markdown 文本编辑并实时预览，保存后同步消息文本（AI 消息同步 `finalText` 与文本分段），仅编辑文本不触发重新执行，流式执行中的消息禁用编辑。
+- 输入框支持剪贴板图片直接粘贴（截图无需保存为文件）成为图片附件；输入卡片采用大圆角样式，底部功能栏包含附件、技能、工具按钮（点击技能/工具打开右侧功能面板）与上下文用量显示（发送按钮左侧：已使用/CONTENT_SIZE 百分比，悬停显示具体 `使用量/CONTENT_SIZE`，总量由 `.env` 的 `CONTENT_SIZE` 配置并经 `/api/config` 下发）。
+- 新建会话复用现有空会话，始终至多保留一个空会话；会话列表项支持右键重命名（弹出与消息菜单风格一致的重命名菜单，模态框内编辑并保存）。
+- 整体为三列布局：左侧会话栏可在品牌行通过收缩按钮收起（顶部栏出现展开按钮）；右侧功能面板是聊天窗口内嵌的静态右栏（300px，非浮层抽屉），默认隐藏、不占空间，无标签页，点击输入区“技能”或“工具”按钮显示，面板标题与内容根据触发功能确定（技能/工具/设置面板），右上角带关闭图标，打开时挤压中间对话区，内容区当前为占位说明。
 - 界面字体随语言切换（中/日/英各自字体栈），naive-ui 组件与页面正文同步生效。
 - 页面加载后以后端 checkpoint 为准校验历史会话（`session/load`），失效会话（如 `db` 被删除）自动清理并新建空会话。
 - 图片在浏览器中转为 Base64，作为 ACP `image` 块发送；普通文件上传后以 `/uploads/...` 文本上下文发送。
@@ -183,7 +188,7 @@ sequenceDiagram
 
 | 数据 | 存储位置 | 生命周期 | 说明 |
 | --- | --- | --- | --- |
-| 上传文件 | `uploads/` | 无自动清理 | 普通附件可由 Agent 通过 `/uploads/<filename>` 虚拟路径读取，也可由浏览器静态访问。 |
+| 上传文件 | `UPLOAD_ROOT`（`.env` 配置，默认 `uploads/`） | 无自动清理 | 普通附件可由 Agent 通过 `/uploads/<filename>` 虚拟路径读取，也可由浏览器静态访问；该目录已在 `.gitignore` 中忽略。 |
 | Agent checkpoint | `db/agent_state.sqlite` | 持久化 | 支持跨 Agent 进程恢复会话。 |
 | 会话展示状态 | 浏览器 `localStorage` | 浏览器本地 | 保存会话 ID、标题、消息、附件预览与执行过程；不是 Agent 上下文的权威来源。 |
 | 会话运行态 | Agent 子进程内存 | WebSocket 连接期间 | 连接断开时对应进程被终止。 |
@@ -210,7 +215,7 @@ sequenceDiagram
 | --- | --- |
 | Python 运行环境 | Python、FastAPI、Uvicorn、DeepAgents、DeepAgents ACP、LangGraph SQLite Checkpoint。 |
 | 外部服务 | 符合 OpenAI 兼容接口规范的模型服务。 |
-| 本地存储 | `uploads/` 文件目录和 `db/agent_state.sqlite` SQLite 数据库。 |
+| 本地存储 | `UPLOAD_ROOT` 指定目录（默认 `uploads/`）和 `db/agent_state.sqlite` SQLite 数据库。 |
 | 浏览器 | 支持 WebSocket、Fetch 和 localStorage 的现代浏览器。 |
 
 ### 7.2 配置规范

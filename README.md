@@ -87,6 +87,8 @@ Notes:
 - `ENDPOINT` is the OpenAI-compatible API base URL.
 - `API_KEY` is the access key for the model service.
 - `APP_HOST` / `APP_PORT` control FastAPI listening settings.
+- `CONTENT_SIZE` is the context window size (tokens), used by the frontend to show the context usage percentage (served via `/api/config`).
+- `UPLOAD_ROOT` is the upload storage root (relative to project root or absolute, defaults to `uploads/`); this directory is ignored by git.
 
 If you are connecting directly to the official OpenAI API, configure those values in the same way according to your environment.
 

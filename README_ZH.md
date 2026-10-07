@@ -82,12 +82,20 @@ MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
 TOP_P=0.5
 MAX_TOKENS=10240
+
+# [App settings]
+APP_HOST=0.0.0.0
+APP_PORT=8000
+CONTENT_SIZE=32768
+UPLOAD_ROOT=./uploads
 ```
 
 其中：
 - `ENDPOINT` 是 OpenAI 兼容接口地址
 - `API_KEY` 是对应模型服务的访问 key
 - `APP_HOST` / `APP_PORT` 控制 FastAPI 监听地址
+- `CONTENT_SIZE` 是上下文窗口大小（tokens），用于前端上下文用量百分比显示（经 `/api/config` 下发）
+- `UPLOAD_ROOT` 是文件上传存储根目录（相对项目根或绝对路径，默认 `uploads/`），该目录已在 `.gitignore` 中忽略
 
 如果你正在直接对接 OpenAI 官方接口，也可以按自己的环境变量方式配置；当前仓库默认是接到自建兼容服务。
 

@@ -26,8 +26,10 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 # Keep static/ for the legacy demo assets; the active SPA is built into web/dist.
 WEB_DIST_DIR = BASE_DIR / "web" / "dist"
-UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = Path(os.getenv("UPLOAD_ROOT", "uploads").strip() or "uploads")
+if not UPLOAD_DIR.is_absolute():
+    UPLOAD_DIR = BASE_DIR / UPLOAD_DIR
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # ACP agent subprocess startup command
 AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
@@ -136,6 +138,17 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
     except asyncio.TimeoutError:
         proc.kill()
+
+
+@app.get("/api/config")
+async def get_config():
+    """下发前端所需配置（如上下文窗口大小，tokens）。"""
+    content_size = os.getenv("CONTENT_SIZE", "").strip()
+    try:
+        content_size = int(content_size) if content_size else 0
+    except ValueError:
+        content_size = 0
+    return {"contentSize": content_size}
 
 
 # Mount the SPA after API and WebSocket routes so it only handles client asset requests.

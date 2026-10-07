@@ -4,7 +4,10 @@ import MarkdownIt from 'markdown-it'
 import {
   AddOutline,
   AttachOutline,
+  ChevronBackOutline,
+  CloseOutline,
   CodeSlashOutline,
+  ConstructOutline,
   CopyOutline,
   CreateOutline,
   EllipsisHorizontalOutline,
@@ -13,6 +16,7 @@ import {
   PaperPlaneOutline,
   RefreshOutline,
   SearchOutline,
+  SparklesOutline,
   StopCircleOutline,
   TrashOutline
 } from '@vicons/ionicons5'
@@ -30,6 +34,8 @@ import {
   NPopconfirm,
   NSelect,
   NSpin,
+  NTabs,
+  NTabPane,
   NTooltip,
   useMessage
 } from 'naive-ui'
@@ -166,7 +172,21 @@ const actionLabels = computed(() => ({
   save: locale.value === 'zh' ? '保存' : locale.value === 'ja' ? '保存' : 'Save',
   cancel: locale.value === 'zh' ? '取消' : locale.value === 'ja' ? 'キャンセル' : 'Cancel',
   preview: locale.value === 'zh' ? '预览' : locale.value === 'ja' ? 'プレビュー' : 'Preview',
-  deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message'
+  deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message',
+  skills: locale.value === 'zh' ? '技能' : locale.value === 'ja' ? 'スキル' : 'Skills',
+  tools: locale.value === 'zh' ? '工具' : locale.value === 'ja' ? 'ツール' : 'Tools',
+  context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
+  contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
+  comingSoon: locale.value === 'zh' ? '该功能即将支持' : locale.value === 'ja' ? 'この機能はまもなく対応予定です' : 'Coming soon',
+  renameConversation: locale.value === 'zh' ? '重命名' : locale.value === 'ja' ? '名前を変更' : 'Rename',
+  renameTitle: locale.value === 'zh' ? '重命名会话' : locale.value === 'ja' ? 'セッション名を変更' : 'Rename conversation',
+  renamePlaceholder: locale.value === 'zh' ? '输入新名称' : locale.value === 'ja' ? '新しい名前を入力' : 'Enter a new name',
+  settings: locale.value === 'zh' ? '设置' : locale.value === 'ja' ? '設定' : 'Settings',
+  collapseSidebar: locale.value === 'zh' ? '收起侧边栏' : locale.value === 'ja' ? 'サイドバーを畳む' : 'Collapse sidebar',
+  expandSidebar: locale.value === 'zh' ? '展开侧边栏' : locale.value === 'ja' ? 'サイドバーを展開' : 'Expand sidebar',
+  panelComingSoon: locale.value === 'zh' ? '该模块即将支持，敬请期待' : locale.value === 'ja' ? 'このモジュールはまもなく対応予定です' : 'This module is coming soon',
+  language: locale.value === 'zh' ? '语言' : locale.value === 'ja' ? '言語' : 'Language',
+  closePanel: locale.value === 'zh' ? '关闭面板' : locale.value === 'ja' ? 'パネルを閉じる' : 'Close panel'
 }))
 
 const currentConversation = computed(() =>
@@ -218,6 +238,14 @@ function createId(prefix: string) {
 }
 
 function createConversation() {
+  const existingEmpty = conversations.value.find((conversation) => conversation.messages.length === 0)
+  if (existingEmpty) {
+    selectConversation(existingEmpty.id)
+    conversationSearch.value = ''
+    sidebarVisible.value = false
+    nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
+    return
+  }
   const conversation: Conversation = {
     id: `web-${Date.now()}`,
     title: t('newSessionTitle'),
@@ -249,6 +277,78 @@ function deleteConversation(id: string) {
     activeConversationId.value = conversations.value[0]?.id ?? ''
   }
   persistConversations()
+}
+
+const renameMenu = ref<{ id: string; x: number; y: number } | null>(null)
+const renameTarget = ref<Conversation | null>(null)
+const renameText = ref('')
+function openRenameMenu(conversation: Conversation, event: MouseEvent) {
+  renameMenu.value = { id: conversation.id, x: event.clientX, y: event.clientY }
+}
+function closeRenameMenu() {
+  renameMenu.value = null
+}
+function openRenameModal() {
+  const id = renameMenu.value?.id
+  closeRenameMenu()
+  const conversation = conversations.value.find((item) => item.id === id)
+  if (!conversation) return
+  renameTarget.value = conversation
+  renameText.value = conversation.title
+}
+function saveRename() {
+  const conversation = renameTarget.value
+  if (conversation && renameText.value.trim()) {
+    conversation.title = renameText.value.trim()
+    conversation.updatedAt = Date.now()
+    persistConversations()
+  }
+  renameTarget.value = null
+}
+
+const contextUsage = computed(() => {
+  const conversation = currentConversation.value
+  if (!conversation || !conversation.messages.length || !contextSize.value) return null
+  let chars = 0
+  for (const item of conversation.messages) {
+    if (item.role === 'user') {
+      chars += item.text.length
+    } else {
+      chars += (item.finalText ?? '').length
+      chars += (item.process?.toolCalls ?? []).reduce((sum, tool) => sum + (tool.input ?? '').length + (tool.output ?? '').length, 0)
+    }
+  }
+  const tokens = Math.max(1, Math.round(chars / 1.7))
+  const pct = Math.min(100, Math.round((tokens / contextSize.value) * 100))
+  return { pct, tokens, total: contextSize.value }
+})
+
+const contextSize = ref(0)
+async function loadContextSize() {
+  try {
+    const res = await fetch('/api/config')
+    const data = await res.json()
+    contextSize.value = Number(data.contentSize) || 0
+  } catch {
+    contextSize.value = 0
+  }
+}
+
+const sidebarCollapsed = ref(false)
+const rightPanelVisible = ref(false)
+const rightPanelTab = ref<'skills' | 'tools' | 'settings'>('skills')
+const rightPanelTitle = computed(() =>
+  rightPanelTab.value === 'skills' ? actionLabels.value.skills
+    : rightPanelTab.value === 'tools' ? actionLabels.value.tools
+      : actionLabels.value.settings
+)
+function openRightPanel(tab: 'skills' | 'tools' | 'settings') {
+  rightPanelTab.value = tab
+  rightPanelVisible.value = true
+}
+
+function notifyComingSoon(_feature: string) {
+  message.info(actionLabels.value.comingSoon)
 }
 
 function deleteMessage(item: { id: string }) {
@@ -739,7 +839,7 @@ async function addFiles(files: Iterable<File>) {
       if (file.type.startsWith('image/')) {
         const previewUrl = await fileToDataUrl(file)
         attachments.value.push({
-          name: file.name,
+          name: file.name || `pasted-image-${Date.now()}.png`,
           mimeType: file.type,
           kind: 'image',
           data: previewUrl.slice(previewUrl.indexOf(',') + 1),
@@ -764,6 +864,16 @@ async function uploadFile(event: Event) {
   const inputElement = event.target as HTMLInputElement
   await addFiles(inputElement.files ?? [])
   inputElement.value = ''
+}
+
+function onComposerPaste(event: ClipboardEvent) {
+  const files = Array.from(event.clipboardData?.items ?? [])
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+  if (!files.length) return
+  event.preventDefault()
+  void addFiles(files)
 }
 
 function dropFiles(event: DragEvent) {
@@ -808,18 +918,27 @@ function submitOnEnter(event: KeyboardEvent) {
 watch(conversations, persistConversations, { deep: true })
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 onMounted(() => {
+  void loadContextSize()
   if (!conversations.value.length) createConversation()
+  const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
+  if (defaultEmpties.length > 1) {
+    const keepId = defaultEmpties[0].id
+    conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || conversation.title !== t('newSessionTitle'))
+    persistConversations()
+  }
   void validateStoredSessions()
   window.addEventListener('click', closeMessageMenu)
+  window.addEventListener('click', closeRenameMenu)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeMessageMenu)
+  window.removeEventListener('click', closeRenameMenu)
   ws.value?.close()
 })
 </script>
 
 <template>
-  <main class="chat-app">
+  <main class="chat-app" :class="{ 'chat-app--collapsed': sidebarCollapsed }">
     <aside class="sidebar" :class="{ 'sidebar--mobile-open': sidebarVisible }">
       <div class="brand-row">
         <div class="brand-mark"><NIcon :component="CodeSlashOutline" /></div>
@@ -827,6 +946,9 @@ onBeforeUnmount(() => {
           <strong>ACP client base</strong>
           <span>{{ t('brandSubline') }}</span>
         </div>
+        <NButton class="sidebar-collapse-btn" quaternary circle size="tiny" :aria-label="actionLabels.collapseSidebar" @click="sidebarCollapsed = true">
+          <template #icon><NIcon :component="ChevronBackOutline" /></template>
+        </NButton>
       </div>
 
       <NButton class="new-conversation" type="primary" block @click="createConversation">
@@ -848,6 +970,7 @@ onBeforeUnmount(() => {
           class="conversation-item"
           :class="{ active: conversation.id === activeConversationId }"
           @click="selectConversation(conversation.id)"
+          @contextmenu.prevent="openRenameMenu(conversation, $event)"
         >
           <span class="conversation-title">{{ conversation.title }}</span>
           <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
@@ -874,6 +997,17 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
+    <div
+      v-if="renameMenu"
+      class="rename-menu"
+      :style="{ left: renameMenu.x + 'px', top: renameMenu.y + 'px' }"
+      @click.stop
+    >
+      <button type="button" class="message-menu-item" @click="openRenameModal">
+        <NIcon :component="CreateOutline" />{{ actionLabels.renameConversation }}
+      </button>
+    </div>
+
     <section class="workspace">
       <header class="workspace-header">
         <div class="header-title">
@@ -884,6 +1018,14 @@ onBeforeUnmount(() => {
               </NButton>
             </template>
             {{ t('openConversations') }}
+          </NTooltip>
+          <NTooltip v-if="sidebarCollapsed">
+            <template #trigger>
+              <NButton class="sidebar-expand-btn" quaternary circle :aria-label="actionLabels.expandSidebar" @click="sidebarCollapsed = false">
+                <template #icon><NIcon :component="MenuOutline" /></template>
+              </NButton>
+            </template>
+            {{ actionLabels.expandSidebar }}
           </NTooltip>
           <div>
             <h1>{{ currentTitle }}</h1>
@@ -923,7 +1065,7 @@ onBeforeUnmount(() => {
                 <div v-if="item.attachments.length" class="attachment-list">
                   <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }">
                     <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
-                    <NIcon :component="AttachOutline" />{{ attachment.name }}
+                    <NIcon :component="AttachOutline" /><span class="attachment-name">{{ attachment.name }}</span>
                   </span>
                 </div>
               </div>
@@ -1009,37 +1151,50 @@ onBeforeUnmount(() => {
           <div v-if="attachments.length" class="pending-attachments">
             <span v-for="(attachment, index) in attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }">
               <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
-              <NIcon :component="AttachOutline" />{{ attachment.name }}
+              <NIcon :component="AttachOutline" /><span class="attachment-name">{{ attachment.name }}</span>
               <button aria-label="移除附件" @click="removeAttachment(index)">×</button>
             </span>
           </div>
-          <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles">
+          <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles" @paste="onComposerPaste">
             <input ref="fileInput" class="hidden-input" type="file" multiple @change="uploadFile" />
-            <NTooltip>
-              <template #trigger>
-                <NButton quaternary circle :loading="isUploading" :aria-label="t('upload')" @click="fileInput?.click()">
-                  <template #icon><NIcon :component="AttachOutline" /></template>
-                </NButton>
-              </template>
-              {{ t('upload') }}
-            </NTooltip>
             <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" />
-            <NTooltip v-if="isRunning">
-              <template #trigger>
-                <NButton circle type="error" :aria-label="t('cancel')" @click="cancelTask">
-                  <template #icon><NIcon :component="StopCircleOutline" /></template>
+            <div class="composer-toolbar">
+              <div class="composer-toolbar-left">
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="small" :loading="isUploading" :aria-label="t('upload')" @click="fileInput?.click()">
+                      <template #icon><NIcon :component="AttachOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ t('upload') }}
+                </NTooltip>
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click.capture="openRightPanel('skills')">
+                  <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
-              </template>
-              {{ t('cancel') }}
-            </NTooltip>
-            <NTooltip v-else>
-              <template #trigger>
-                <NButton circle type="primary" :aria-label="t('send')" :disabled="(!input.trim() && !attachments.length) || isUploading" @click="submitPrompt">
-                  <template #icon><NIcon :component="PaperPlaneOutline" /></template>
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click.capture="openRightPanel('tools')">
+                  <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
-              </template>
-              {{ t('send') }}
-            </NTooltip>
+              </div>
+              <div class="composer-toolbar-right">
+                <span v-if="contextUsage" class="composer-context" :title="`${contextUsage.tokens} / ${contextUsage.total} tokens`">{{ actionLabels.context }} {{ contextUsage.pct }}%</span>
+                <NTooltip v-if="isRunning">
+                  <template #trigger>
+                    <NButton circle type="error" size="small" :aria-label="t('cancel')" @click="cancelTask">
+                      <template #icon><NIcon :component="StopCircleOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ t('cancel') }}
+                </NTooltip>
+                <NTooltip v-else>
+                  <template #trigger>
+                    <NButton circle type="primary" size="small" :aria-label="t('send')" :disabled="(!input.trim() && !attachments.length) || isUploading" @click="submitPrompt">
+                      <template #icon><NIcon :component="PaperPlaneOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ t('send') }}
+                </NTooltip>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1058,6 +1213,28 @@ onBeforeUnmount(() => {
         </div>
       </NDrawerContent>
     </NDrawer>
+
+    <aside class="right-panel" :class="{ 'right-panel--open': rightPanelVisible }">
+      <div class="right-panel-header">
+        <strong>{{ rightPanelTitle }}</strong>
+        <NButton quaternary circle size="tiny" :aria-label="actionLabels.closePanel" @click.capture="rightPanelVisible = false">
+          <template #icon><NIcon :component="CloseOutline" /></template>
+        </NButton>
+      </div>
+      <div class="right-panel-body">
+        <div v-if="rightPanelTab === 'skills'" class="panel-placeholder">
+          <NIcon :component="SparklesOutline" />
+          <p>{{ actionLabels.panelComingSoon }}</p>
+        </div>
+        <div v-else-if="rightPanelTab === 'tools'" class="panel-placeholder">
+          <NIcon :component="ConstructOutline" />
+          <p>{{ actionLabels.panelComingSoon }}</p>
+        </div>
+        <div v-else class="panel-placeholder">
+          <p>{{ actionLabels.panelComingSoon }}</p>
+        </div>
+      </div>
+    </aside>
 
     <NModal :show="Boolean(permissionRequest)" :mask-closable="false">
       <NCard :title="t('permissionTitle')" :bordered="false" class="permission-card" role="dialog">
@@ -1097,13 +1274,29 @@ onBeforeUnmount(() => {
         </template>
       </NCard>
     </NModal>
+    <NModal :show="Boolean(renameTarget)" :mask-closable="false" @after-leave="renameTarget = null">
+      <NCard :title="actionLabels.renameTitle" :bordered="false" class="rename-card" role="dialog">
+        <NInput
+          v-model:value="renameText"
+          type="text"
+          :placeholder="actionLabels.renamePlaceholder"
+          @keydown.enter.exact="saveRename"
+        />
+        <template #footer>
+          <div class="permission-actions">
+            <NButton @click="renameTarget = null">{{ actionLabels.cancel }}</NButton>
+            <NButton type="primary" @click="saveRename">{{ actionLabels.save }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
   </main>
 </template>
 
 <style scoped>
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
 .sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); }
-.brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; }
+.brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:16px; } .conversation-search { padding:0 2px 8px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
 .conversation-list { display:flex; flex:1; flex-direction:column; gap:3px; overflow:auto; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 10px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
@@ -1114,12 +1307,15 @@ onBeforeUnmount(() => {
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .assistant-pending { display:flex; gap:9px; align-items:center; min-height:32px; color:var(--subtle); font-size:14px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
-.attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
+.attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; } .attachment-chip .attachment-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip button { flex-shrink:0; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
-.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; gap:10px; align-items:flex-end; padding:8px 9px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.12); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input { flex:1; } .composer-input :deep(textarea) { padding-top:6px; padding-bottom:6px; } .hidden-input { display:none; }
+.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
 /* TEMP-HIDE：编辑/删除消息入口暂隐藏（display:none），代码保留，后期 MooFile 方案升级时恢复 */
 .hidden-action { display: none; }
-.edit-card { width:70vw; } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
-@media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
+.panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
+.right-panel { display:none; flex:0 0 300px; width:300px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; }
+.edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
+@media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
+@media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
 </style>

@@ -43,3 +43,5 @@ __pycache__/
 **/outputs/
 **/mcp_servers.json
 db/
+# 文件上传存储目录（由 .env 的 UPLOAD_ROOT 指定，默认 ./uploads）
+uploads/
