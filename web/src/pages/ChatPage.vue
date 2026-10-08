@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import {
@@ -453,6 +453,17 @@ function connect() {
       ws.value = null
       pendingRequests.forEach(({ reject }) => reject(new Error(t('connectionClosed'))))
       pendingRequests.clear()
+      // 连接异常关闭时，将仍在运行中的助手消息置为失败，确保停止按钮恢复为发送
+      const active = activeAssistantMessage()
+      if (
+        active
+        && active.status !== 'cancelled'
+        && (active.status === 'pending' || active.status === 'streaming' || active.status === 'waiting_permission')
+      ) {
+        active.status = 'failed'
+        active.process.completedAt = Date.now()
+        appendTextSegment(active, `\n\n${t('connectionClosed')}`)
+      }
     }
     socket.onmessage = (event) => handleAcpMessage(event.data)
   })
