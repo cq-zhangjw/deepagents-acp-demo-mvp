@@ -17,27 +17,27 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 
 ```mermaid
 flowchart LR
-  subgraph Browser["浏览器（Vue 3 + TypeScript SPA）"]
-    UI[聊天界面<br/>流式消息 / 工具卡片 / 权限请求]
-    Upload[图片 / 文件上传]
-    WSClient[WebSocket 客户端<br/>ACP v2 JSON-RPC]
+  subgraph Browser["Browser (Vue 3 + TypeScript SPA)"]
+    UI[Chat UI<br/>Streaming messages / Tool cards / Permission requests]
+    Upload[Image / file upload]
+    WSClient[WebSocket client<br/>ACP v2 JSON-RPC]
   end
 
-  subgraph Gateway["FastAPI 网关 app.py"]
-    UploadAPI["/upload 保存文件并返回资源 URL"]
-    WSProxy["/acp-ws WebSocket ⇄ stdio 双向转发"]
-    Static["/ 静态服务 web/dist"]
+  subgraph Gateway["FastAPI Gateway app.py"]
+    UploadAPI["/upload saves file and returns resource URL"]
+    WSProxy["/acp-ws WebSocket ⇄ stdio bidirectional forwarding"]
+    Static["/ static hosting of web/dist"]
   end
 
-  subgraph Agent["ACP Agent 子进程"]
-    ACP["acp_agent.py<br/>DeepAgents ACP 服务"]
-    Model["OpenAI 兼容模型服务"]
+  subgraph Agent["ACP Agent subprocess"]
+    ACP["acp_agent.py<br/>DeepAgents ACP service"]
+    Model["OpenAI-compatible model service"]
   end
 
   Upload -->|POST| UploadAPI
-  UploadAPI -->|落盘| Storage[("uploads/ 目录")]
+  UploadAPI -->|save| Storage[("uploads/ directory")]
   WSClient <-->|JSON-RPC 2.0| WSProxy
-  WSProxy <-->|stdio 转发| ACP
+  WSProxy <-->|stdio forwarding| ACP
   ACP -->|HTTP| Model
   Static --> Browser
   Agent -->|checkpoint| DB[("SQLite db/")]
