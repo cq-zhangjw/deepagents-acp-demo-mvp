@@ -1,4 +1,4 @@
-# DeepAgents + ACP + FastAPI Gateway
+﻿# DeepAgents + ACP + FastAPI Gateway
 
 这是一个可直接运行的 ACP（Agent Client Protocol）Web 集成示例，核心思路是：
 
@@ -80,7 +80,7 @@ API_KEY=-
 ENDPOINT=http://192.168.3.28:8088
 MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
-TOP_P=0.5
+TOP_P=
 MAX_TOKENS=10240
 
 # [App settings]
@@ -200,7 +200,6 @@ MODEL = init_chat_model(
     timeout=TIMEOUT,
     max_retries=MAX_RETRY,
     temperature=TEMPERATURE,
-    top_p=TOP_P,
     max_tokens=MAX_TOKENS,
 )
 ```

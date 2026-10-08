@@ -79,7 +79,7 @@ API_KEY=-
 ENDPOINT=http://192.168.3.28:8088
 MODEL_NAME=qwen3.8-9b
 TEMPERATURE=0.8
-TOP_P=0.5
+TOP_P=
 MAX_TOKENS=10240
 ```
 
@@ -193,7 +193,6 @@ MODEL = init_chat_model(
     timeout=TIMEOUT,
     max_retries=MAX_RETRY,
     temperature=TEMPERATURE,
-    top_p=TOP_P,
     max_tokens=MAX_TOKENS,
 )
 ```

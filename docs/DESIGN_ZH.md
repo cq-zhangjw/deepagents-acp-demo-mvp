@@ -91,7 +91,7 @@ Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、�
 | `MODEL_PROVIDER` | LangChain 模型提供方 | `openai` |
 | `MODEL_NAME` | 模型名称 | `qwen3.8-9b` |
 | `TEMPERATURE` | 温度参数 | `0.5` |
-| `TOP_P` | 核采样参数 | `0.5` |
+| `TOP_P` | 核采样参数（默认不传，配置后按变量值传入；部分模型不支持该参数时留空可避免 400 报错） | 未设置（None） |
 | `MAX_TOKENS` | 最大生成 token 数 | `65535` |
 | `MAX_RETRY` | 最大重试次数 | `3` |
 | `TIMEOUT` | 单次请求超时 | 未设置 |

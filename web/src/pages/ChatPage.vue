@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import {
@@ -359,7 +359,7 @@ function openRightPanel(tab: 'skills' | 'tools' | 'settings') {
 }
 
 function notifyComingSoon(_feature: string) {
-  message.info(actionLabels.value.comingSoon)
+  message.info(actionLabels.value.comingSoon, { duration: 3000 })
 }
 
 function deleteMessage(item: { id: string }) {
@@ -808,9 +808,9 @@ async function retryAssistant(assistant: AssistantMessage) {
 async function copyText(value: string) {
   try {
     await navigator.clipboard.writeText(value)
-    message.success(actionLabels.value.copied)
+    message.success(actionLabels.value.copied, { duration: 3000 })
   } catch {
-    message.error(t('requestFailed'))
+    message.error(t('requestFailed'), { duration: 3000 })
   }
 }
 
@@ -881,7 +881,7 @@ async function addFiles(files: Iterable<File>) {
       attachments.value.push({ ...(await response.json()), kind: 'file' })
     }
   } catch (error) {
-    message.error(error instanceof Error ? error.message : t('uploadFailed'))
+    message.error(error instanceof Error ? error.message : t('uploadFailed'), { duration: 3000 })
   } finally {
     isUploading.value = false
   }
@@ -1184,8 +1184,8 @@ onBeforeUnmount(() => {
                   <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
                   <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
                 </template>
-                <span v-if="item.status === 'failed' || item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
-                <div v-if="item.finalText && !isRunning" class="message-actions">
+                <span v-if="item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
+                <div v-if="(item.finalText || (item.status === 'failed' && item.segments.length > 0)) && !isRunning" class="message-actions">
                   <NTooltip v-if="item.id === lastAssistantId">
                     <template #trigger>
                       <NButton quaternary circle size="tiny" :aria-label="actionLabels.retry" @click="retryAssistant(item)">
