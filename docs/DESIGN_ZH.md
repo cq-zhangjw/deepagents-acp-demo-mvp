@@ -243,7 +243,7 @@ sequenceDiagram
 
 ### 8.3 日志与故障呈现
 
-客户端在页面错误区域展示连接、协议和请求错误。ACP 请求返回的错误会显示在页面错误区域；Agent stderr 由网关写入宿主进程运行日志。取消任务时客户端关闭专属 WebSocket 作为 `session/cancel` 不受支持时的兜底，并把未结束工具标记为 `cancelled`。
+客户端在页面错误区域展示连接、协议和请求错误。ACP 请求返回的错误会显示在页面错误区域，并提取错误对象中的完整详情（`data.details` 或 `data` 其余字段）拼接展示，避免仅显示 “Internal error” 而丢失后端具体报错（如模型 404）；Agent stderr 由网关写入宿主进程运行日志。取消任务时客户端关闭专属 WebSocket 作为 `session/cancel` 不受支持时的兜底，并把未结束工具标记为 `cancelled`。
 
 ## 9. 验收标准
 

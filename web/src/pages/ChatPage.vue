@@ -486,6 +486,19 @@ async function initialize() {
   initialized.value = true
 }
 
+function formatAcpError(error: any): string {
+  const message = error?.message ?? t('requestFailed')
+  const data = error?.data
+  if (!data) return message
+  if (typeof data === 'string') return `${message}: ${data}`
+  if (data.details != null) return `${message}: ${data.details}`
+  const rest = Object.entries(data)
+    .filter(([key, value]) => value != null && key !== 'message')
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join(', ')
+  return rest ? `${message}: ${rest}` : message
+}
+
 function handleAcpMessage(raw: string) {
   let payload: any
   try {
@@ -509,7 +522,7 @@ function handleAcpMessage(raw: string) {
   if (payload.id !== undefined && pendingRequests.has(payload.id)) {
     const request = pendingRequests.get(payload.id)!
     pendingRequests.delete(payload.id)
-    if (payload.error) request.reject(new Error(payload.error.message ?? t('requestFailed')))
+    if (payload.error) request.reject(new Error(formatAcpError(payload.error)))
     else request.resolve(payload.result)
     return
   }
