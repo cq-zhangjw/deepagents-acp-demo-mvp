@@ -741,7 +741,10 @@ async function sendAgentPrompt(
     if (assistantMessage.status !== 'cancelled') {
       assistantMessage.status = 'failed'
       assistantMessage.process.completedAt = Date.now()
-      errorText.value = error instanceof Error ? error.message : '任务执行失败。'
+      const message = error instanceof Error ? error.message : t('taskFailed')
+      errorText.value = message
+      // 错误详情作为 AI 消息内容展示（markdown 引用块），避免仅显示“失败”状态
+      appendTextSegment(assistantMessage, `\n\n> **${t('taskFailed')}**\n> ${message.replace(/\n/g, '\n> ')}`)
     }
   } finally {
     conversation.updatedAt = Date.now()

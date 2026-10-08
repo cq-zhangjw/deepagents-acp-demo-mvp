@@ -111,7 +111,7 @@ flowchart TD
 | `UserMessage` | 原生容器、`NAvatar` | 右对齐，浅蓝背景，最大宽度 `72%`；附件以小型文件胶囊附在正文下方，图片显示缩略预览。 |
 | `AssistantMessage` | 原生容器、`NAvatar`、`MarkdownMessage`、`ExecutionProcess`、`ToolCallCard` | 左对齐；按 `segments` 顺序渲染分析文本段、执行计划面板、工具调用卡片与最终文本段，正文支持 Markdown、代码高亮、代码复制和 Mermaid 预览/源码切换。 |
 | `AssistantPending` | `NSpin` | 仅在 `pending`、`streaming` 或 `waiting_permission` 状态显示；取消后必须移除加载指示。 |
-| `TaskError` | `NAlert` | 作为当前任务的状态块显示于输入区上方，可重试或关闭；不伪装为 AI 回答。ACP 调用失败时展示后端返回的完整错误详情（`error.data.details`/`data` 字段），而非仅显示 JSON-RPC 的 “Internal error”。 |
+| `TaskError` | `NAlert` | 作为当前任务的状态块显示于输入区上方，可重试或关闭；不伪装为 AI 回答。ACP 调用失败时展示后端返回的完整错误详情（`error.data.details`/`data` 字段），而非仅显示 JSON-RPC 的 “Internal error”；同时错误详情以 markdown 引用块写入该 AI 消息正文（消息状态仍标记为“失败”）。 |
 
 消息时间线遵循以下规则：
 
