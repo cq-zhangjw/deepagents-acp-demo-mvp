@@ -45,3 +45,6 @@ __pycache__/
 db/
 # 文件上传存储目录（由 .env 的 UPLOAD_ROOT 指定，默认 ./uploads）
 uploads/
+
+# 环境配置备份（含敏感凭据，不提交）
+.env.bak
