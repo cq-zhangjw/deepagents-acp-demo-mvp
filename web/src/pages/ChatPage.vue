@@ -743,8 +743,8 @@ async function sendAgentPrompt(
       assistantMessage.process.completedAt = Date.now()
       const message = error instanceof Error ? error.message : t('taskFailed')
       errorText.value = message
-      // 错误详情作为 AI 消息内容展示（markdown 引用块），避免仅显示“失败”状态
-      appendTextSegment(assistantMessage, `\n\n> **${t('taskFailed')}**\n> ${message.replace(/\n/g, '\n> ')}`)
+      // 错误信息原样作为 AI 消息内容展示，避免仅显示“失败”状态
+      appendTextSegment(assistantMessage, `\n\n${message}`)
     }
   } finally {
     conversation.updatedAt = Date.now()
