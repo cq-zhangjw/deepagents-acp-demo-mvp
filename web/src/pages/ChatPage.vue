@@ -197,6 +197,13 @@ const currentConversation = computed(() =>
   conversations.value.find((conversation) => conversation.id === activeConversationId.value)
 )
 const currentMessages = computed(() => currentConversation.value?.messages ?? [])
+const lastAssistantId = computed(() => {
+  const msgs = currentMessages.value
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'assistant') return msgs[i].id
+  }
+  return ''
+})
 const isRunning = computed(() => currentMessages.value.some(
   (item) => item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'waiting_permission' || (item.status === 'streaming' && !item.finalText))
@@ -1146,7 +1153,7 @@ onBeforeUnmount(() => {
                 </template>
                 <span v-if="item.status === 'failed' || item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
                 <div v-if="item.finalText && !isRunning" class="message-actions">
-                  <NTooltip>
+                  <NTooltip v-if="item.id === lastAssistantId">
                     <template #trigger>
                       <NButton quaternary circle size="tiny" :aria-label="actionLabels.retry" @click="retryAssistant(item)">
                         <template #icon><NIcon :component="RefreshOutline" /></template>
