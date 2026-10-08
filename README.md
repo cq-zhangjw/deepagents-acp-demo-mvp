@@ -1,12 +1,46 @@
 # DeepAgents + ACP + FastAPI Gateway
 
-This project is a runnable ACP (Agent Client Protocol) web integration example. Its core design is:
+This project is a runnable ACP (Agent Client Protocol) web integration example: a Vue 3 chat client talks to a DeepAgents agent through a FastAPI gateway over WebSocket, and the agent calls an OpenAI-compatible model service to complete tasks step by step with tool calls.
 
-```text
-Browser frontend (ACP Client)
-   ├─ POST /upload upload image/file → FastAPI gateway saves it and returns an HTTP resource URL
-   └─ WS /acp-ws → app.py gateway → acp_agent.py subprocess (stdio ACP)
-                                  └─ DeepAgents agent → OpenAI-compatible model service
+## Overview
+
+- **Streaming chat**: AI replies stream in real time — text, thought, execution plan and tool-call cards are rendered incrementally; Markdown, code highlight, Mermaid diagrams and sanitized inline HTML are all supported.
+- **Tool calls**: each tool card shows parameters / return value in collapsible `json` tabs; permission requests (`session/request_permission`) can be approved, rejected or always-approved.
+- **Message actions**: copy (plain text or Markdown), retry (last AI message only), edit (Markdown source editing without re-running), delete via the `...` menu.
+- **Conversations**: recent-conversation sidebar with search/filter, rename via context menu, delete with confirmation, and timestamps in `YYYY/MM/DD hh:mm:ss`.
+- **Attachments**: upload or paste images/files, inline preview, download on click; context usage (used / `CONTENT_SIZE`) shown as percentage with hover detail.
+- **Error handling**: ACP error details are returned to the frontend, displayed as the AI message content plus a red error block; the stop button always recovers to send after failures or disconnects.
+- **Multi-language**: UI supports Simplified Chinese / Japanese / English (i18n locale files under `web/src/locales/`).
+- **Local run**: `start.ps1` / `stop.ps1` manage the gateway and agent processes; all runtime knobs are configured via `.env`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Browser["浏览器（Vue 3 + TypeScript SPA）"]
+    UI[聊天界面<br/>流式消息 / 工具卡片 / 权限请求]
+    Upload[图片 / 文件上传]
+    WSClient[WebSocket 客户端<br/>ACP v2 JSON-RPC]
+  end
+
+  subgraph Gateway["FastAPI 网关 app.py"]
+    UploadAPI["/upload 保存文件并返回资源 URL"]
+    WSProxy["/acp-ws WebSocket ⇄ stdio 双向转发"]
+    Static["/ 静态服务 web/dist"]
+  end
+
+  subgraph Agent["ACP Agent 子进程"]
+    ACP["acp_agent.py<br/>DeepAgents ACP 服务"]
+    Model["OpenAI 兼容模型服务"]
+  end
+
+  Upload -->|POST| UploadAPI
+  UploadAPI -->|落盘| Storage[("uploads/ 目录")]
+  WSClient <-->|JSON-RPC 2.0| WSProxy
+  WSProxy <-->|stdio 转发| ACP
+  ACP -->|HTTP| Model
+  Static --> Browser
+  Agent -->|checkpoint| DB[("SQLite db/")]
 ```
 
 - **ACP layer**: Uses `deepagents-acp` and `agent-client-protocol` to automatically handle protocol messages such as `session/update` and `session/request_permission`, without requiring manual JSON-RPC handling.

@@ -1,12 +1,46 @@
-﻿# DeepAgents + ACP + FastAPI Gateway
+# DeepAgents + ACP + FastAPI Gateway
 
-このプロジェクトは、実行可能な ACP（Agent Client Protocol）Web 統合サンプルです。基本構成は次の通りです。
+このプロジェクトは、実行可能な ACP（Agent Client Protocol）Web 統合サンプルです。Vue 3 チャットクライアントが FastAPI ゲートウェイ経由で WebSocket により DeepAgents Agent と通信し、Agent は OpenAI 互換モデルサービスを呼び出してツール呼び出し付きのタスクを段階的に完了します。
 
-```text
-ブラウザフロントエンド（ACP Client）
-   ├─ POST /upload 画像/ファイルをアップロード → FastAPI ゲートウェイが保存し、HTTP リソース URL を返す
-   └─ WS /acp-ws → app.py ゲートウェイ → acp_agent.py サブプロセス（stdio ACP）
-                                  └─ DeepAgents Agent → OpenAI 互換モデルサービス
+## 機能概要
+
+- **ストリーミングチャット**: AI の応答がリアルタイムでストリーミング表示されます（テキスト・思考・実行プラン・ツール呼び出しカードを段階的にレンダリング）。Markdown、コードハイライト、Mermaid 図、サニタイズ済みインライン HTML に対応。
+- **ツール呼び出し**: 各ツールカードはパラメーター / 戻り値を折りたたみ式 `json` タブで表示。権限リクエスト（`session/request_permission`）は許可・拒否・常に許可のいずれかで対応。
+- **メッセージ操作**: コピー（プレーンテキスト / Markdown）、リトライ（最後の AI メッセージのみ）、編集（Markdown ソースを編集し再実行しない）、`...` メニューから削除。
+- **会話管理**: 最近の会話サイドバーで検索・フィルター、右クリックで名前変更、確認付き削除。時刻は `YYYY/MM/DD hh:mm:ss` 形式。
+- **添付ファイル**: 画像 / ファイルのアップロードまたは貼り付け、インラインプレビュー、クリックでダウンロード。コンテキスト使用量（使用 / `CONTENT_SIZE`）をパーセント表示し、ホバーで詳細を確認。
+- **エラー処理**: ACP のエラー詳細をフロントエンドに返し、AI メッセージとして表示（赤いエラーブロックも維持）。エラーや接続切断後も停止ボタンは必ず送信に戻ります。
+- **多言語**: UI は簡体字中国語 / 日本語 / 英語に対応（言語ファイルは `web/src/locales/`）。
+- **ローカル実行**: `start.ps1` / `stop.ps1` でゲートウェイと Agent プロセスを管理。実行時設定はすべて `.env` で構成。
+
+## アーキテクチャ図
+
+```mermaid
+flowchart LR
+  subgraph Browser["ブラウザ（Vue 3 + TypeScript SPA）"]
+    UI[チャット画面<br/>ストリーミングメッセージ / ツールカード / 権限リクエスト]
+    Upload[画像 / ファイルのアップロード]
+    WSClient[WebSocket クライアント<br/>ACP v2 JSON-RPC]
+  end
+
+  subgraph Gateway["FastAPI ゲートウェイ app.py"]
+    UploadAPI["/upload ファイルを保存しリソース URL を返す"]
+    WSProxy["/acp-ws WebSocket ⇄ stdio 双方向転送"]
+    Static["/ 静的配信 web/dist"]
+  end
+
+  subgraph Agent["ACP Agent サブプロセス"]
+    ACP["acp_agent.py<br/>DeepAgents ACP サービス"]
+    Model["OpenAI 互換モデルサービス"]
+  end
+
+  Upload -->|POST| UploadAPI
+  UploadAPI -->|保存| Storage[("uploads/ ディレクトリ")]
+  WSClient <-->|JSON-RPC 2.0| WSProxy
+  WSProxy <-->|stdio 転送| ACP
+  ACP -->|HTTP| Model
+  Static --> Browser
+  Agent -->|checkpoint| DB[("SQLite db/")]
 ```
 
 - **ACP 層**: `deepagents-acp` と `agent-client-protocol` を利用し、`session/update` や `session/request_permission` などのプロトコルメッセージを自動処理します。手動で JSON-RPC を書く必要はありません。

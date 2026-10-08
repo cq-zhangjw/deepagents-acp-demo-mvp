@@ -1,12 +1,46 @@
-﻿# DeepAgents + ACP + FastAPI Gateway
+# DeepAgents + ACP + FastAPI Gateway
 
-这是一个可直接运行的 ACP（Agent Client Protocol）Web 集成示例，核心思路是：
+这是一个可直接运行的 ACP（Agent Client Protocol）Web 集成示例：Vue 3 聊天客户端通过 FastAPI 网关以 WebSocket 与 DeepAgents Agent 通信，Agent 调用 OpenAI 兼容模型服务分步完成带工具调用的任务。
 
-```
-前端浏览器（ACP Client）
-   ├─ POST /upload 上传图片/文件 → FastAPI 网关保存并返回 http 资源地址
-   └─ WS /acp-ws → app.py 网关 → acp_agent.py 子进程（stdio ACP）
-                                  └─ DeepAgents Agent → OpenAI 兼容模型服务
+## 功能总览
+
+- **流式聊天**：AI 回复实时流式输出——文本、思考、执行计划、工具调用卡片增量渲染；支持 Markdown、代码高亮、Mermaid 图表与消毒后的内联 HTML。
+- **工具调用**：每个工具卡片以可折叠 `json` 标签页展示参数/返回值；权限请求（`session/request_permission`）可允许、拒绝或始终允许。
+- **消息操作**：复制（纯文本/Markdown）、重试（仅最后一条 AI 消息）、编辑（以 Markdown 源码编辑且不重跑）、通过 `...` 菜单删除。
+- **会话管理**：最近会话侧栏支持搜索/过滤、右键菜单重命名、确认后删除，时间显示为 `YYYY/MM/DD hh:mm:ss`。
+- **附件**：上传或粘贴图片/文件，支持内联预览与点击下载；上下文用量（已用 / `CONTENT_SIZE`）以百分比显示，悬停查看详情。
+- **错误处理**：ACP 错误详情返回前端，作为 AI 消息内容展示并保留红色错误块；出错或连接断开后停止按钮总能恢复为发送。
+- **多语言**：界面支持简体中文 / 日文 / 英文（语言文件位于 `web/src/locales/`）。
+- **本地运行**：`start.ps1` / `stop.ps1` 管理网关与 Agent 进程；运行时参数均通过 `.env` 配置。
+
+## 架构图
+
+```mermaid
+flowchart LR
+  subgraph Browser["浏览器（Vue 3 + TypeScript SPA）"]
+    UI[聊天界面<br/>流式消息 / 工具卡片 / 权限请求]
+    Upload[图片 / 文件上传]
+    WSClient[WebSocket 客户端<br/>ACP v2 JSON-RPC]
+  end
+
+  subgraph Gateway["FastAPI 网关 app.py"]
+    UploadAPI["/upload 保存文件并返回资源 URL"]
+    WSProxy["/acp-ws WebSocket ⇄ stdio 双向转发"]
+    Static["/ 静态服务 web/dist"]
+  end
+
+  subgraph Agent["ACP Agent 子进程"]
+    ACP["acp_agent.py<br/>DeepAgents ACP 服务"]
+    Model["OpenAI 兼容模型服务"]
+  end
+
+  Upload -->|POST| UploadAPI
+  UploadAPI -->|落盘| Storage[("uploads/ 目录")]
+  WSClient <-->|JSON-RPC 2.0| WSProxy
+  WSProxy <-->|stdio 转发| ACP
+  ACP -->|HTTP| Model
+  Static --> Browser
+  Agent -->|checkpoint| DB[("SQLite db/")]
 ```
 
 - **ACP 层**：使用 `deepagents-acp` + `agent-client-protocol`，自动处理
