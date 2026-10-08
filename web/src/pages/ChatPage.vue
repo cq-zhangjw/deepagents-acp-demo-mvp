@@ -633,7 +633,7 @@ function handleSessionUpdate(update: any) {
       break
     }
   }
-  nextTick(scrollToBottom)
+  if (!scrollPausedByUser.value) nextTick(scrollToBottom)
 }
 
 async function ensureAgentSession(conversation: Conversation, isNewConversation: boolean) {
@@ -916,6 +916,19 @@ function duration(process: ExecutionProcess) {
 }
 
 const showScrollBottom = ref(false)
+// 用户滚动暂停自动跟随：流式输出期间鼠标/触摸滚动时暂停，2s 无操作或点击“滚动到底部”后恢复
+const scrollPausedByUser = ref(false)
+let scrollPauseTimer: number | null = null
+function pauseAutoScrollByUser() {
+  if (!isRunning.value) return
+  scrollPausedByUser.value = true
+  if (scrollPauseTimer) window.clearTimeout(scrollPauseTimer)
+  scrollPauseTimer = window.setTimeout(() => {
+    scrollPausedByUser.value = false
+    scrollPauseTimer = null
+    if (isRunning.value) nextTick(() => scrollToBottom(false))
+  }, 2000)
+}
 function onTimelineScroll() {
   const el = timeline.value
   if (!el) return
@@ -923,6 +936,11 @@ function onTimelineScroll() {
 }
 
 function scrollToBottom(smooth = false) {
+  scrollPausedByUser.value = false
+  if (scrollPauseTimer) {
+    window.clearTimeout(scrollPauseTimer)
+    scrollPauseTimer = null
+  }
   const el = timeline.value
   if (!el) return
   if (smooth) {
@@ -984,6 +1002,7 @@ watch(() => currentMessages.value.length, () => {
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeMessageMenu)
   window.removeEventListener('click', closeRenameMenu)
+  if (scrollPauseTimer) window.clearTimeout(scrollPauseTimer)
   ws.value?.close()
 })
 </script>
@@ -1094,11 +1113,9 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <section ref="timeline" class="timeline" aria-live="polite" @scroll="onTimelineScroll">
-        <NButton v-if="showScrollBottom" class="scroll-bottom-btn" circle type="primary" size="small" :aria-label="t('scrollToBottom')" @click.capture="scrollToBottom(true)">
-          <template #icon><NIcon :component="ArrowDownOutline" /></template>
-        </NButton>
-        <div v-if="!currentMessages.length" class="welcome">
+      <div class="timeline-wrap">
+        <section ref="timeline" class="timeline" aria-live="polite" @scroll="onTimelineScroll" @wheel.passive="pauseAutoScrollByUser" @touchmove.passive="pauseAutoScrollByUser">
+          <div v-if="!currentMessages.length" class="welcome">
           <div class="welcome-symbol"><NIcon :component="CodeSlashOutline" /></div>
           <h2>{{ t('startTask') }}</h2>
           <p>{{ t('startTaskHint') }}</p>
@@ -1196,6 +1213,10 @@ onBeforeUnmount(() => {
           </article>
         </div>
       </section>
+      <NButton v-if="showScrollBottom" class="scroll-bottom-btn" circle type="primary" size="small" :aria-label="t('scrollToBottom')" @click.capture="scrollToBottom(true)">
+        <template #icon><NIcon :component="ArrowDownOutline" /></template>
+      </NButton>
+      </div>
 
       <div class="composer-wrap">
         <div class="composer-column">
@@ -1357,7 +1378,7 @@ onBeforeUnmount(() => {
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
 .workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .language-icon { color:var(--subtle); font-size:17px; } .locale-select { width:102px; }
-.timeline { position:relative; flex:1; overflow:auto; scroll-behavior:smooth; } .scroll-bottom-btn { position:absolute; right:28px; bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
+.timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .assistant-pending { display:flex; gap:9px; align-items:center; min-height:32px; color:var(--subtle); font-size:14px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
-import { VueMarkdownIt } from '@f3ve/vue-markdown-it'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { useMessage } from 'naive-ui'
@@ -32,11 +33,15 @@ async function getMermaid() {
 // 渲染结果缓存：流式期间 DOM 会被反复重建，相同源码的图直接复用 SVG，避免重复渲染
 const mermaidCache = new Map<string, string>()
 
-const markdownOptions = {
-  linkAttributes: {
-    attrs: { target: '_blank', rel: 'noopener noreferrer' }
-  }
+// 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS
+const md = new MarkdownIt({ html: true, linkify: true })
+const defaultLinkRender = md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noopener noreferrer')
+  return defaultLinkRender(tokens, idx, options, env, self)
 }
+const safeHtml = computed(() => DOMPurify.sanitize(md.render(props.content)))
 
 function languageOf(block: HTMLElement) {
   return Array.from(block.classList)
@@ -155,13 +160,11 @@ async function enhanceMarkdown() {
 }
 
 onMounted(enhanceMarkdown)
-watch(() => props.content, enhanceMarkdown, { flush: 'post' })
+watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 </script>
 
 <template>
-  <div ref="root" class="markdown-message">
-    <VueMarkdownIt :source="content" :options="markdownOptions" />
-  </div>
+  <div ref="root" class="markdown-message" v-html="safeHtml"></div>
 </template>
 
 <style scoped>
