@@ -163,8 +163,8 @@ Agent 拥有专属目录 `.deepagents/agents/`：
 
 - **字段可省略**：省略 `model` → 装配侧用 `.env` 全局模型（保持现状）；省略 `skills/tools` → 面板侧不做关联（装配侧不加载对应资源）；省略 `description/system_prompt/enabled` → 分别默认空 / 默认提示词 / true。
 - **enabled**：Agent 自身的启停开关，存在 json 内（与 skills/tools 的 `.disabled` 文件不同——agents 是单文件管控，无需额外标记文件）。
-- **关联校验**：`skills`/`tools` 只接受“目录存在且未停用”的名称，加载时过滤并记录警告（不阻塞会话）。
-- **新增/编辑**：前端表单（名称即 key，编辑态只读）+ 技能/工具多选（来自 3.1/3.2 列表，含停用项标灰）；创建时后端自动生成 `<name>.agent.md` 模板（frontmatter + 占位正文），正文可编辑后覆写。
+- **关联即启用（核心约定）**：`skills`/`tools` 数组只保存**启用中**的资源——停用（toggle 关闭）或删除某个 skill/MCP 时，后端遍历所有 Agent 同步从对应数组移除该引用；启用**不自动加回**，由用户重新勾选。Agent 编辑多选列表只显示启用中的项；提交时后端再次过滤已停用项（双保险）。
+- **新增/编辑**：前端表单（名称即 key，编辑态只读）+ 技能/工具多选（仅列出启用中的项）；创建时后端自动生成 `<name>.agent.md` 模板（frontmatter + 占位正文），正文可编辑后覆写。
 - **删除**：删除 `<name>.agent.md` 并从 agents.json 移除该 key；删除当前正在使用的 Agent 时 UI 阻止并提示切换。
 
 ---

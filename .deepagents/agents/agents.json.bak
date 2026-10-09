@@ -2,6 +2,8 @@
   "default": {
     "description": "Default agent (current behavior)",
     "enabled": true,
-    "skills": []
+    "skills": [
+      "tool-writer"
+    ]
   }
 }

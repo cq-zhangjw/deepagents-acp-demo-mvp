@@ -593,10 +593,10 @@ async function submitTool() {
 const agentModalVisible = ref(false)
 const agentForm = ref({ name: '', description: '', skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
-  skillList.value.map((s) => ({ label: s.name, value: s.name, disabled: !s.enabled }))
+  skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
 )
 const agentToolOptions = computed(() =>
-  toolList.value.map((t) => ({ label: t.name, value: t.name, disabled: !t.enabled }))
+  toolList.value.filter((t) => t.enabled).map((t) => ({ label: t.name, value: t.name }))
 )
 async function submitAgent() {
   try {

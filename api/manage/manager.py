@@ -262,6 +262,8 @@ def toggle_skill(name: str):
     else:
         flag.touch()
         enabled = False
+        # disabling drops the skill from every agent's association list
+        _remove_agent_ref("skill", name)
     return {"name": name, "enabled": enabled}
 
 
@@ -311,6 +313,7 @@ def delete_skill(name: str):
         shutil.rmtree(d)
     except OSError as exc:
         raise HTTPException(status_code=409, detail=f"failed to delete skill: {exc}") from exc
+    _remove_agent_ref("skill", name)
     return {"ok": True}
 
 
@@ -354,6 +357,8 @@ def toggle_tool(name: str):
     else:
         flag.touch()
         enabled = False
+        # disabling drops the MCP server from every agent's association list
+        _remove_agent_ref("tool", name)
     return {"name": name, "enabled": enabled}
 
 
@@ -469,10 +474,30 @@ def delete_tool(name: str):
         shutil.rmtree(d)
     except OSError as exc:
         raise HTTPException(status_code=409, detail=f"failed to delete tool: {exc}") from exc
+    _remove_agent_ref("tool", name)
     return {"ok": True}
 
 
 # ---------- agents (agents/*.agent.md + agents/agents.json) ----------
+
+def _remove_agent_ref(kind: str, name: str) -> None:
+    """Remove a skill/tool reference from every agent's list (disable/delete cleanup).
+
+    agents.json `skills`/`tools` hold only *enabled* associations; when a skill or
+    MCP server is disabled or deleted, drop it from all agents so no stale
+    reference survives. Re-enabling does NOT re-add it (user picks it again).
+    """
+    key = "skills" if kind == "skill" else "tools"
+    agents = _read_agents()
+    changed = False
+    for defn in agents.values():
+        items = defn.get(key) or []
+        if name in items:
+            defn[key] = [x for x in items if x != name]
+            changed = True
+    if changed:
+        _write_agents(agents)
+
 
 def _agent_md_body(name: str) -> str:
     md = _agent_md_path(name)
@@ -527,18 +552,14 @@ def get_agent(name: str):
 
 
 async def _validate_agent(name: str, data: dict) -> dict:
-    """Pre-check: linked skills/tools exist and are enabled."""
+    """Pre-check: linked skills/tools exist (associations are enabled-only by design)."""
     problems = []
     for skill in data.get("skills") or []:
         if not (SKILLS_DIR / skill / "SKILL.md").exists():
             problems.append(f"skill not found: {skill}")
-        elif _is_disabled(SKILLS_DIR / skill):
-            problems.append(f"skill disabled: {skill}")
     for tool in data.get("tools") or []:
         if not (MCP_DIR / tool / "server.json").exists():
             problems.append(f"tool not found: {tool}")
-        elif _is_disabled(MCP_DIR / tool):
-            problems.append(f"tool disabled: {tool}")
     return {"name": name, "ok": not problems, "problems": problems}
 
 
@@ -617,8 +638,10 @@ def _normalize_agent_def(payload: dict) -> dict:
     sp = payload.get("system_prompt")
     if isinstance(sp, str) and sp.strip():
         def_data["system_prompt"] = sp.strip()
-    skills = [s for s in (payload.get("skills") or []) if isinstance(s, str) and _valid_name(s)]
-    tools = [t for t in (payload.get("tools") or []) if isinstance(t, str) and _valid_name(t)]
+    skills = [s for s in (payload.get("skills") or []) if isinstance(s, str) and _valid_name(s)
+              and not _is_disabled(SKILLS_DIR / s)]
+    tools = [t for t in (payload.get("tools") or []) if isinstance(t, str) and _valid_name(t)
+             and not _is_disabled(MCP_DIR / t)]
     if skills:
         def_data["skills"] = skills
     if tools:
