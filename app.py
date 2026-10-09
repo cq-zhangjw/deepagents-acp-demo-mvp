@@ -19,6 +19,8 @@ from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from api.chat_voice.chat_voice import router as chat_voice_router
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -35,6 +37,9 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 
 app = FastAPI(title="ACP client base")
+
+# 语音通话子路由：/api/chat_voice/voices、/api/chat_voice/chat
+app.include_router(chat_voice_router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 

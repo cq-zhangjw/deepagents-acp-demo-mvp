@@ -154,6 +154,18 @@ flowchart TD
 
 权限弹窗中，“始终允许”使用次级危险提醒样式，并明确说明其作用范围。用户作出选择前保留当前任务的等待状态；选择结果以一条简短状态记录进入执行过程，不进入主聊天流。
 
+### 4.5 语音通话窗口
+
+| 元素 | 说明 |
+| --- | --- |
+| 入口 | `ChatPage.vue` 顶部操作区（语言选择右侧）通话图标（`CallOutline`），点击 `window.open` 打开独立窗口（`#/voice`，约 440×720，深色主题 `#0f1115` 画布 / `#171a21` 顶栏），与主聊天界面隔离。 |
+| 顶部栏 | 通话状态指示（未连接灰点 / 通话中绿色呼吸点）、音色下拉（`NSelect`，数据来自 `GET /api/chat_voice/voices`，Audio8 注册音色 zh/en，持久化 `localStorage.chat_voice_name`）、挂断（红色 `StopCircleOutline`）、关闭（`Close`）。 |
+| 中央区 | 圆形麦克风按钮（聆听时绿色光环 + `Mic`，否则 `MicOff`）、状态文字（聆听中/AI 思考中/AI 说话中）、实时识别中间结果与 AI 回复字幕。 |
+| 桥接逻辑 | 识别文字实时同步主窗口输入框（`chatBridge.updateInput`）；识别停顿约 0.9s 自动发送（`chatBridge.sendMessage`，无手动发送按钮）走正常 ACP 会话；AI 回复完成后回调触发 → 调用 `POST /api/chat_voice/tts`（Audio8 本地合成 WAV base64）播放，播完自动恢复聆听。无 `opener`（直接访问 `#/voice`）时显示琥珀色"请从主界面语音通话入口打开"提示。 |
+| 状态机 | `idle → listening → thinking → speaking`；播报结束后自动恢复 `listening`；挂断重置为 `idle`。 |
+
+主窗口 `ChatPage.vue` 顶部通话图标旁为"回复朗读"开关（默认关闭，AI 回复完成后按开关在主窗口朗读，独立窗口连接时优先通知独立窗口播报）；消息操作栏保留"朗读"按钮（任意纯文本消息，播放中变停止图标）。文案全部走 i18n（zh/ja/en，`voice` section）。
+
 ## 5. 色彩、排版与样式
 
 视觉采用参考图的轻量工作台质感：暖白画布、蓝色操作强调、低对比度面板与清晰的深色文本。颜色以令牌实现，供 Naive UI 的 `themeOverrides` 和页面 CSS 共同使用。

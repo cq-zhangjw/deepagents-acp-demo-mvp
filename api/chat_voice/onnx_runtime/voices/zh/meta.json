@@ -1,0 +1,16 @@
+{
+  "name": "zh",
+  "reference_text": "有人说啊，我们每天呢会和三百个陌生人擦肩而过。今天我想做一个特别的实验：当你收到来自陌生人的善意的时候，会有什么样的反应呢？",
+  "shape": [
+    10,
+    302
+  ],
+  "dtype": "uint16",
+  "sample_rate": 44100,
+  "source_audio": "multilingual_zh_01.mp3",
+  "source_sample_rate": 44100,
+  "source_sha256": "1366d37acad14dd87a48b4022171125f12911162c5f7c68e838a5042d2a667b3",
+  "model_fingerprint": "62dcff0adf6c2535b3260467a7c1d482b556da57266c96a444518b76e140d2c3",
+  "created_at": "2026-10-08T15:52:26.010551+00:00",
+  "source_kind": "web_registration"
+}

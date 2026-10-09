@@ -21,6 +21,7 @@
 | `app.py` | 提供上传接口、静态资源服务及 WebSocket 到 stdio 的双向桥接。 |
 | `acp_agent.py` | 启动 ACP Agent 服务，装配 DeepAgents、工具后端和 SQLite checkpoint。 |
 | `utils/model_util.py` | 读取环境配置并初始化 OpenAI 兼容模型。 |
+| `api/chat_voice/` | 语音通话子路由（挂载于 `app.py`）：音色列表 + Audio8 TTS 合成（ONNX INT4 本地推理），不封装 LLM 对话。 |
 | `web/` | Vue 3 / TypeScript ACP 客户端，构建产物由网关托管。 |
 
 ## 2. 总体设计
@@ -119,6 +120,24 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 界面字体随语言切换（中/日/英各自字体栈），naive-ui 组件与页面正文同步生效。
 - 页面加载后以后端 checkpoint 为准校验历史会话（`session/load`），失效会话（如 `db` 被删除）自动清理并新建空会话。
 - 图片在浏览器中转为 Base64，作为 ACP `image` 块发送；普通文件上传后以 `/uploads/...` 文本上下文发送。
+
+### 4.5 语音通话：独立窗口 `#/voice` + 桥接主会话（2.0）
+
+语音通话保留独立通话窗口（顶部图标 `window.open` 打开 `#/voice`，脱离聊天界面），但不单独封装 LLM 对话接口——只提供纯 TTS 合成，对话复用主聊天流程：
+
+- 后端 `api/chat_voice/chat_voice.py` 以 `APIRouter(prefix="/api/chat_voice")` 挂载到 `app.py`（`include_router`），提供：
+  - `GET /api/chat_voice/voices`：返回 Audio8 已注册音色（当前 zh / en，44100Hz）。
+  - `POST /api/chat_voice/tts`：请求 `{text, voice}`，调 `tts_api.synthesize_wav_bytes()` 用 Audio8 TTS（ONNX Runtime 纯 CPU，INT4 0.6B）在内存中合成 WAV，返回 `{text, audio(base64)}`；不落盘、不调用 LLM。
+  - `POST /api/chat_voice/tts_stream`：请求同 `/tts`，用 `iter_pcm_chunks()` 边合成边返回 16-bit PCM 字节流（单声道 44.1kHz LE），前端 Web Audio 排队播放，首包延迟显著低于整体合成；作为播报默认路径，失败时前端回退 `/tts`。
+- 本地推理模块 `api/chat_voice/tts_api.py`：封装 `arktts_runtime`（位于 `api/chat_voice/onnx_runtime/`），模型位于项目根目录 `models/Audio8-TTS-Preview-0.6B-ONNX-INT4`（可用环境变量 `ARKTTS_MODEL_DIR`/`ARKTTS_VOICES_DIR` 覆盖）；`get_runtime()` 单例缓存模型 session，`synthesize_wav_bytes()` 输出内存 WAV 字节。
+- 独立窗口 `web/src/pages/VoiceCallPage.vue`（深色通话主题）：
+  - 麦克风按钮切换浏览器 Web Speech API（`webkitSpeechRecognition`，continuous + interim，语言随 `localStorage.chat_primary_language` 的 zh/en/ja）——识别文字实时同步到主窗口输入框（`chatBridge.updateInput`）。
+  - 识别停顿约 0.9s 自动发送（`chatBridge.sendMessage(text)`，无需手动点击），主窗口写入输入框并触发正常 ACP 会话（`submitPrompt`）；停止识别时未发送文本也会补发。
+  - AI 回复完成后主窗口 `speakReplyIfEnabled(text)` 优先触发已注册的回调（通知独立窗口），否则按"回复朗读"开关在主窗口朗读；独立窗口收到回复后调用 `/tts` 合成并播放，播完自动恢复聆听。
+  - 顶部：通话状态点（未连接/通话中）、音色下拉（数据来自 `/voices`，持久化 `localStorage.chat_voice_name`）、挂断、关闭；无 `opener` 时显示"请从主界面语音通话入口打开"提示。
+- 主窗口 `ChatPage.vue`：顶部通话图标（`CallOutline`）旁为"回复朗读"开关（默认关闭）；消息操作栏保留"朗读"按钮（对任意纯文本消息调 `/tts`，再点停止）。
+- 依赖：`requirements.txt` 移除 `edge-tts`，Audio8 运行依赖见 `api/chat_voice/onnx_runtime/requirements.txt`（numpy/onnxruntime/soundfile/scipy/tokenizers）；`vite.config.ts` 开发代理增加 `/api`；`web/src/router/index.js` 增加 `/voice` 路由。
+- 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（约 5s/段，文本建议 ≤150 字，`max_new_tokens=512`）；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本；未知音色自动回退 `zh`。
 
 ## 4. 业务流程设计
 

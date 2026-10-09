@@ -11,6 +11,7 @@ export default defineConfig({
     proxy: {
       '/upload': 'http://127.0.0.1:8000',
       '/uploads': 'http://127.0.0.1:8000',
+      '/api': 'http://127.0.0.1:8000',
       '/acp-ws': {
         target: 'ws://127.0.0.1:8000',
         ws: true

@@ -59,4 +59,23 @@ export default {
     running: '运行中',
     waiting_permission: '等待授权',
   },
+
+  voice: {
+    windowTitle: '语音通话',
+    connected: '通话中',
+    disconnected: '未连接',
+    selectVoice: '选择音色',
+    hangUp: '挂断',
+    close: '关闭',
+    startListen: '开始说话',
+    stopListen: '停止说话',
+    listening: '正在聆听中...',
+    thinking: 'AI 正在思考...',
+    speaking: 'AI 正在说话...',
+    idleHint: '点击麦克风开始说话',
+    unsupported: '当前浏览器不支持语音识别',
+    micDenied: '麦克风权限被拒绝，请检查浏览器设置',
+    noBridge: '请从主界面的语音通话入口打开本窗口',
+    textPlaceholder: '识别文字会显示在这里，也可直接输入后发送',
+  },
 }

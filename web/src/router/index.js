@@ -5,6 +5,11 @@ const routes = [
     path: '/',
     name: 'chat',
     component: () => import("../pages/ChatPage.vue")
+  },
+  {
+    path: '/voice',
+    name: 'voice-call',
+    component: () => import("../pages/VoiceCallPage.vue")
   }
 ];
 

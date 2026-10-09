@@ -59,4 +59,23 @@ export default {
     running: 'Running',
     waiting_permission: 'Waiting for approval',
   },
+
+  voice: {
+    windowTitle: 'Voice Call',
+    connected: 'In call',
+    disconnected: 'Disconnected',
+    selectVoice: 'Select voice',
+    hangUp: 'Hang up',
+    close: 'Close',
+    startListen: 'Start speaking',
+    stopListen: 'Stop speaking',
+    listening: 'Listening...',
+    thinking: 'AI is thinking...',
+    speaking: 'AI is speaking...',
+    idleHint: 'Click the mic to start speaking',
+    unsupported: 'Speech recognition is not supported in this browser',
+    micDenied: 'Microphone access denied, please check browser settings',
+    noBridge: 'Please open this window from the voice call entry on the main screen',
+    textPlaceholder: 'Recognized text appears here; you can also type and send',
+  },
 }

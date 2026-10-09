@@ -59,4 +59,23 @@ export default {
     running: '実行中',
     waiting_permission: '権限待ち',
   },
+
+  voice: {
+    windowTitle: '音声通話',
+    connected: '通話中',
+    disconnected: '未接続',
+    selectVoice: '音声を選択',
+    hangUp: '切断',
+    close: '閉じる',
+    startListen: '話し始める',
+    stopListen: '話すのを止める',
+    listening: 'お聞きしています...',
+    thinking: 'AIが考えています...',
+    speaking: 'AIが話しています...',
+    idleHint: 'マイクをクリックして話し始める',
+    unsupported: 'このブラウザは音声認識をサポートしていません',
+    micDenied: 'マイク権限が拒否されました。ブラウザ設定を確認してください',
+    noBridge: 'メイン画面の音声通話入口からこのウィンドウを開いてください',
+    textPlaceholder: '認識した文字がここに表示されます。直接入力して送信もできます',
+  },
 }

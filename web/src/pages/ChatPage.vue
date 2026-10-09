@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
+import { playTtsStream, stopTtsStream } from '../api/ttsStream'
 import {
   AddOutline,
   ArrowDownOutline,
@@ -11,15 +12,20 @@ import {
   ConstructOutline,
   CopyOutline,
   CreateOutline,
+  DesktopOutline,
   EllipsisHorizontalOutline,
   LanguageOutline,
+  CallOutline,
   MenuOutline,
+  MicOutline,
   PaperPlaneOutline,
   RefreshOutline,
   SearchOutline,
   SparklesOutline,
   StopCircleOutline,
-  TrashOutline
+  TrashOutline,
+  VolumeHighOutline,
+  VolumeMuteOutline
 } from '@vicons/ionicons5'
 import {
   NAlert,
@@ -166,6 +172,16 @@ const actionLabels = computed(() => ({
   retry: locale.value === 'zh' ? '重新生成' : locale.value === 'ja' ? '再生成' : 'Regenerate',
   copyText: locale.value === 'zh' ? '复制纯文本' : locale.value === 'ja' ? 'テキストをコピー' : 'Copy text',
   copyMarkdown: locale.value === 'zh' ? '复制 Markdown' : locale.value === 'ja' ? 'Markdown をコピー' : 'Copy Markdown',
+  speak: locale.value === 'zh' ? '朗读' : locale.value === 'ja' ? '読み上げ' : 'Read aloud',
+  stopSpeak: locale.value === 'zh' ? '停止朗读' : locale.value === 'ja' ? '読み上げ停止' : 'Stop reading',
+  ttsFailed: locale.value === 'zh' ? '语音合成失败，请检查网络或代理' : locale.value === 'ja' ? '音声合成に失敗しました。ネットワークを確認してください' : 'Speech synthesis failed, check network or proxy',
+  startSpeechInput: locale.value === 'zh' ? '开始语音输入' : locale.value === 'ja' ? '音声入力を開始' : 'Start voice input',
+  stopSpeechInput: locale.value === 'zh' ? '停止语音输入' : locale.value === 'ja' ? '音声入力を停止' : 'Stop voice input',
+  speechUnsupported: locale.value === 'zh' ? '当前浏览器不支持语音识别' : locale.value === 'ja' ? 'このブラウザは音声認識をサポートしていません' : 'Speech recognition is not supported in this browser',
+  speechDenied: locale.value === 'zh' ? '麦克风权限被拒绝，请检查浏览器设置' : locale.value === 'ja' ? 'マイク権限が拒否されました。ブラウザ設定を確認してください' : 'Microphone access denied, please check browser settings',
+  selectVoice: locale.value === 'zh' ? '音色' : locale.value === 'ja' ? '音声' : 'Voice',
+  speakReply: locale.value === 'zh' ? 'AI 回复完成后自动朗读' : locale.value === 'ja' ? 'AI応答を自動読み上げ' : 'Read AI replies aloud',
+  openVoiceCall: locale.value === 'zh' ? '语音通话' : locale.value === 'ja' ? '音声通話' : 'Voice call',
   copied: locale.value === 'zh' ? '已复制' : locale.value === 'ja' ? 'コピーしました' : 'Copied',
   more: locale.value === 'zh' ? '更多操作' : locale.value === 'ja' ? 'その他の操作' : 'More actions',
   editMessage: locale.value === 'zh' ? '编辑消息' : locale.value === 'ja' ? 'メッセージを編集' : 'Edit message',
@@ -190,7 +206,9 @@ const actionLabels = computed(() => ({
   closePanel: locale.value === 'zh' ? '关闭面板' : locale.value === 'ja' ? 'パネルを閉じる' : 'Close panel',
   scrollToBottom: locale.value === 'zh' ? '滚动到底部' : locale.value === 'ja' ? '一番下へスクロール' : 'Scroll to bottom',
   previewAttachment: locale.value === 'zh' ? '预览附件' : locale.value === 'ja' ? '添付をプレビュー' : 'Preview attachment',
-  downloadAttachment: locale.value === 'zh' ? '下载附件' : locale.value === 'ja' ? '添付をダウンロード' : 'Download attachment'
+  downloadAttachment: locale.value === 'zh' ? '下载附件' : locale.value === 'ja' ? '添付をダウンロード' : 'Download attachment',
+  screenShare: locale.value === 'zh' ? '共享屏幕' : locale.value === 'ja' ? '画面共有' : 'Share screen',
+  screenShareActive: locale.value === 'zh' ? '共享屏幕已开启，发送消息时自动截屏' : locale.value === 'ja' ? '画面共有をオン、送信時に自動でスクリーンショット' : 'Screen share on, screenshots on send'
 }))
 
 const currentConversation = computed(() =>
@@ -272,6 +290,12 @@ function createConversation() {
   sidebarVisible.value = false
   persistConversations()
   nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
+}
+
+/** 打开语音通话独立窗口（#/voice，hash 路由） */
+function openVoiceCall() {
+  const url = `${window.location.origin}${window.location.pathname}#/voice`
+  window.open(url, 'voice-call', 'width=440,height=720,resizable=yes')
 }
 
 function selectConversation(id: string) {
@@ -747,6 +771,7 @@ async function sendAgentPrompt(
       assistantMessage.status = 'completed'
       assistantMessage.process.completedAt = Date.now()
       if (!assistantMessage.finalText) appendTextSegment(assistantMessage, t('taskComplete'))
+      speakReplyIfEnabled(assistantMessage.finalText ?? '')
     }
   } catch (error) {
     if (assistantMessage.status !== 'cancelled') {
@@ -767,7 +792,9 @@ async function sendAgentPrompt(
 async function submitPrompt() {
   const conversation = currentConversation.value
   const text = input.value.trim()
-  if (!conversation || (!text && !attachments.value.length) || isRunning.value || isUploading.value) return
+  if (!conversation || (!text && !attachments.value.length && !screenShareActive.value) || isRunning.value || isUploading.value) return
+  // 共享屏幕开启时：发送前截取当前屏幕作为附件
+  if (screenShareActive.value) await captureScreenAttachment()
 
   const isNewConversation = conversation.messages.length === 0
   errorText.value = ''
@@ -830,6 +857,131 @@ function copyAssistantText(assistant: AssistantMessage, asMarkdown: boolean) {
     ? assistant.finalText
     : new DOMParser().parseFromString(markdown.render(assistant.finalText), 'text/html').body.textContent?.trim() ?? ''
   void copyText(value)
+}
+
+// ---------- 语音合成（TTS）与语音桥接 ----------
+let speechAudio: HTMLAudioElement | null = null
+let speechStreamStop: (() => void) | null = null
+const speakingMessageId = ref<string | null>(null)
+const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
+const speakReplyEnabled = ref(localStorage.getItem('chat_speak_reply') === '1')
+
+function messagePlainText(item: { role: string; text?: string; finalText?: string }): string {
+  return item.role === 'user' ? (item.text ?? '') : (item.finalText ?? '')
+}
+
+/** 停止当前播放（流式或非流式） */
+function stopSpeech() {
+  if (speechStreamStop) {
+    speechStreamStop()
+    speechStreamStop = null
+  }
+  if (speechAudio) {
+    speechAudio.pause()
+    speechAudio = null
+  }
+}
+
+/** 合成并播放一段文本（返回是否成功）；用于消息朗读与 AI 回复播报。
+ *  优先流式（/tts_stream，首包低延迟），失败回退非流式 base64。 */
+async function speakText(text: string): Promise<boolean> {
+  if (!text.trim()) return false
+  stopSpeech()
+  // 流式优先
+  const handle = await playTtsStream(text, selectedVoice.value, () => {
+    speechStreamStop = null
+    speakingMessageId.value = null
+  })
+  if (handle) {
+    speechStreamStop = handle.stop
+    return true
+  }
+  // 回退：非流式 base64（保留当前可用版本）
+  try {
+    const resp = await fetch('/api/chat_voice/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: selectedVoice.value })
+    })
+    const data = await resp.json()
+    if (!data.audio) return false
+    const audio = new Audio('data:audio/wav;base64,' + data.audio)
+    speechAudio = audio
+    audio.onended = () => {
+      speechAudio = null
+      speakingMessageId.value = null
+    }
+    audio.onerror = () => {
+      speechAudio = null
+      speakingMessageId.value = null
+    }
+    audio.play().catch(() => {
+      speechAudio = null
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ---------- 语音通话窗口桥接（独立窗口 #/voice 通过 opener 调用） ----------
+let replyListener: ((text: string) => void) | null = null
+
+/** AI 回复完成后：优先通知独立通话窗口播报，否则按播报开关在主窗口朗读 */
+function speakReplyIfEnabled(text: string) {
+  if (!text.trim()) return
+  if (replyListener) {
+    const cb = replyListener
+    replyListener = null
+    cb(text)
+    return
+  }
+  if (!speakReplyEnabled.value) return
+  void speakText(text)
+}
+
+/** 暴露给独立语音通话窗口（window.opener.chatBridge） */
+function setupChatBridge() {
+  const bridge = {
+    /** 独立通话窗口：把语音识别的文字实时同步到主窗口输入框 */
+    updateInput: (text: string) => {
+      input.value = text
+    },
+    /** 独立通话窗口：把最终文字交给主会话发送（自动触发正常 ACP 流程） */
+    sendMessage: (text: string) => {
+      const value = text.trim()
+      if (!value || isRunning.value) return
+      input.value = value
+      void submitPrompt()
+    },
+    /** 独立通话窗口：注册 AI 回复完成回调（每次发送前注册，完成后触发一次） */
+    onReply: (cb: (text: string) => void) => {
+      replyListener = cb
+    }
+  }
+  ;(window as any).chatBridge = bridge
+}
+
+async function speakMessage(item: { id: string; role: string; text?: string; finalText?: string }) {
+  if (speakingMessageId.value === item.id) {
+    stopSpeech()
+    speakingMessageId.value = null
+    return
+  }
+  const text = messagePlainText(item)
+  if (!text.trim()) return
+  speakingMessageId.value = item.id
+  const ok = await speakText(text)
+  if (!ok) {
+    speakingMessageId.value = null
+    message.error(actionLabels.value.ttsFailed, { duration: 3000 })
+  }
+}
+
+// ---------- 语音输入（STT → 文本框） ----------
+function toggleSpeakReply() {
+  speakReplyEnabled.value = !speakReplyEnabled.value
+  localStorage.setItem('chat_speak_reply', speakReplyEnabled.value ? '1' : '0')
 }
 
 async function cancelTask() {
@@ -923,6 +1075,65 @@ function removeAttachment(index: number) {
   attachments.value.splice(index, 1)
 }
 
+// ---------- 共享屏幕（开启后发送消息自动截屏作为附件） ----------
+const screenShareActive = ref(false)
+let screenStream: MediaStream | null = null
+let screenVideo: HTMLVideoElement | null = null
+
+async function toggleScreenShare() {
+  if (screenShareActive.value) {
+    stopScreenShare()
+    return
+  }
+  try {
+    const stream = await (navigator.mediaDevices as any).getDisplayMedia({ video: { frameRate: 5 } })
+    screenStream = stream
+    const video = document.createElement('video')
+    video.srcObject = stream
+    video.muted = true
+    video.playsInline = true
+    await video.play()
+    screenVideo = video
+    screenShareActive.value = true
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => stopScreenShare())
+  } catch {
+    // 用户取消选择屏幕，保持关闭
+  }
+}
+
+function stopScreenShare() {
+  if (screenStream) {
+    screenStream.getTracks().forEach((track) => track.stop())
+    screenStream = null
+  }
+  screenVideo = null
+  screenShareActive.value = false
+}
+
+/** 截取当前屏幕一帧，作为图片附件加入待发送列表 */
+async function captureScreenAttachment() {
+  if (!screenShareActive.value || !screenVideo) return
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = screenVideo.videoWidth || 1920
+    canvas.height = screenVideo.videoHeight || 1080
+    canvas.getContext('2d')?.drawImage(screenVideo, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    if (!blob) return
+    const file = new File([blob], `screen_${Date.now()}.png`, { type: 'image/png' })
+    const previewUrl = await fileToDataUrl(file)
+    attachments.value.push({
+      name: file.name,
+      mimeType: file.type,
+      kind: 'image',
+      data: previewUrl.slice(previewUrl.indexOf(',') + 1),
+      previewUrl
+    })
+  } catch {
+    // 截帧失败时忽略
+  }
+}
+
 function statusText(status: TaskStatus | ToolStatus) {
   return t(`status.${status}`)
 }
@@ -1009,6 +1220,7 @@ watch(conversations, persistConversations, { deep: true })
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 onMounted(() => {
   void loadContextSize()
+  setupChatBridge()
   if (!conversations.value.length) createConversation()
   const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
   if (defaultEmpties.length > 1) {
@@ -1030,6 +1242,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('click', closeMessageMenu)
   window.removeEventListener('click', closeRenameMenu)
   if (scrollPauseTimer) window.clearTimeout(scrollPauseTimer)
+  stopScreenShare()
+  stopSpeech()
   ws.value?.close()
 })
 </script>
@@ -1132,6 +1346,17 @@ onBeforeUnmount(() => {
         <div class="header-actions">
           <NIcon :component="LanguageOutline" class="language-icon" />
           <NSelect v-model:value="locale" class="locale-select" size="small" :options="localeOptions" :aria-label="t('language')" />
+          <NButton quaternary circle :title="actionLabels.openVoiceCall" @click="openVoiceCall">
+            <template #icon><NIcon :component="CallOutline" /></template>
+          </NButton>
+          <NTooltip>
+            <template #trigger>
+              <NButton quaternary circle :type="speakReplyEnabled ? 'primary' : 'default'" :aria-label="actionLabels.speakReply" @click="toggleSpeakReply">
+                <template #icon><NIcon :component="speakReplyEnabled ? VolumeHighOutline : VolumeMuteOutline" /></template>
+              </NButton>
+            </template>
+            {{ actionLabels.speakReply }}
+          </NTooltip>
           <NDropdown :options="[{ label: t('newConversation'), key: 'new' }]" @select="createConversation">
             <NButton quaternary circle :aria-label="t('moreActions')">
               <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
@@ -1170,6 +1395,9 @@ onBeforeUnmount(() => {
               <div v-if="item.role === 'user'" class="message-actions message-actions--user">
                 <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
                   <template #icon><NIcon :component="CopyOutline" /></template>
+                </NButton>
+                <NButton quaternary circle size="tiny" :aria-label="actionLabels.speak" @click="speakMessage(item)">
+                  <template #icon><NIcon :component="speakingMessageId === item.id ? StopCircleOutline : VolumeHighOutline" /></template>
                 </NButton>
                 <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" @click="openEditMessage(item)">
                   <template #icon><NIcon :component="CreateOutline" /></template>
@@ -1221,6 +1449,14 @@ onBeforeUnmount(() => {
                     </template>
                     {{ actionLabels.copyMarkdown }}
                   </NTooltip>
+                  <NTooltip>
+                    <template #trigger>
+                      <NButton quaternary circle size="tiny" :aria-label="actionLabels.speak" @click="speakMessage(item)">
+                        <template #icon><NIcon :component="speakingMessageId === item.id ? StopCircleOutline : VolumeHighOutline" /></template>
+                      </NButton>
+                    </template>
+                    {{ speakingMessageId === item.id ? actionLabels.stopSpeak : actionLabels.speak }}
+                  </NTooltip>
                   <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" :disabled="isMessageBusy(item)" @click="openEditMessage(item)">
                     <template #icon><NIcon :component="CreateOutline" /></template>
                   </NButton>
@@ -1269,6 +1505,14 @@ onBeforeUnmount(() => {
                     </NButton>
                   </template>
                   {{ t('upload') }}
+                </NTooltip>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="small" :type="screenShareActive ? 'primary' : 'default'" :aria-label="actionLabels.screenShare" @click="toggleScreenShare">
+                      <template #icon><NIcon :component="DesktopOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ screenShareActive ? actionLabels.screenShareActive : actionLabels.screenShare }}
                 </NTooltip>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click.capture="openRightPanel('skills')">
                   <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}
