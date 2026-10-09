@@ -893,7 +893,7 @@ function findTool(process: ExecutionProcess, toolId: string) {
 
 function segmentTool(assistant: AssistantMessage, segment: ToolSegment): ToolCallEntry {
   return findTool(assistant.process, segment.toolId)
-    ?? { id: segment.toolId, name: '工具调用', status: 'running' }
+    ?? { id: segment.toolId, name: 'Run', status: 'running' }
 }
 
 function textFromContent(content: any): string {
@@ -903,6 +903,31 @@ function textFromContent(content: any): string {
   if (typeof content.text === 'string') return content.text
   if (content.content) return textFromContent(content.content)
   return ''
+}
+
+// ACP tool_call 事件只有 title（如 "Read `path`" / "Execute: cmd" / "glob"），
+// 没有 toolName。从 title/kind 推断徽标名（内置工具短名），推断不出用 ''（前端占位 Run）。
+const BUILTIN_TOOL_NAMES = new Set(['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'delete', 'task', 'execute'])
+function inferToolName(update: any): string {
+  const title = String(update.title ?? '').trim()
+  const kind = String(update.kind ?? '')
+  const m = title.match(/^(Read|Write|Edit|Execute)\s*[:\s]\s*(.*)$/s)
+  if (m) return m[1] === 'Execute' ? 'Run' : m[1]
+  if (BUILTIN_TOOL_NAMES.has(title)) return title
+  if (kind === 'read') return 'Read'
+  if (kind === 'edit') return 'Edit'
+  if (kind === 'search') return 'Search'
+  if (kind === 'execute') return 'Run'
+  return ''
+}
+// 徽标名后的正文：去掉 "Read/Write/Edit/Execute:" 前缀；剩余内容与徽标同名则留空
+function toolDisplayTitle(update: any): string {
+  const title = String(update.title ?? '').trim()
+  const badge = inferToolName(update)
+  const m = title.match(/^(Read|Write|Edit|Execute)\s*[:\s]\s*(.*)$/s)
+  let rest = m ? m[2].trim() : title
+  if (rest && (rest === badge || BUILTIN_TOOL_NAMES.has(rest))) rest = ''
+  return rest
 }
 
 function normalizeToolStatus(status?: string): ToolStatus {
@@ -946,8 +971,8 @@ function handleSessionUpdate(update: any) {
       if (!process.toolCalls.some((tool) => tool.id === id)) {
         process.toolCalls.push({
           id,
-          name: update.toolName ?? update.title ?? '工具调用',
-          title: update.title,
+          name: inferToolName(update) || 'Run',
+          title: toolDisplayTitle(update),
           status: 'running',
           rawInput: update.rawInput
         })
@@ -959,11 +984,11 @@ function handleSessionUpdate(update: any) {
       const id = update.toolCallId ?? createId('tool')
       let tool = process.toolCalls.find((item) => item.id === id)
       if (!tool) {
-        tool = { id, name: update.toolName ?? update.title ?? '工具调用', status: 'running' }
+        tool = { id, name: inferToolName(update) || 'Run', status: 'running' }
         process.toolCalls.push(tool)
       }
       ensureToolSegment(assistant, id)
-      tool.title = update.title ?? tool.title
+      if (update.title) tool.title = toolDisplayTitle(update)
       tool.rawInput = update.rawInput ?? tool.rawInput
       tool.output = textFromContent(update.content) || update.content || tool.output
       tool.status = normalizeToolStatus(update.status)
