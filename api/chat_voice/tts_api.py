@@ -42,7 +42,6 @@ _MODEL_FILE_FOR_LANG = {"zh": "model.onnx", "ja": "model_fp16.onnx", "en": "mode
 
 _espeak_rt = None
 _session_cache: dict[str, ort.InferenceSession] = {}
-_voice_list_cache: list[str] | None = None
 _voice_style_cache: dict[str, np.ndarray] = {}
 _phonemes_to_ids = None
 
@@ -135,16 +134,17 @@ def _voice_style(voice: str, n: int) -> np.ndarray:
 
 
 def list_voices() -> list[dict]:
-    """返回全部已下载音色（v1.0 英文 + v1.1-zh 中文）。"""
-    global _voice_list_cache
-    if _voice_list_cache is None:
-        names: list[str] = []
-        for model_dir in (MODEL_DIR_EN, MODEL_DIR_ZH):
-            voices_dir = model_dir / "voices"
-            if voices_dir.is_dir():
-                names.extend(p.stem for p in voices_dir.glob("*.bin") if not p.stem.startswith("."))
-        _voice_list_cache = sorted(set(names))
-    return [{"name": name} for name in _voice_list_cache]
+    """返回全部已下载音色（v1.0 英文 + v1.1-zh 中文）。
+
+    每次实时扫描两个模型的 voices 文件夹（*.bin 文件名即音色名），
+    本地增删音色文件后无需重启即可生效。
+    """
+    names: set[str] = set()
+    for model_dir in (MODEL_DIR_EN, MODEL_DIR_ZH):
+        voices_dir = model_dir / "voices"
+        if voices_dir.is_dir():
+            names.update(p.stem for p in voices_dir.glob("*.bin") if not p.stem.startswith("."))
+    return [{"name": name} for name in sorted(names)]
 
 
 def voice_exists(voice: str) -> bool:

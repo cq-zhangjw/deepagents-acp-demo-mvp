@@ -23,3 +23,9 @@ input,
 textarea {
 	font: inherit;
 }
+
+/* Ruby annotation (furigana) styling: keep reading text readable and smaller */
+ruby rt {
+  font-size: 14px;
+  color: #666;
+}

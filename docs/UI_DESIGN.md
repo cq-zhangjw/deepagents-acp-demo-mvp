@@ -194,6 +194,7 @@ flowchart TD
 
 - 字体：中文使用 `"Microsoft YaHei", "PingFang SC", sans-serif`；代码使用 `"Cascadia Code", Consolas, monospace`。
 - 正文为 `14px`、行高 `1.7`；聊天正文可提升至 `15px`；页面标题为 `20px`，不使用大幅标题。
+- 日文注音（ruby rt，如 `<ruby>日本語<rt>にほんご</rt></ruby>` 的假名标注）：全局样式 `ruby rt { font-size: 14px; color: #666; }`（定义于 `web/src/style.css`），保证正文可读性同时注音弱化显示。
 - 基础间距以 `4px` 为单位：页面内边距 `24px`，消息间距 `20px`，组件内部间距 `12px`。
 - 圆角：输入框、消息与面板使用 `8px`；图标按钮使用 `6px`；不使用过度圆润的胶囊卡片。
 - 阴影：仅弹窗和浮层使用 `0 8px 24px rgba(29, 39, 51, 0.12)`；常规分区依靠边框与背景区分。
