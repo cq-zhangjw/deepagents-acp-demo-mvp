@@ -19,7 +19,7 @@ import {
   MenuOutline,
   MicOutline,
   PaperPlaneOutline,
-  PersonOutline,
+  HardwareChipOutline,
   RefreshOutline,
   SearchOutline,
   SparklesOutline,
@@ -227,7 +227,7 @@ const actionLabels = computed(() => ({
   linkedSkills: locale.value === 'zh' ? '关联技能' : locale.value === 'ja' ? '連携スキル' : 'Linked skills',
   linkedTools: locale.value === 'zh' ? '关联工具' : locale.value === 'ja' ? '連携ツール' : 'Linked tools',
   currentAgent: locale.value === 'zh' ? '当前使用' : locale.value === 'ja' ? '現在使用中' : 'In use',
-  emptyList: locale.value === 'zh' ? '暂无内容，点击上方按钮新建' : locale.value === 'ja' ? 'まだありません。上のボタンから作成' : 'Empty. Create one from the button above'
+  emptyList: locale.value === 'zh' ? '暂无内容，可通过对话让 AI 生成' : locale.value === 'ja' ? 'まだありません。会話でAIに生成させることができます' : 'Empty. Ask the AI to create one via conversation'
 }))
 
 const currentConversation = computed(() =>
@@ -1603,7 +1603,7 @@ onBeforeUnmount(() => {
           <NTooltip>
             <template #trigger>
               <NButton quaternary circle :type="rightPanelTab === 'agents' && rightPanelVisible ? 'primary' : 'default'" :aria-label="actionLabels.agents" @click="openRightPanel('agents')">
-                <template #icon><NIcon :component="PersonOutline" /></template>
+                <template #icon><NIcon :component="HardwareChipOutline" /></template>
               </NButton>
             </template>
             {{ actionLabels.agents }}
@@ -1767,7 +1767,7 @@ onBeforeUnmount(() => {
                 </NTooltip>
                 <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
                   <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
-                    <template #icon><NIcon :component="PersonOutline" /></template>{{ currentAgentName || actionLabels.agent }}
+                    <template #icon><NIcon :component="HardwareChipOutline" /></template>{{ currentAgentName || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click="openRightPanel('skills')">
@@ -1826,7 +1826,6 @@ onBeforeUnmount(() => {
       <div class="right-panel-body">
         <!-- 技能管理 -->
         <div v-if="rightPanelTab === 'skills'" class="panel-section">
-          <NButton size="small" @click="openSkillEdit()"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newSkill }}</NButton>
           <div v-if="!skillList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="skill in skillList" :key="skill.name" class="manage-card" :class="{ 'manage-card--disabled': !skill.enabled }">
             <div class="manage-card-head">
@@ -1845,7 +1844,6 @@ onBeforeUnmount(() => {
         </div>
         <!-- 工具（MCP）管理 -->
         <div v-else-if="rightPanelTab === 'tools'" class="panel-section">
-          <NButton size="small" @click="toolModalVisible = true"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newTool }}</NButton>
           <div v-if="!toolList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="tool in toolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
             <div class="manage-card-head">

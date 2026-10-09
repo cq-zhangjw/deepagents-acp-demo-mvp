@@ -1,6 +1,6 @@
-﻿# DeepAgents 2.0 · 技能 / 工具（MCP）/ Agent 管理面板设计
+# DeepAgents 2.0 · 技能 / 工具（MCP）/ Agent 管理面板设计
 
-> 状态：待确认（本文档确认后实施）
+> 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-writer / tool-writer 技能由 AI 对话生成）
 > 适用范围：`E:\my_projects\deepagents_acp`（Windows / FastAPI 网关 + ACP 子进程 + Vue3 前端）
 > 关联：DESIGN_ZH.md（系统总设计）、UI_DESIGN.md（界面设计）
 
@@ -17,10 +17,11 @@
 
 **本设计目标**：
 
-1. **技能面板**：通过本地 `.deepagents/skills/` 文件夹管理技能（SKILL.md 标准格式），支持启停、删除、新建/编辑。
-2. **工具面板（MCP）**：通过本地 `.deepagents/mcp_servers/` 文件夹管理 MCP 服务器配置，支持启停、删除、新建与试连校验。
+1. **技能面板**：通过本地 `.deepagents/skills/` 文件夹管理技能（SKILL.md 标准格式），支持启停、删除、编辑。
+2. **工具面板（MCP）**：通过本地 `.deepagents/mcp_servers/` 文件夹管理 MCP 服务器配置，支持启停、删除、试连校验。
 3. **Agent 管理**：由全局 `.deepagents/agents.json` 单文件管控 Agent（模型覆盖、系统提示词、关联的技能与工具），支持增删改查与“当前使用 Agent”选择。
-4. **装配生效**：面板只负责**管理配置**（写 `.deepagents/` 文件）；acp_agent.py 如何按 Agent 配置装配模型/技能/MCP 工具，**由用户后续自行调整**，不在本设计实施范围。
+4. **内置生成技能**：`.deepagents/skills/skill-writer`（生成符合规范的 SKILL.md）与 `tool-writer`（生成符合 stdio 规范的 server.json）随仓库内置，新建技能/工具通过对话让 AI 按规范生成，**不再提供表单式新建**。
+5. **装配生效**：面板只负责**管理配置**（写 `.deepagents/` 文件）；acp_agent.py 如何按 Agent 配置装配模型/技能/MCP 工具，**由用户后续自行调整**，不在本设计实施范围。
 
 **不做**（本轮范围外）：会话管理迁移 moofile（2.0 需求 5，另行设计）；共享屏幕（已完成）；语音通话（已完成）。
 
@@ -92,7 +93,8 @@ license: MIT
 - **识别**：扫描 `.deepagents/skills/*/SKILL.md`；`name` 与目录名一致（不一致时以目录名为准并警告）。
 - **启停**：目录内 `.disabled` 文件存在 = 停用。启停开关 = 创建/删除该文件。
 - **删除**：删整个技能目录。
-- **新建/编辑**：前端表单（名称、描述、正文 markdown）→ 写 `SKILL.md`（frontmatter 自动生成 name/description）。正文编辑即“技能作者”视图，不改格式约定。
+- **编辑**：前端弹窗（正文 markdown 编辑）→ 覆写 `SKILL.md`。
+- **新建（不提供表单）**：由内置 `skill-writer` 技能驱动——用户对话中描述需求，AI 按规范生成 `SKILL.md` 写入 `.deepagents/skills/<name>/SKILL.md`；面板列表即时刷新可见。
 
 ### 3.2 工具 / MCP 服务器（MCPServer）
 
@@ -114,7 +116,8 @@ license: MIT
 - **识别**：扫描 `.deepagents/mcp_servers/*/server.json`。
 - **启停**：`.disabled` 标记文件（同技能）。
 - **删除**：删目录（含配置与本地实现文件）。
-- **新建**：表单填写 name/description/command/args/cwd/env → 写 server.json；保存后后端做**试连校验**（用 `mcp` SDK `stdio_client` 启动 → `initialize + list_tools` → 断开，返回可用工具清单与错误）。
+- **试连**：面板按钮 → 后端用 `mcp` SDK `stdio_client` 启动 → `initialize + list_tools` → 断开，返回可用工具清单与错误。
+- **新建（不提供表单）**：由内置 `tool-writer` 技能驱动——用户对话中描述需求，AI 按 stdio 规范生成 `server.json` 写入 `.deepagents/mcp_servers/<name>/server.json`；后端 POST 时自动试连并把 probe 结果带回前端。
 - **安全约定**：
   - `env` 中 `"${NAME}"` 形式从进程环境（`.env` 已 `load_dotenv`）解析；**明文密钥写入 server.json 时 UI 给出警告**（仅提示，不强制）。
   - MCP `command` 可执行任意程序 → 面板属本地自用工具，UI 文案提示“仅运行可信命令”。
