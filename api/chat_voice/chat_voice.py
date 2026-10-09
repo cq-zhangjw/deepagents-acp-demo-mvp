@@ -1,13 +1,13 @@
 """AI speech synthesis API (sub-router).
 
 Engines (selectable via TTS_ENGINE):
-  - kokoro   (default) Kokoro-82M local inference, ONNX Runtime CPU only,
-             models under repo-root models/, in-memory WAV, no file written.
-  - edge_tts Microsoft Edge online TTS, MP3 -> 24kHz PCM via PyAV; no local
-             model, but requires access to speech.platform.bing.com
-             (EDGE_TTS_PROXY can be set for restricted networks).
-  - sapi     Windows built-in speech voices (SAPI via win32com), 24kHz mono;
-             zero dependencies beyond the OS, always available on Windows.
+  - genie     (default) genie-tts local inference (ONNX, CPU), voices zh/en/jp/auto,
+              models under repo-root models/, WAV synthesized in memory (no file kept).
+  - edge_tts  Microsoft Edge online TTS, MP3 -> 24kHz PCM via PyAV; no local
+              model, but requires access to speech.platform.bing.com
+              (EDGE_TTS_PROXY can be set for restricted networks).
+  - sapi      Windows built-in speech voices (SAPI via win32com), 24kHz mono;
+              zero dependencies beyond the OS, always available on Windows.
 
 Fallback (TTS_FALLBACK=true by default): when the primary engine fails (e.g.
 Edge service unreachable), speech falls back to the Windows SAPI voices so
@@ -17,11 +17,10 @@ voice features never go silent.
   done on the frontend; recognized text is filled into the main chat input.
 - Speech output (TTS): this module calls the selected engine and synthesizes
   WAV/PCM in memory (no file written).
-- Voice resolution: when the requested voice is missing/unknown (e.g. legacy
-  Audio8 names zh/en), the language default voice configured via
-  TTS_VOICE_ZH / TTS_VOICE_JA / TTS_VOICE_EN (kokoro), EDGE_TTS_VOICE_ZH /
-  EDGE_TTS_VOICE_JA / EDGE_TTS_VOICE_EN (edge_tts) or SAPI_VOICE_ZH /
-  SAPI_VOICE_JA / SAPI_VOICE_EN (sapi) is picked by text language.
+- Voice resolution: genie uses the preset voices zh/en/jp/auto (auto = mixed
+  output); edge_tts/sapi resolve unknown/legacy names (e.g. 'zh') to the
+  language default voice configured via EDGE_TTS_VOICE_ZH / EDGE_TTS_VOICE_JA /
+  EDGE_TTS_VOICE_EN (edge_tts) or SAPI_VOICE_ZH / SAPI_VOICE_JA / SAPI_VOICE_EN (sapi).
 
 Entry: app.py include_router (prefix /api/chat_voice)
 """
@@ -34,26 +33,23 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import tts_api
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat_voice", tags=["chat_voice"])
 
-# voice name -> frontend display label (kokoro preset voices; edge/sapi voices carry their own label)
+# voice name -> frontend display label (edge/sapi voices carry their own label)
 _VOICE_LABELS = {}
 
 # playback mode: TTS_MODE=stream (streaming, low first-packet latency) | file (non-streaming, play after full WAV)
-# frames per stream chunk: TTS_STREAM_CHUNK_FRAMES (sentence-level streaming; kept for compatibility only)
-_SAMPLE_RATE = 24000
 
 
 def _engine() -> str:
-    """Active TTS engine: kokoro (default) | edge_tts | sapi."""
-    engine = os.getenv("TTS_ENGINE", "kokoro").strip().lower()
+    """Active TTS engine: genie (default) | edge_tts | sapi."""
+    engine = os.getenv("TTS_ENGINE", "genie").strip().lower()
     if engine in ("edge", "edge_tts", "edge-tts"):
         return "edge_tts"
     if engine in ("sapi", "windows", "windows_sapi"):
         return "sapi"
-    return "kokoro"
+    return "genie"
 
 
 def _fallback_enabled() -> bool:
@@ -68,7 +64,8 @@ def _engine_module():
     if _engine() == "sapi":
         from . import sapi_tts as mod
         return mod
-    return tts_api
+    from . import genie_tts as mod
+    return mod
 
 
 def _fallback_module():
@@ -133,7 +130,7 @@ def get_config():
     return {
         "mode": _tts_mode(),
         "chunk_frames": _stream_chunk_frames(),
-        "sample_rate": _SAMPLE_RATE,
+        "sample_rate": getattr(_engine_module(), "SAMPLE_RATE", 24000),
         "engine": _engine(),
         "fallback": _fallback_enabled(),
     }
@@ -159,7 +156,9 @@ def tts_stream(req: TTSRequest):
 
     def _stream(mod_):
         voice = mod_.resolve_voice(req.text, req.voice)
-        for seg in tts_api.split_text(req.text):
+        splitter = getattr(mod_, "split_text", None)
+        segs = splitter(req.text) if splitter else [req.text]
+        for seg in segs:
             for _seq, pcm in mod_.iter_pcm_chunks(seg, voice=voice):
                 yield pcm
 

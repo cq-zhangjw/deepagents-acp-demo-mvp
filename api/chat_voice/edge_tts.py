@@ -1,4 +1,4 @@
-"""Microsoft Edge TTS (online) wrapper, drop-in compatible with tts_api.py.
+"""Microsoft Edge TTS (online) wrapper, drop-in compatible with the genie engine interface.
 
 Used when TTS_ENGINE=edge_tts. Speech is synthesized by the free Microsoft
 Edge online service over a websocket; the returned MP3 stream is decoded to
@@ -13,12 +13,12 @@ Env controls (all optional):
   EDGE_TTS_PITCH   e.g. "+0Hz"
   EDGE_TTS_PROXY   http proxy for the Edge service, e.g. "http://127.0.0.1:7890"
 
-Public API mirrors tts_api.py:
+Public API mirrors the genie engine interface:
   synthesize_wav_bytes(text, voice) -> (WAV bytes, sample_rate)
   iter_pcm_chunks(text, voice)       -> yields (seq, 16-bit PCM bytes)
   list_voices()                      -> [{"name", "label", "locale"}]
   resolve_voice(text, voice)         -> actual voice name
-  detect_language / split_text       -> re-exported from tts_api
+  detect_language / split_text       -> imported from tts_common
 """
 
 import asyncio
@@ -33,7 +33,7 @@ import numpy as np
 import soundfile as sf
 from dotenv import load_dotenv
 
-from .tts_api import detect_language, split_text
+from .tts_common import detect_language, split_text
 
 load_dotenv()  # ensure .env EDGE_TTS_* settings take effect
 
@@ -158,7 +158,7 @@ def synthesize_wav_bytes(
 ) -> tuple[bytes, int]:
     """Synthesize speech and return in-memory WAV bytes (no file written).
 
-    Signature-compatible with tts_api.synthesize_wav_bytes; the sampling
+    Signature-compatible with genie engine synthesize_wav_bytes; the sampling
     params are accepted and ignored (Edge service has no such knobs).
     """
     if not text.strip():
@@ -182,10 +182,10 @@ def iter_pcm_chunks(
     seed: int = 42,
 ):
     """Sentence-level streaming: split the text, synthesize each segment and
-    yield its 16-bit PCM bytes (same contract as tts_api.iter_pcm_chunks).
+    yield its 16-bit PCM bytes (same contract as the genie engine iter_pcm_chunks).
 
     Each sentence round-trips the online service, so the first packet lands
-    after the first sentence finishes; latency is comparable to Kokoro.
+    after the first sentence finishes; latency is comparable to genie.
     """
     for seg in split_text(text):
         voice_resolved = resolve_voice(seg, voice)

@@ -53,3 +53,4 @@ models/
 *.bak
 temp_py.txt
 temp_readme.txt
+.venv/

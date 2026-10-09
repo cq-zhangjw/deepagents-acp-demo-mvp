@@ -5,20 +5,17 @@ deepagents==0.7.19
 deepagents-acp==0.0.12
 langchain-openai==1.6.6
 langgraph-checkpoint-sqlite==3.1.1
-# TTS runtime (Kokoro-82M: espeak-ng phonemization + onnxruntime inference)
-numpy==2.4.3
-onnxruntime==1.24.4
-soundfile
-espeakng-runtime
-kokorog2p
-# Japanese G2P fallback (kana/kanji -> romaji, no mbrola dependency)
-pykakasi
-# MCP SDK (management panel probe: stdio connect + list tools)
-mcp
+pillow==12.3.0
 
 # Edge TTS engine (online Microsoft Edge voices; optional, used when TTS_ENGINE=edge_tts)
 edge-tts
 av
 
-# Windows SAPI fallback TTS (win32com; Windows only, no model files)
-pywin32; sys_platform == "win32"
+# genie-tts
+./whls/jieba_fast-0.53-cp312-cp312-win_amd64.whl
+genie_tts
+onnxruntime
+soundfile
+numpy
+pydub
+

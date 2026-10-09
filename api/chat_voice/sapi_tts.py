@@ -1,7 +1,7 @@
 """Windows SAPI fallback TTS (system speech voices, no model files).
 
 Used when TTS_ENGINE=sapi directly, or as an automatic fallback when
-TTS_FALLBACK=true and the primary engine (kokoro / edge_tts) fails.
+TTS_FALLBACK=true and the primary engine (genie / edge_tts) fails.
 Synthesizes through the system SAPI voices via win32com, in memory, as
 24 kHz 16-bit mono (SAPI SAFT24kHz16BitMono), no files are written.
 
@@ -16,7 +16,7 @@ Env controls:
 Windows only (win32com). On non-Windows platforms importing this module
 raises ImportError and the fallback is skipped.
 
-Public API mirrors tts_api.py / edge_tts.py:
+Public API mirrors the genie engine interface / edge_tts.py:
   synthesize_wav_bytes / iter_pcm_chunks / list_voices / resolve_voice
 """
 
@@ -28,7 +28,7 @@ from typing import Iterator
 
 from dotenv import load_dotenv
 
-from .tts_api import detect_language, split_text
+from .tts_common import detect_language, split_text
 
 load_dotenv()
 
@@ -202,7 +202,7 @@ def synthesize_wav_bytes(
 ) -> tuple[bytes, int]:
     """Synthesize speech and return in-memory WAV bytes (no file written).
 
-    Signature-compatible with tts_api.synthesize_wav_bytes; sampling params
+    Signature-compatible with genie engine synthesize_wav_bytes; sampling params
     are accepted and ignored (SAPI has no such knobs).
     """
     if not text.strip():
@@ -221,7 +221,7 @@ def iter_pcm_chunks(
     top_k: int = 50,
     seed: int = 42,
 ) -> Iterator[tuple[int, bytes]]:
-    """Sentence-level streaming, same contract as tts_api.iter_pcm_chunks."""
+    """Sentence-level streaming, same contract as the genie engine iter_pcm_chunks."""
     for seg in split_text(text):
         wav = _synthesize_segment(seg, resolve_voice(seg, voice))
         # parse the PCM out of the WAV container (header size may vary)
