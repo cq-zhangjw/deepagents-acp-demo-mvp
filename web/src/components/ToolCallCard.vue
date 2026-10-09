@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NCollapse, NCollapseItem, NTag, NTabs, NTabPane } from 'naive-ui'
+import { NCollapse, NCollapseItem, NTabs, NTabPane } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import MarkdownMessage from './MarkdownMessage.vue'
 
@@ -58,11 +58,12 @@ const outputMarkdown = computed(() => {
   return `\`\`\`json\n${jsonValue(raw)}\n\`\`\``
 })
 
-function tagType(status: ToolStatus) {
-  if (status === 'completed') return 'success'
-  if (status === 'failed') return 'error'
-  if (status === 'waiting_permission') return 'warning'
-  return 'info'
+// 状态标签用自绘 span（不用 NTag：inline-flex + flex:auto 在折叠头 flex 容器里易参与挤压）
+function statusClass(status: ToolStatus) {
+  if (status === 'completed') return 'tool-status--success'
+  if (status === 'failed') return 'tool-status--error'
+  if (status === 'waiting_permission') return 'tool-status--warning'
+  return 'tool-status--info'
 }
 
 function statusText(status: string) {
@@ -77,7 +78,7 @@ function statusText(status: string) {
         <div class="tool-heading">
           <code class="tool-badge">{{ display.badge }}</code>
           <span v-if="display.body" class="tool-name" :title="tool.title || display.body">{{ display.body }}</span>
-          <NTag size="small" :type="tagType(tool.status)">{{ statusText(tool.status) }}</NTag>
+          <span class="tool-status" :class="statusClass(tool.status)">{{ statusText(tool.status) }}</span>
         </div>
       </template>
       <NTabs type="line" size="small" class="tool-tabs">
@@ -100,7 +101,11 @@ function statusText(status: string) {
 .tool-heading { flex:1; min-width:0; width:100%; display:flex; gap:8px; align-items:center; }
 .tool-badge { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.5 "Cascadia Code",Consolas,monospace; color:#2563eb; background:rgba(37,99,235,.08); border:1px solid rgba(37,99,235,.25); border-radius:6px; padding:0 8px; }
 .tool-name { flex:1; min-width:0; max-width:calc(100% - 150px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text); }
-.tool-heading :deep(.n-tag) { flex:none; }
+.tool-status { flex:none; display:inline-block; margin-left:auto; padding:1px 10px; border-radius:6px; font-size:12px; line-height:20px; white-space:nowrap; }
+.tool-status--success { color:#18a058; background:rgba(24,160,88,.1); }
+.tool-status--error { color:#d03050; background:rgba(208,48,80,.1); }
+.tool-status--warning { color:#f0a020; background:rgba(240,160,32,.1); }
+.tool-status--info { color:#2080f0; background:rgba(32,128,240,.1); }
 .tool-tabs :deep(.n-tabs-nav) { padding:0; }
 .tool-tabs :deep(.n-tabs-tab) { padding:5px 12px 7px; }
 .tool-pane { padding:12px 0 4px; white-space:pre-wrap; overflow-wrap:anywhere; }
