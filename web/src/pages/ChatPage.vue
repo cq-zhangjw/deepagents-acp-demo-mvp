@@ -2357,7 +2357,7 @@ onBeforeUnmount(() => {
 .msg-loader {
   --color-1: #9aa3b2;
   --color-2: #9aa3b233;
-  --size: 0.5px;
+  --size: 0.4px;
   width: calc(16 * var(--size));
   height: calc(16 * var(--size));
   border-radius: 50%;
@@ -2366,7 +2366,7 @@ onBeforeUnmount(() => {
     calc(32 * var(--size)) 0 var(--color-1),
     calc(-32 * var(--size)) 0 var(--color-1);
   position: relative;
-  margin: 10px 0 2px 4px;
+  margin: 8px 0 2px 15px;
   display: block;
   animation: msgflash 0.5s ease-out infinite alternate;
 }
