@@ -16,3 +16,6 @@ pykakasi
 # MCP SDK (management panel probe: stdio connect + list tools)
 mcp
 
+# Edge TTS engine (online Microsoft Edge voices; optional, used when TTS_ENGINE=edge_tts)
+edge-tts
+av

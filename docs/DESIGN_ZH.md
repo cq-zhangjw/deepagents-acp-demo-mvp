@@ -21,7 +21,7 @@
 | `app.py` | 提供上传接口、静态资源服务及 WebSocket 到 stdio 的双向桥接。 |
 | `acp_agent.py` | 启动 ACP Agent 服务，装配 DeepAgents、工具后端和 SQLite checkpoint。 |
 | `utils/model_util.py` | 读取环境配置并初始化 OpenAI 兼容模型。 |
-| `api/chat_voice/` | 语音通话子路由（挂载于 `app.py`）：音色列表 + Kokoro TTS 合成（ONNX fp16 本地推理，24kHz），不封装 LLM 对话。 |
+| `api/chat_voice/` | 语音通话子路由（挂载于 `app.py`）：音色列表 + TTS 合成（默认 Kokoro ONNX fp16 本地推理；`TTS_ENGINE=edge_tts` 时切换微软 Edge 在线音色，PyAV 解码 24kHz），24kHz，不封装 LLM 对话。 |
 | `web/` | Vue 3 / TypeScript ACP 客户端，构建产物由网关托管。 |
 
 ## 2. 总体设计
@@ -126,11 +126,12 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 语音通话保留独立通话窗口（顶部图标 `window.open` 打开 `#/voice`，脱离聊天界面），但不单独封装 LLM 对话接口——只提供纯 TTS 合成，对话复用主聊天流程：
 
 - 后端 `api/chat_voice/chat_voice.py` 以 `APIRouter(prefix="/api/chat_voice")` 挂载到 `app.py`（`include_router`），提供：
-  - `GET /api/chat_voice/voices`：返回全部已下载音色（v1.0 英文 `af_*`/`am_*`/`bf_*`/`bm_*` + v1.1-zh 中文 `zf_*`/`zm_*`，24000Hz）。
-  - `GET /api/chat_voice/config`：返回播报模式配置 `{mode, chunk_frames, sample_rate}`（mode 由 `TTS_MODE` 决定：`stream` / `file`，sample_rate 恒为 24000），前端据此选择播放路径。
-  - `POST /api/chat_voice/tts`：请求 `{text, voice}`，调 `tts_api.synthesize_wav_bytes()` 用 Kokoro-82M（ONNX Runtime 纯 CPU，fp16 82M）在内存中合成 WAV，返回 `{text, audio(base64)}`；不落盘、不调用 LLM。长文本按句子自动分段（`tts_api.split_text`），各段 PCM 无缝拼接后一次编码 WAV，不受 510 token 上下文截断。
-  - `POST /api/chat_voice/tts_stream`：请求同 `/tts`，长文本同样按句分段，每段合成后经 `iter_pcm_chunks()` 逐段返回 16-bit PCM 字节流（单声道 24kHz LE），前端 Web Audio 排队播放，首包延迟低于整体合成；`TTS_STREAM_CHUNK_FRAMES` 保留仅为兼容（Kokoro 为句子级流式，每段整段产出）。
-- 本地推理模块 `api/chat_voice/tts_api.py`：链路为 文本 → espeak-ng 音素化（`espeakng_runtime` 直接加载 `third_party/espeak-ng/libespeak_ng.dll` + `espeak-ng-data`）→ `kokorog2p.phonemes_to_ids` 映射（按语言选词表）→ ONNX 推理 → 24kHz 音频。**双模型**：zh 文本 → `models/Kokoro-82M-v1.1-zh-ONNX`（中文音色 `zf_*`/`zm_*`，词表 `model='1.1-zh'`，用 fp32 `model.onnx`——其 `model_fp16.onnx` 为 ONNX IR v9，onnxruntime 1.24 CPU 加载即崩）；en/ja 文本 → `models/Kokoro-82M-v1.0-ONNX`（英文音色 `af_*`/`am_*`/`bf_*`/`bm_*`，词表 `model='1.0'`，用 fp16）；模型目录可用 `KOKORO_MODEL_DIR_ZH`/`KOKORO_MODEL_DIR_EN` 环境变量覆盖。输出维度兼容（v1.0 `(1,N)` / v1.1-zh `(N,)`）。`get_espeak()` 与 `get_session(lang)` 按语言惰性缓存，`split_text()` 按句子边界切分（单段 ~120 字，过短段合并），`synthesize_wav_bytes()` 分段合成并拼接输出内存 WAV 字节（24kHz）。v1.0 单模型实现备份于 `tts_api.kokoro_v1_0.bak.py`。音色列表由 `list_voices()` 每次实时扫描两个模型的 `voices/*.bin` 文件名生成（本地增删音色无需重启）。
+  - `GET /api/chat_voice/voices`：按当前引擎返回音色（kokoro：本地已下载音色 v1.0 英文 `af_*`/`am_*`/`bf_*`/`bm_*` + v1.1-zh 中文 `zf_*`/`zm_*`；edge_tts：在线微软音色目录，label/value 直接可用，首次成功后缓存）。
+  - `GET /api/chat_voice/config`：返回播报模式配置 `{mode, chunk_frames, sample_rate, engine}`（mode 由 `TTS_MODE` 决定：`stream` / `file`，sample_rate 恒为 24000，engine 为 `kokoro` / `edge_tts`），前端据此选择播放路径。
+  - `POST /api/chat_voice/tts`：请求 `{text, voice}`，按 `TTS_ENGINE` 分发到对应 `synthesize_wav_bytes()`（kokoro：Kokoro-82M ONNX Runtime 纯 CPU 内存合成 WAV；edge_tts：在线合成 MP3 → PyAV 解码为 24kHz PCM → WAV），返回 `{text, audio(base64)}`；不落盘、不调用 LLM。长文本按句子自动分段（`tts_api.split_text`），各段 PCM 无缝拼接后一次编码 WAV，不受 510 token 上下文截断。合成失败时返回空 audio（不 500）。
+  - `POST /api/chat_voice/tts_stream`：请求同 `/tts`，长文本同样按句分段，每段经 `iter_pcm_chunks()` 逐段返回 16-bit PCM 字节流（单声道 24kHz LE），前端 Web Audio 排队播放，首包延迟低于整体合成；`TTS_STREAM_CHUNK_FRAMES` 保留仅为兼容（句子级流式，每段整段产出）。
+- 本地推理模块 `api/chat_voice/tts_api.py`：链路为 文本 → espeak-ng 音素化（`espeakng_runtime` 直接加载 `third_party/espeak-ng/libespeak_ng.dll` + `espeak-ng-data`）→ `kokorog2p.phonemes_to_ids` 映射（按语言选词表）→ ONNX 推理 → 24kHz 音频。**双模型**：zh 文本 → `models/Kokoro-82M-v1.1-zh-ONNX`（中文音色 `zf_*`/`zm_*`，词表 `model='1.1-zh'`，用 fp32 `model.onnx`——其 `model_fp16.onnx` 为 ONNX IR v9，onnxruntime 1.24 CPU 加载即崩）；en/ja 文本 → `models/Kokoro-82M-v1.0-ONNX`（英文音色 `af_*`/`am_*`/`bf_*`/`bm_*`，词表 `model='1.0'`，用 fp16）；模型目录可用 `KOKORO_MODEL_DIR_ZH`/`KOKORO_MODEL_DIR_EN` 环境变量覆盖。输出维度兼容（v1.0 `(1,N)` / v1.1-zh `(N,)`）。`get_espeak()` 与 `get_session(lang)` 按语言惰性缓存，`split_text()` 按句子边界切分（单段 ~120 字，过短段合并），`synthesize_wav_bytes()` 分段合成并拼接输出内存 WAV 字节（24kHz）。音色列表由 `list_voices()` 每次实时扫描两个模型的 `voices/*.bin` 文件名生成（本地增删音色无需重启）。
+- 在线引擎模块 `api/chat_voice/edge_tts.py`（`TTS_ENGINE=edge_tts` 时启用）：调用微软 Edge 免费在线 TTS（websocket），返回 MP3 由 PyAV（`av`）解码重采样为 24kHz mono 16-bit PCM，与 tts_api 接口签名完全一致（`synthesize_wav_bytes` / `iter_pcm_chunks` / `list_voices` / `resolve_voice`），零本地模型与 CPU 开销，但需能访问 `speech.platform.bing.com`（受限网络可配 `EDGE_TTS_PROXY`）。env 控制：`EDGE_TTS_VOICE_ZH`/`EDGE_TTS_VOICE_JA`/`EDGE_TTS_VOICE_EN` 默认音色（按文本语言自动选择），`EDGE_TTS_RATE`/`EDGE_TTS_VOLUME`/`EDGE_TTS_PITCH` 语速/音量/音高（pitch 需要 edge-tts ≥6.1.10，旧版本自动忽略），音色目录在线获取并进程级缓存。流式同样为句子级（每句一次在线往返）。
 - 独立窗口 `web/src/pages/VoiceCallPage.vue`（深色通话主题）：
   - 麦克风按钮切换浏览器 Web Speech API（`webkitSpeechRecognition`，continuous + interim，语言随 `localStorage.chat_primary_language` 的 zh/en/ja）——识别文字实时同步到主窗口输入框（`chatBridge.updateInput`）。
   - 识别停顿约 0.9s 自动发送（`chatBridge.sendMessage(text)`，无需手动点击），主窗口写入输入框并触发正常 ACP 会话（`submitPrompt`）；停止识别时未发送文本也会补发。
