@@ -29,8 +29,9 @@ from langgraph.graph.state import CompiledStateGraph
 
 from utils.model_util import MODEL
 
-# 会话状态持久化文件：checkpoint 落盘（sqlite），跨进程/跨网关重启保留，
-# 前端可用 session/load 加载历史会话并继续对话。
+# conversation state persistence file: checkpoints are saved (sqlite),
+# survive process/gateway restarts; the frontend can load historical
+# conversations via session/load and continue them.
 
 DB_ROOT = os.getenv("DB_ROOT") if os.getenv("DB_ROOT") else "./db"
 os.makedirs(DB_ROOT, exist_ok=True)
@@ -38,14 +39,14 @@ DB_PATH = os.path.join(DB_ROOT, "agent_state.sqlite")
 
 
 # SYSTEM_PROMPT = (
-#     "你是一个智能任务Agent。\n"
-#     "1. 先拆解任务，生成执行计划，分步执行。\n"
-#     "2. 缺少必要信息时主动向用户发起提问（request_input），不要编造信息。\n"
-#     "3. 图片附件会作为图片内容直接提供，请直接分析图片，不要调用 read_file。"
-#     "其他上传附件会以虚拟路径（如 /uploads/example.txt）提供；"
-#     "请使用本地文件工具读取该路径，不要将其当作 http 资源或 Windows 文件路径访问。\n"
-#     "4. 需要执行高风险工具操作时发起权限请求（request_permission）。\n" \
-#     "5. 全体任务执行完毕后，你始终需要向用户进行报告。"
+#     "You are an intelligent task agent.\n"
+#     "1. Break down the task, produce an execution plan, and run it step by step.\n"
+#     "2. When essential information is missing, proactively ask the user (request_input); do not fabricate.\n"
+#     "3. Image attachments are provided as image content; analyze them directly, do not call read_file. "
+#     "Other attachments are provided as virtual paths (e.g. /uploads/example.txt); "
+#     "read them with local file tools, do not treat them as http resources or Windows paths.\n"
+#     "4. Request permission (request_permission) before high-risk tool operations.\n"
+#     "5. Always report back to the user when the whole task is finished."
 # )
 
 
@@ -57,26 +58,28 @@ def get_system_prompt() -> str:
             return f.read()
     else:
         return (
-            "你是一个智能任务Agent。\n"
-            "1. 先拆解任务，生成执行计划，分步执行。\n"
-            "2. 缺少必要信息时主动向用户发起提问（request_input），不要编造信息。\n"
-            "3. 图片附件会作为图片内容直接提供，请直接分析图片，不要调用 read_file。"
-            "其他上传附件会以虚拟路径（如 /uploads/example.txt）提供；"
-            "请使用本地文件工具读取该路径，不要将其当作 http 资源或 Windows 文件路径访问。\n"
-            "4. 需要执行高风险工具操作时发起权限请求（request_permission）。\n" \
-            "5. 全体任务执行完毕后，你始终需要向用户进行报告。"
+            "You are an intelligent task agent.\n"
+            "1. Break down the task, produce an execution plan, and run it step by step.\n"
+            "2. When essential information is missing, proactively ask the user (request_input); do not fabricate.\n"
+            "3. Image attachments are provided as image content; analyze them directly, do not call read_file. "
+            "Other attachments are provided as virtual paths (e.g. /uploads/example.txt); "
+            "read them with local file tools, do not treat them as http resources or Windows paths.\n"
+            "4. Request permission (request_permission) before high-risk tool operations.\n"
+            "5. Always report back to the user when the whole task is finished.\n"
+            "Always respond in the user's language."
         )
 
 SYSTEM_PROMPT = get_system_prompt()
 
 
 class PowerShellBackend(LocalShellBackend):
-    """Windows 专用 shell 后端：execute 命令统一交给 PowerShell 执行。
+    """Windows-specific shell backend: execute commands go through PowerShell.
 
-    默认 LocalShellBackend 用 subprocess.run(shell=True)，在 Windows 上实际走的是
-    cmd.exe——既不是 bash 也不是 PowerShell，模型无论写 Linux 命令还是 PowerShell
-    命令都会先报错再试错。这里改为显式调用 powershell.exe，模型按 PowerShell
-    语法执行即可（配合 AGENTS.md 顶部的命令对照表）。
+    The default LocalShellBackend uses subprocess.run(shell=True), which on
+    Windows actually invokes cmd.exe - neither bash nor PowerShell - so model
+    commands in either syntax fail before being retried. Here we explicitly
+    call powershell.exe so the model can write PowerShell syntax directly
+    (paired with the command cheat-sheet at the top of AGENTS.md).
     """
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -107,7 +110,7 @@ class PowerShellBackend(LocalShellBackend):
                 cwd=str(self.cwd),
             )
 
-            # 与 LocalShellBackend.execute 相同的输出组装逻辑
+            # same output assembly logic as LocalShellBackend.execute
             output_parts = []
             if result.stdout:
                 output_parts.append(result.stdout)
@@ -167,8 +170,9 @@ def build_agent(
         # Shell commands still run in root_dir and are unrestricted by this filesystem mapping.
         # inherit_env=True: inherit the parent process environment (PATH/USERPROFILE, etc.); otherwise the child process
         #   has an empty environment and cannot even find powershell/whoami.
-        # Windows 上用 PowerShellBackend：默认 shell=True 实际走 cmd.exe，模型写 PowerShell
-        #   语法会直接报错；改为显式 powershell.exe 后模型按 PowerShell 语法执行即可。
+        # Windows uses PowerShellBackend: default shell=True actually runs cmd.exe, so
+        #   PowerShell syntax fails immediately; switching to explicit powershell.exe lets
+        #   the model execute PowerShell syntax directly.
         default=(PowerShellBackend if sys.platform == "win32" else LocalShellBackend)(
             root_dir=agent_root_dir,
             virtual_mode=True,
@@ -183,8 +187,8 @@ def build_agent(
         model=MODEL,
         # tools=mcp_loader._global_mcp_tools,  # use cached tools
         tools=None,
-        # 持久化 checkpointer（AsyncSqliteSaver）：会话状态落盘 agent_state.sqlite，
-        # 配合 AgentServerACP(load_sessions=True) 支持 session/load 加载历史并继续对话。
+        # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
+        # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,
         backend=backend,
         system_prompt=SYSTEM_PROMPT,
@@ -206,8 +210,8 @@ async def main() -> None:
     conn = await aiosqlite.connect(DB_PATH)
     checkpointer = AsyncSqliteSaver(conn)
     acp_agent = AgentServerACP(
-        # 每个 session 复用同一个持久化 checkpointer；load_sessions=True 使 initialize
-        # 广告 loadSession:true，并实现 session/load（重放历史 update 事件）。
+        # every session reuses the same persistent checkpointer; load_sessions=True makes
+        # initialize advertise loadSession:true and implements session/load (replays history update events).
         agent=lambda ctx: build_agent(ctx, checkpointer),
         load_sessions=True,
     )

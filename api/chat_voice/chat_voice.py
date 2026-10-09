@@ -1,11 +1,14 @@
-"""AI 语音合成 API（子路由，Kokoro-82M 版）。
+"""AI speech synthesis API (sub-router, Kokoro-82M edition).
 
-- 语音输入（STT）：浏览器 Web Speech Recognition（webkitSpeechRecognition），前端完成，识别文字填入主聊天输入框。
-- 语音输出（TTS）：本模块调用 Kokoro-82M TTS（ONNX Runtime 纯 CPU，模型位于根目录 models/），内存合成 WAV，不落盘。
-- 音色解析：请求 voice 缺失 / 未知（如旧 Audio8 名 zh/en）时，按文本语言（zh/ja/en）自动选择
-  `TTS_VOICE_ZH` / `TTS_VOICE_JA` / `TTS_VOICE_EN` 配置的默认音色。
+- Speech input (STT): browser Web Speech Recognition (webkitSpeechRecognition),
+  done on the frontend; recognized text is filled into the main chat input.
+- Speech output (TTS): this module calls Kokoro-82M TTS (ONNX Runtime CPU only,
+  models under the repo-root models/), synthesizes WAV in memory, no file written.
+- Voice resolution: when the requested voice is missing/unknown (e.g. legacy
+  Audio8 names zh/en), the language default voice configured via
+  `TTS_VOICE_ZH` / `TTS_VOICE_JA` / `TTS_VOICE_EN` is picked by text language.
 
-入口：app.py include_router（前缀 /api/chat_voice）
+Entry: app.py include_router (prefix /api/chat_voice)
 """
 
 import base64
@@ -20,11 +23,11 @@ from .tts_api import iter_pcm_chunks, list_voices, resolve_voice, split_text, sy
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat_voice", tags=["chat_voice"])
 
-# 音色名 → 前端展示标签（Kokoro 预置音色：af_*/am_*/bf_*/bm_* 英文，v1.0 共 54 个）
+# voice name -> frontend display label (Kokoro preset voices: af_*/am_*/bf_*/bm_* en, 54 in v1.0)
 _VOICE_LABELS = {}
 
-# 播报模式：TTS_MODE=stream（流式，首包低延迟）| file（非流式，等完整 WAV 后播放）
-# 流式每块音频帧数：TTS_STREAM_CHUNK_FRAMES（Kokoro 为句子级流式，该值仅兼容保留）
+# playback mode: TTS_MODE=stream (streaming, low first-packet latency) | file (non-streaming, play after full WAV)
+# frames per stream chunk: TTS_STREAM_CHUNK_FRAMES (Kokoro is sentence-level streaming; kept for compatibility only)
 _SAMPLE_RATE = 24000
 
 
@@ -42,7 +45,7 @@ def _stream_chunk_frames() -> int:
 
 
 def _voice_list() -> list[dict]:
-    """将 Kokoro 已下载音色映射为前端 {label, value} 格式。"""
+    """Map downloaded Kokoro voices to the frontend {label, value} format."""
     try:
         items = list_voices()
     except Exception as exc:  # noqa: BLE001
@@ -61,24 +64,24 @@ def _voice_list() -> list[dict]:
 
 
 class TTSRequest(BaseModel):
-    text: str = Field(..., description="待朗读文本")
-    voice: str = Field(default="", description="TTS 音色名；留空或未知时按文本语言自动选择默认音色")
+    text: str = Field(..., description="text to read aloud")
+    voice: str = Field(default="", description="TTS voice name; empty or unknown -> language default voice")
 
 
 class TTSResponse(BaseModel):
-    text: str = Field(..., description="回显文本")
-    audio: str = Field(..., description="TTS WAV base64（合成失败时为空字符串）")
+    text: str = Field(..., description="echoed text")
+    audio: str = Field(..., description="TTS WAV base64 (empty string on synthesis failure)")
 
 
 @router.get("/voices")
 def get_voices():
-    """返回 Audio8 已注册的音色列表。"""
+    """Return the list of registered voices."""
     return _voice_list()
 
 
 @router.get("/config")
 def get_config():
-    """返回播报模式配置，前端据此选择流式 / 非流式播放路径。"""
+    """Return playback mode config; the frontend picks stream/file path accordingly."""
     return {
         "mode": _tts_mode(),
         "chunk_frames": _stream_chunk_frames(),
@@ -88,17 +91,17 @@ def get_config():
 
 @router.post("/tts", response_model=TTSResponse)
 def tts(req: TTSRequest):
-    """纯 TTS：将指定文本合成为 WAV base64（内存合成，不落盘、不调用 LLM）。"""
+    """Plain TTS: synthesize the given text into WAV base64 (in-memory, no file, no LLM)."""
     audio = _synthesize(req.text, req.voice)
     return TTSResponse(text=req.text, audio=base64.b64encode(audio).decode())
 
 
 @router.post("/tts_stream")
 def tts_stream(req: TTSRequest):
-    """流式 TTS：边合成边返回 16-bit PCM（单声道 24kHz LE），降低首包延迟。
+    """Streaming TTS: yield 16-bit PCM (mono 24kHz LE) segment by segment to lower first-packet latency.
 
-    长文本按句子分段，逐段流式合成并 yield，前端收到连续的 PCM 字节流；
-    失败时流提前结束。
+    Long text is split into sentence segments and streamed; the frontend receives
+    a continuous PCM byte stream; the stream ends early on failure.
     """
     def generate():
         if not req.text.strip():

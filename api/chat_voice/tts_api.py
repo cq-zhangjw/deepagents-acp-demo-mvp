@@ -1,20 +1,21 @@
-"""Kokoro TTS 本地推理（ONNX Runtime，纯 CPU）。
+"""Kokoro TTS local inference (ONNX Runtime, CPU only).
 
-替代原 Audio8-TTS 实现（备份见 `tts_api.audio8.bak.py`）。自 v1.1-zh 起支持多模型：
-  - zh 文本 → Kokoro-82M-v1.1-zh（models/Kokoro-82M-v1.1-zh-ONNX，中文音色 zf_*/zm_*，词表 model='1.1-zh'）
-  - ja 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，日文音色 jf_*/jm_*，词表 model='1.0'；
-    v1.0 为多语言模型，自带日语音色与日语音素支持，无需单独日文模型）
-  - en 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，英文音色 af_*/am_*/bf_*/bm_*，词表 model='1.0'）
+Replaces the legacy Audio8-TTS implementation. Multi-model support since v1.1-zh:
+  - zh text -> Kokoro-82M-v1.1-zh (models/Kokoro-82M-v1.1-zh-ONNX, zh voices zf_*/zm_*, vocab model='1.1-zh')
+  - ja text -> Kokoro-82M-v1.0 (models/Kokoro-82M-v1.0-ONNX, ja voices jf_*/jm_*, vocab model='1.0';
+    v1.0 is a multilingual model with built-in Japanese voices/phonemes, no separate ja model needed)
+  - en text -> Kokoro-82M-v1.0 (models/Kokoro-82M-v1.0-ONNX, en voices af_*/am_*/bf_*/bm_*, vocab model='1.0')
 
-链路（与 v1.0 相同）：
-  文本 → espeak-ng 音素化（espeakng-runtime 直接加载 libespeak_ng.dll）→ kokorog2p
-  phonemes_to_ids 映射（按语言选词表）→ ONNX 推理 → 24kHz 音频。
-  长文本按句子分段（split_text），逐段合成后 PCM 拼接，不受 token 上下文限制截断。
+Pipeline (same as v1.0):
+  text -> espeak-ng phonemization (espeakng-runtime loads libespeak_ng.dll directly) -> kokorog2p
+  phonemes_to_ids mapping (vocab selected by language) -> ONNX inference -> 24kHz audio.
+  Long text is split into sentence segments (split_text) and synthesized segment by segment;
+  PCM is concatenated, so there is no token-context truncation.
 
-模型/工具目录（可用环境变量覆盖）：
-  KOKORO_MODEL_DIR_EN   默认 ./models/Kokoro-82M-v1.0-ONNX（英文/日文共用）
-  KOKORO_MODEL_DIR_ZH   默认 ./models/Kokoro-82M-v1.1-zh-ONNX（中文）
-  ESPEAK_DIR            默认 ./third_party/espeak-ng（便携解包版，随仓库分发）
+Model/tool directories (overridable via env):
+  KOKORO_MODEL_DIR_EN   default ./models/Kokoro-82M-v1.0-ONNX (shared by en/ja)
+  KOKORO_MODEL_DIR_ZH   default ./models/Kokoro-82M-v1.1-zh-ONNX (zh)
+  ESPEAK_DIR            default ./third_party/espeak-ng (portable unpack, shipped with repo)
 """
 
 import io
@@ -28,19 +29,19 @@ import onnxruntime as ort
 import soundfile as sf
 from dotenv import load_dotenv
 
-load_dotenv()  # 确保 .env 的 TTS_* 配置生效（模块级 getenv 依赖此步）
+load_dotenv()  # ensure .env TTS_* settings take effect (module-level getenv depends on this)
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent  # 项目根目录
+BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
 MODEL_DIR_EN = Path(os.getenv("KOKORO_MODEL_DIR_EN", BASE_DIR / "models" / "Kokoro-82M-v1.0-ONNX"))
 MODEL_DIR_ZH = Path(os.getenv("KOKORO_MODEL_DIR_ZH", BASE_DIR / "models" / "Kokoro-82M-v1.1-zh-ONNX"))
 ESPEAK_DIR = Path(os.getenv("ESPEAK_DIR", BASE_DIR / "third_party" / "espeak-ng"))
 SAMPLE_RATE = 24000
 
-# 语言 → 模型目录 / 词表 variant / 模型文件名
-# 注：v1.1-zh 的 model_fp16.onnx 在 onnxruntime 1.24 CPU 上加载即崩（IR v9 兼容问题），
-#     中文统一使用 fp32 model.onnx；v1.0（含日文）的 fp16 正常。
+# language -> model dir / vocab variant / model file name
+# Note: v1.1-zh model_fp16.onnx crashes on onnxruntime 1.24 CPU (IR v9 compatibility issue),
+#       so zh always uses fp32 model.onnx; v1.0 (incl. ja) fp16 works fine.
 _MODEL_FOR_LANG = {"zh": MODEL_DIR_ZH, "ja": MODEL_DIR_EN, "en": MODEL_DIR_EN}
 _VOCAB_FOR_LANG = {"zh": "1.1-zh", "ja": "1.0", "en": "1.0"}
 _MODEL_FILE_FOR_LANG = {"zh": "model.onnx", "ja": "model_fp16.onnx", "en": "model_fp16.onnx"}
@@ -50,21 +51,21 @@ _session_cache: dict[str, ort.InferenceSession] = {}
 _voice_style_cache: dict[str, np.ndarray] = {}
 _phonemes_to_ids = None
 
-# 各语言默认音色（env 可覆盖：TTS_VOICE_ZH / TTS_VOICE_JA / TTS_VOICE_EN）
+# default voice per language (env overridable: TTS_VOICE_ZH / TTS_VOICE_JA / TTS_VOICE_EN)
 _DEFAULT_VOICES = {
     "zh": os.getenv("TTS_VOICE_ZH", "zf_001"),
     "ja": os.getenv("TTS_VOICE_JA", "jf_alpha"),
     "en": os.getenv("TTS_VOICE_EN", "af_heart"),
 }
-# espeak-ng 音素化 voice（按语言；ja 使用 espeak-ng 自带 ja voice 读假名与汉字）
+# espeak-ng phonemization voice per language
 _ESPEAK_VOICE_FOR_LANG = {"zh": "cmn", "ja": "ja", "en": "en-us"}
-# v1.1-zh 中文音色前缀 / v1.0 日文音色前缀（判断 voice 属于哪个模型目录）
+# voice name prefixes: v1.1-zh zh voices / v1.0 ja voices (used to pick the model dir)
 _ZH_VOICE_PREFIXES = ("zf_", "zm_")
 _JA_VOICE_PREFIXES = ("jf_", "jm_")
 
 
 def detect_language(text: str) -> str:
-    """轻量语言判别：含日文假名 → ja；含 CJK 汉字 → zh；否则 en。"""
+    """Lightweight language detection: kana -> ja; CJK hanzi -> zh; otherwise en."""
     if not text:
         return "en"
     if re.search(r"[\u3040-\u309f\u30a0-\u30ff\uff66-\uff9f]", text):
@@ -79,14 +80,14 @@ def _model_dir_for_lang(lang: str) -> Path:
 
 
 def _voice_model_dir(voice: str) -> Path:
-    """音色所属模型目录：zf_*/zm_* → v1.1-zh；jf_*/jm_* 及其余 → v1.0（多语言模型自带日文音色）。"""
+    """Model dir the voice belongs to: zf_*/zm_* -> v1.1-zh; jf_*/jm_* and others -> v1.0 (multilingual)."""
     if voice.startswith(_ZH_VOICE_PREFIXES):
         return MODEL_DIR_ZH
     return MODEL_DIR_EN
 
 
 def get_espeak() -> object:
-    """返回 espeakng_runtime.EspeakRuntime 单例。"""
+    """Return the espeakng_runtime.EspeakRuntime singleton."""
     global _espeak_rt
     if _espeak_rt is None:
         from espeakng_runtime import EspeakRuntime
@@ -98,7 +99,7 @@ def get_espeak() -> object:
 
 
 def get_session(lang: str) -> ort.InferenceSession:
-    """按语言返回 ONNX session（每个模型目录一个 session，按需惰性加载）。"""
+    """Return the ONNX session for a language (one session per model dir, lazy-loaded)."""
     session = _session_cache.get(lang)
     if session is None:
         model_path = _model_dir_for_lang(lang) / "onnx" / _MODEL_FILE_FOR_LANG.get(lang, "model_fp16.onnx")
@@ -121,10 +122,11 @@ _kakasi = None
 
 
 def _to_romaji(text: str) -> str:
-    """日文文本（汉字+假名）→ 罗马字。
+    """Convert Japanese text (kanji + kana) to romaji.
 
-    使用 pykakasi（纯 Python，内置词典）：汉字与假名均转为 Hepburn 罗马字，
-    供 espeak en-us 音素化（避开 espeak-ng 日语 voice 对 mbrola 的依赖）。
+    Uses pykakasi (pure Python, built-in dictionary): both kanji and kana are
+    converted to Hepburn romaji, which is then phonemized with espeak en-us
+    (avoids espeak-ng's ja voice dependency on mbrola).
     """
     global _kakasi
     if _kakasi is None:
@@ -134,11 +136,13 @@ def _to_romaji(text: str) -> str:
 
 
 def _phonemize_ids(text: str, lang: str) -> list[int]:
-    """文本 → espeak 音素 → Kokoro token ids（按语言选 espeak voice 与词表）。
+    """Text -> espeak phonemes -> Kokoro token ids (voice/vocab selected by language).
 
-    日文特殊路径：espeak-ng 的 ja voice 依赖 mbrola 库（本项目未内置），
-    故日文先经 pykakasi 转为罗马字，再用 en-us voice 音素化并映射 v1.0 词表
-    （Kokoro v1.0 为多语言词表，含日语音素；发音为近似日文口音，可稳定合成）。
+    Japanese special path: espeak-ng's ja voice requires the mbrola library
+    (not bundled here), so Japanese is first converted to romaji via pykakasi,
+    phonemized with en-us voice, and mapped against the v1.0 vocab
+    (Kokoro v1.0 is multilingual and includes Japanese phonemes; the result is
+    a stable approximation of the Japanese accent).
     """
     espeak = get_espeak()
     if lang == "ja":
@@ -154,10 +158,11 @@ def _phonemize_ids(text: str, lang: str) -> list[int]:
 
 
 def _voice_style(voice: str, n: int) -> np.ndarray:
-    """返回 (1, 256) 风格向量：对应模型目录 voices/<voice>.bin 的第 n 行（Kokoro 约定）。
+    """Return a (1, 256) style vector: row n of voices/<voice>.bin (Kokoro convention).
 
-    n 为音素 token 长度；.bin 行数有限（如 v1.1-zh 为 510 行，索引 0..509），
-    n 超出行数时取最后一行，避免 index out of bounds。
+    n is the phoneme token count; the .bin row count is limited (e.g. 510 rows
+    for v1.1-zh, index 0..509). When n exceeds the row count, the last row is
+    used to avoid an index-out-of-bounds error.
     """
     style = _voice_style_cache.get(voice)
     if style is None:
@@ -170,10 +175,10 @@ def _voice_style(voice: str, n: int) -> np.ndarray:
 
 
 def list_voices() -> list[dict]:
-    """返回全部已下载音色（v1.0 多语言英文/日文 + v1.1-zh 中文）。
+    """Return all downloaded voices (v1.0 multilingual en/ja + v1.1-zh zh).
 
-    每次实时扫描两个模型的 voices 文件夹（*.bin 文件名即音色名），
-    本地增删音色文件后无需重启即可生效。
+    Scans the voices folders of both models in real time (*.bin stem == voice
+    name), so adding/removing voice files locally takes effect without restart.
     """
     names: set[str] = set()
     for model_dir in (MODEL_DIR_EN, MODEL_DIR_ZH):
@@ -188,7 +193,8 @@ def voice_exists(voice: str) -> bool:
 
 
 def _fallback_voice(lang: str) -> str:
-    """语言默认音色；若 env 配置的音色名不存在（如误配），回退到该语言第一个可用音色。"""
+    """Language default voice; falls back to the first available voice if the
+    env-configured name is missing (e.g. misconfigured)."""
     default = _DEFAULT_VOICES.get(lang, "af_bella")
     if voice_exists(default):
         return default
@@ -204,9 +210,10 @@ def _fallback_voice(lang: str) -> str:
 
 
 def resolve_voice(text: str, voice: str) -> str:
-    """将请求音色解析为实际音色名：
-    1) voice 为已存在的音色名 → 直接使用（尊重显式选择）；
-    2) voice 缺失 / 旧 Audio8 名（zh/ja/en 等）/ 未知 → 按文本语言取对应默认音色。
+    """Resolve the requested voice to an actual voice name:
+    1) if voice exists -> use it as-is (respect explicit choice);
+    2) voice missing / legacy Audio8 name (zh/ja/en etc.) / unknown -> use the
+       language default voice for the detected text language.
     """
     voice = (voice or "").strip()
     if voice and voice_exists(voice):
@@ -215,14 +222,15 @@ def resolve_voice(text: str, voice: str) -> str:
 
 
 def split_text(text: str, max_chars: int = 120) -> list[str]:
-    """按句子边界将长文本切分为多段，避免单段超出 Kokoro token 上下文。
+    """Split long text into segments on sentence boundaries to stay within the
+    Kokoro token context.
 
     Args:
-        text: 待切分文本。
-        max_chars: 单段最大字符数（中文/日文按字符计，英文按字符计）。
+        text: text to split.
+        max_chars: max characters per segment (counted per character for zh/ja/en).
 
     Returns:
-        list[str]: 非空分段列表。
+        list[str]: non-empty segment list.
     """
     text = text.strip()
     if not text:
@@ -244,7 +252,7 @@ def split_text(text: str, max_chars: int = 120) -> list[str]:
             buf = ""
     if buf.strip():
         parts.append(buf.strip())
-    # 合并过短的分段（避免碎片化）
+    # merge overly short segments (avoid fragmentation)
     merged: list[str] = []
     for part in parts:
         if merged and len(merged[-1]) + len(part) <= max_chars:
@@ -255,12 +263,12 @@ def split_text(text: str, max_chars: int = 120) -> list[str]:
 
 
 def _synthesize_segment(text: str, voice: str) -> np.ndarray:
-    """合成单段文本，返回 24kHz float32 音频（一维）。"""
+    """Synthesize a single segment and return 24kHz float32 audio (1-D)."""
     lang = detect_language(text)
     sess = get_session(lang)
     ids = _phonemize_ids(text, lang)
     if len(ids) > 510:
-        # 理论不应发生（split_text 已限长）；保险起见按 510 截断
+        # should not happen (split_text limits length); truncate to 510 defensively
         ids = ids[:510]
     style = _voice_style(voice, len(ids))
     tokens = np.array([[0, *ids, 0]], dtype=np.int64)
@@ -268,7 +276,7 @@ def _synthesize_segment(text: str, voice: str) -> np.ndarray:
         None,
         dict(input_ids=tokens, style=style, speed=np.ones(1, dtype=np.float32)),
     )[0]
-    # 兼容输出维度：v1.0 为 (1, N)，v1.1-zh 为 (N,)
+    # normalize output shape: v1.0 is (1, N), v1.1-zh is (N,)
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     return audio
 
@@ -282,13 +290,14 @@ def synthesize_wav_bytes(
     top_k: int = 50,
     seed: int = 42,
 ) -> tuple[bytes, int]:
-    """合成语音并返回内存中的 WAV 字节（不落盘）。
+    """Synthesize speech and return in-memory WAV bytes (no file written).
 
-    与 Audio8 版签名兼容（max_new_tokens 等参数保留仅为兼容，Kokoro 不使用）。
-    长文本按句子自动分段合成，PCM 无缝拼接后一次性编码 WAV。
+    Signature-compatible with the Audio8 version (max_new_tokens etc. kept only
+    for compatibility; Kokoro ignores them). Long text is split into sentence
+    segments, synthesized, and the PCM is seamlessly concatenated into one WAV.
 
     Returns:
-        tuple[bytes, int]: (WAV 文件字节, 采样率 24000)。
+        tuple[bytes, int]: (WAV file bytes, sample rate 24000).
     """
     if not text.strip():
         raise ValueError("text must not be empty")
@@ -312,10 +321,12 @@ def iter_pcm_chunks(
     top_k: int = 50,
     seed: int = 42,
 ):
-    """流式合成：长文本按句子分段，逐段合成后 yield 16-bit PCM 字节块。
+    """Streaming synthesis: long text is split into sentence segments and each
+    segment yields a 16-bit PCM byte block.
 
-    与 Audio8 版签名兼容（chunk_frames/max_new_tokens 等参数保留仅为兼容，
-    Kokoro 为句子级流式，每段整段合成后产出）。
+    Signature-compatible with the Audio8 version (chunk_frames/max_new_tokens
+    kept only for compatibility; Kokoro is sentence-level streaming, each
+    segment is fully synthesized before being yielded).
     """
     for seg in split_text(text):
         audio = _synthesize_segment(seg, voice)

@@ -39,9 +39,9 @@ AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 
 app = FastAPI(title="ACP client base")
 
-# 语音通话子路由：/api/chat_voice/voices、/api/chat_voice/chat
+# voice call sub-router: /api/chat_voice/voices, /api/chat_voice/chat
 app.include_router(chat_voice_router)
-# 管理面板子路由：/api/manage/skills、/api/manage/tools、/api/manage/agents
+# management panel sub-router: /api/manage/skills, /api/manage/tools, /api/manage/agents
 app.include_router(manage_router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
@@ -150,7 +150,7 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 @app.get("/api/config")
 async def get_config():
-    """下发前端所需配置（如上下文窗口大小，tokens）。"""
+    """Serve frontend config (e.g. context window size, tokens)."""
     content_size = os.getenv("CONTENT_SIZE", "").strip()
     try:
         content_size = int(content_size) if content_size else 0

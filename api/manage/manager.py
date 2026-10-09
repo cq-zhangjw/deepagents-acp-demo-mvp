@@ -1,17 +1,18 @@
-"""DeepAgents 管理面板 API（子路由，前缀 /api/manage）。
+"""DeepAgents management panel API (sub-router, prefix /api/manage).
 
-管理本地 `.deepagents/` 目录下的三类资源：
-  - skills/      技能（目录 + SKILL.md，Anthropic Agent Skills 格式）
-  - mcp_servers/ MCP 服务器配置（目录 + server.json，stdio 启动规范）
-  - agents.json  Agent 定义（全局单文件，对象映射 { <name>: AgentDef }）
+Manages three resource types under the local `.deepagents/` directory:
+  - skills/      skills (directory + SKILL.md, Anthropic Agent Skills format)
+  - mcp_servers/ MCP server configs (directory + server.json, stdio launch spec)
+  - agents.json  agent definitions (single global file, object map { <name>: AgentDef })
 
-面板只负责配置文件读写（增删改查 / 启停）；acp_agent.py 如何按 Agent
-装配模型/技能/MCP 工具由调用方自行实现，本模块不涉及装配逻辑。
+The panel only reads/writes config files (CRUD / enable-disable); how acp_agent.py
+assembles model/skills/MCP tools from an agent is implemented by the caller,
+this module does not touch assembly logic.
 
-安全约定：
-  - 名称白名单 `^[a-z0-9][a-z0-9-]{0,63}$`，杜绝路径穿越
-  - 删除仅限 .deepagents 白名单目录/键
-  - agents.json 写入：进程内写锁 + 同目录 .bak 备份 + 原子替换
+Safety conventions:
+  - name whitelist `^[a-z0-9][a-z0-9-]{0,63}$` prevents path traversal
+  - deletes are limited to whitelisted .deepagents directories/keys
+  - agents.json writes: in-process write lock + same-dir .bak backup + atomic replace
 """
 
 import asyncio
@@ -28,7 +29,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/manage", tags=["manage"])
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent  # 项目根目录
+BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
 DE_ROOT = BASE_DIR / ".deepagents"
 SKILLS_DIR = DE_ROOT / "skills"
 MCP_DIR = DE_ROOT / "mcp_servers"
@@ -36,7 +37,7 @@ AGENTS_FILE = DE_ROOT / "agents.json"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
-# 目录级创建/删除统一在模块首次调用时保证
+# directory creation is guaranteed on first module import
 for _d in (DE_ROOT, SKILLS_DIR, MCP_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 if not AGENTS_FILE.exists():
@@ -45,7 +46,7 @@ if not AGENTS_FILE.exists():
 _agents_lock = asyncio.Lock()
 
 
-# ---------- 通用工具 ----------
+# ---------- common helpers ----------
 
 def _valid_name(name: str) -> bool:
     return bool(name and _NAME_RE.match(name))
@@ -88,7 +89,7 @@ def _read_agents() -> dict:
 
 
 def _frontmatter(md: str) -> dict:
-    """解析 SKILL.md 的 YAML frontmatter（name/description 等，宽松解析）。"""
+    """Parse the YAML frontmatter of SKILL.md (name/description etc., lenient parse)."""
     if md.startswith("---"):
         end = md.find("\n---", 3)
         if end > 0:
@@ -133,11 +134,11 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-# ---------- 技能 ----------
+# ---------- skills ----------
 
 @router.get("/skills")
 def list_skills():
-    """技能列表：扫描 .deepagents/skills/*/SKILL.md。"""
+    """Skill list: scan .deepagents/skills/*/SKILL.md."""
     items = []
     if SKILLS_DIR.is_dir():
         for d in sorted(SKILLS_DIR.iterdir()):
@@ -149,7 +150,7 @@ def list_skills():
 
 @router.post("/skills/{name}/toggle")
 def toggle_skill(name: str):
-    """切换技能启停（创建/删除 .disabled 标记文件）。"""
+    """Toggle a skill (create/delete the .disabled marker file)."""
     name = _ensure_name(name)
     d = SKILLS_DIR / name
     if not (d / "SKILL.md").exists():
@@ -166,7 +167,7 @@ def toggle_skill(name: str):
 
 @router.post("/skills")
 def create_skill(payload: dict):
-    """新建技能：name / description / content（SKILL.md 正文，可含 frontmatter）。"""
+    """Create a skill: name / description / content (SKILL.md body, may include frontmatter)."""
     name = _ensure_name(payload.get("name", ""))
     content = (payload.get("content") or "").strip()
     if not content:
@@ -178,7 +179,7 @@ def create_skill(payload: dict):
     meta = _frontmatter(content)
     description = (payload.get("description") or "").strip()
     if not meta.get("name"):
-        # 自动生成 frontmatter（若用户正文未带）
+        # auto-generate frontmatter if the body has none
         content = f"---\nname: {name}\ndescription: {description}\n---\n\n{content}"
     (d / "SKILL.md").write_text(content, encoding="utf-8")
     return _skill_entry(d)
@@ -186,7 +187,7 @@ def create_skill(payload: dict):
 
 @router.put("/skills/{name}")
 def update_skill(name: str, payload: dict):
-    """编辑技能：整文件覆写 content（含描述）。"""
+    """Edit a skill: overwrite the whole file content (incl. description)."""
     name = _ensure_name(name)
     d = SKILLS_DIR / name
     md_path = d / "SKILL.md"
@@ -201,7 +202,7 @@ def update_skill(name: str, payload: dict):
 
 @router.delete("/skills/{name}")
 def delete_skill(name: str):
-    """删除技能目录（不可逆，前端需二次确认）。"""
+    """Delete a skill directory (irreversible; frontend double-confirms)."""
     name = _ensure_name(name)
     d = SKILLS_DIR / name
     if not d.exists():
@@ -213,7 +214,7 @@ def delete_skill(name: str):
     return {"ok": True}
 
 
-# ---------- 工具（MCP 服务器） ----------
+# ---------- tools (MCP servers) ----------
 
 def _server_entry(server_dir: Path) -> dict:
     cfg = _read_json(server_dir / "server.json", {})
@@ -229,7 +230,7 @@ def _server_entry(server_dir: Path) -> dict:
 
 @router.get("/tools")
 def list_tools():
-    """MCP server 列表：扫描 .deepagents/mcp_servers/*/server.json。"""
+    """MCP server list: scan .deepagents/mcp_servers/*/server.json."""
     items = []
     if MCP_DIR.is_dir():
         for d in sorted(MCP_DIR.iterdir()):
@@ -241,7 +242,7 @@ def list_tools():
 
 @router.post("/tools/{name}/toggle")
 def toggle_tool(name: str):
-    """切换 MCP server 启停。"""
+    """Toggle an MCP server."""
     name = _ensure_name(name)
     d = MCP_DIR / name
     if not (d / "server.json").exists():
@@ -257,7 +258,7 @@ def toggle_tool(name: str):
 
 
 def _resolve_env(env: dict) -> dict:
-    """解析 env 中的 ${VAR} 占位（从进程环境读取）；不存在的占位保留原样。"""
+    """Resolve ${VAR} placeholders in env from the process environment; keep unknown ones as-is."""
     resolved = {}
     for key, value in (env or {}).items():
         if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
@@ -269,10 +270,10 @@ def _resolve_env(env: dict) -> dict:
 
 
 async def _probe_mcp(cfg: dict) -> tuple[list[str], str | None]:
-    """试连 MCP server：stdio 启动 → initialize → list_tools → 断开。
+    """Probe an MCP server: stdio launch -> initialize -> list_tools -> close.
 
     Returns:
-        (tools, error)：tools 为空表示失败，error 为失败原因。
+        (tools, error): empty tools means failure, error holds the reason.
     """
     command = (cfg.get("command") or "").strip()
     if not command:
@@ -298,7 +299,7 @@ async def _probe_mcp(cfg: dict) -> tuple[list[str], str | None]:
 
 @router.post("/tools")
 async def create_tool(payload: dict):
-    """新建 MCP 配置：name / command / args / cwd / env / description，保存后自动试连。"""
+    """Create an MCP config: name / command / args / cwd / env / description, then auto-probe."""
     name = _ensure_name(payload.get("name", ""))
     command = (payload.get("command") or "").strip()
     if not command:
@@ -322,7 +323,7 @@ async def create_tool(payload: dict):
 
 @router.post("/tools/{name}/test")
 async def test_tool(name: str):
-    """试连指定 MCP server，返回可用工具名或错误。"""
+    """Probe a specific MCP server and return available tool names or the error."""
     name = _ensure_name(name)
     d = MCP_DIR / name
     cfg = _read_json(d / "server.json", {})
@@ -334,7 +335,7 @@ async def test_tool(name: str):
 
 @router.put("/tools/{name}")
 async def update_tool(name: str, payload: dict):
-    """编辑 MCP 配置并重新试连。"""
+    """Edit an MCP config and re-probe."""
     name = _ensure_name(name)
     d = MCP_DIR / name
     cfg_path = d / "server.json"
@@ -359,7 +360,7 @@ async def update_tool(name: str, payload: dict):
 
 @router.delete("/tools/{name}")
 def delete_tool(name: str):
-    """删除 MCP 配置目录（不可逆，前端需二次确认）。"""
+    """Delete an MCP config directory (irreversible; frontend double-confirms)."""
     name = _ensure_name(name)
     d = MCP_DIR / name
     if not d.exists():
@@ -371,7 +372,7 @@ def delete_tool(name: str):
     return {"ok": True}
 
 
-# ---------- Agent（全局 agents.json） ----------
+# ---------- agents (global agents.json) ----------
 
 def _agent_entry(name: str, data: dict) -> dict:
     return {
@@ -387,7 +388,7 @@ def _agent_entry(name: str, data: dict) -> dict:
 
 @router.get("/agents")
 def list_agents():
-    """Agent 列表：读取全局 agents.json。"""
+    """Agent list: read the global agents.json."""
     agents = _read_agents()
     items = [_agent_entry(name, data) for name, data in agents.items()]
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
@@ -404,7 +405,7 @@ def get_agent(name: str):
 
 
 async def _validate_agent(name: str, data: dict) -> dict:
-    """预检：关联的技能/工具是否存在且已启用。"""
+    """Pre-check: linked skills/tools exist and are enabled."""
     problems = []
     for skill in data.get("skills") or []:
         if not (SKILLS_DIR / skill / "SKILL.md").exists():
@@ -430,7 +431,7 @@ async def validate_agent(name: str):
 
 @router.post("/agents")
 async def create_agent(payload: dict):
-    """新建 Agent：写入全局 agents.json。"""
+    """Create an agent: write to the global agents.json."""
     name = _ensure_name(payload.get("name", ""))
     async with _agents_lock:
         agents = _read_agents()
@@ -443,7 +444,7 @@ async def create_agent(payload: dict):
 
 @router.put("/agents/{name}")
 async def update_agent(name: str, payload: dict):
-    """编辑 Agent：覆写该 key 的 AgentDef。"""
+    """Edit an agent: overwrite the AgentDef for this key."""
     name = _ensure_name(name)
     async with _agents_lock:
         agents = _read_agents()
@@ -456,7 +457,7 @@ async def update_agent(name: str, payload: dict):
 
 @router.delete("/agents/{name}")
 async def delete_agent(name: str):
-    """删除 Agent：从 agents.json 移除该 key。"""
+    """Delete an agent: remove this key from agents.json."""
     name = _ensure_name(name)
     async with _agents_lock:
         agents = _read_agents()
@@ -468,7 +469,7 @@ async def delete_agent(name: str):
 
 
 def _normalize_agent_def(payload: dict) -> dict:
-    """白名单字段收敛，仅保留 AgentDef 已知字段。"""
+    """Whitelist fields: keep only the known AgentDef keys."""
     def_data = {
         "description": (payload.get("description") or "").strip(),
         "enabled": bool(payload.get("enabled", True)),
