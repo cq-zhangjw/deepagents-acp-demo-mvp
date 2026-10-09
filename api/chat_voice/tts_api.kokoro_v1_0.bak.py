@@ -1,18 +1,16 @@
-"""Kokoro TTS 本地推理（ONNX Runtime，纯 CPU）。
+"""Kokoro-82M TTS 本地推理（ONNX Runtime，纯 CPU）。
 
-替代原 Audio8-TTS 实现（备份见 `tts_api.audio8.bak.py`）。自 v1.1-zh 起支持双模型：
-  - zh 文本 → Kokoro-82M-v1.1-zh（models/Kokoro-82M-v1.1-zh-ONNX，中文音色 zf_*/zm_*，词表 model='1.1-zh'）
-  - en / ja 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，英文音色 af_*/am_*/bf_*/bm_*，词表 model='1.0'）
+替代原 Audio8-TTS 实现（备份见 `tts_api.audio8.bak.py`）。
 
-链路（与 v1.0 相同）：
+链路：
   文本 → espeak-ng 音素化（espeakng-runtime 直接加载 libespeak_ng.dll）→ kokorog2p
-  phonemes_to_ids 映射（按语言选词表）→ ONNX 推理 → 24kHz 音频。
-  长文本按句子分段（split_text），逐段合成后 PCM 拼接，不受 token 上下文限制截断。
+  phonemes_to_ids 映射到 Kokoro 词表 → ONNX 推理（onnx-community/Kokoro-82M-v1.0-ONNX）
+  → 24kHz 音频。长文本按句子分段（split_text），逐段合成后 PCM 拼接，不受
+  510 token 上下文限制截断。
 
 模型/工具目录（可用环境变量覆盖）：
-  KOKORO_MODEL_DIR_EN   默认 ./models/Kokoro-82M-v1.0-ONNX（英文）
-  KOKORO_MODEL_DIR_ZH   默认 ./models/Kokoro-82M-v1.1-zh-ONNX（中文）
-  ESPEAK_DIR            默认 ./third_party/espeak-ng（便携解包版，随仓库分发）
+  KOKORO_MODEL_DIR  默认 ./models/Kokoro-82M-v1.0-ONNX
+  ESPEAK_DIR        默认 ./third_party/espeak-ng（便携解包版，含 libespeak_ng.dll + espeak-ng-data，随仓库分发）
 """
 
 import io
@@ -28,31 +26,24 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # 项目根目录
-MODEL_DIR_EN = Path(os.getenv("KOKORO_MODEL_DIR_EN", BASE_DIR / "models" / "Kokoro-82M-v1.0-ONNX"))
-MODEL_DIR_ZH = Path(os.getenv("KOKORO_MODEL_DIR_ZH", BASE_DIR / "models" / "Kokoro-82M-v1.1-zh-ONNX"))
+MODEL_DIR = Path(os.getenv("KOKORO_MODEL_DIR", BASE_DIR / "models" / "Kokoro-82M-v1.0-ONNX"))
 ESPEAK_DIR = Path(os.getenv("ESPEAK_DIR", BASE_DIR / "third_party" / "espeak-ng"))
 SAMPLE_RATE = 24000
 
-# 语言 → 模型目录 / 词表 variant
-_MODEL_FOR_LANG = {"zh": MODEL_DIR_ZH, "ja": MODEL_DIR_EN, "en": MODEL_DIR_EN}
-_VOCAB_FOR_LANG = {"zh": "1.1-zh", "ja": "1.0", "en": "1.0"}
-
 _espeak_rt = None
-_session_cache: dict[str, ort.InferenceSession] = {}
-_voice_list_cache: list[str] | None = None
+_session = None
+_voice_list: list[str] | None = None
 _voice_style_cache: dict[str, np.ndarray] = {}
 _phonemes_to_ids = None
 
-# 各语言默认音色（env 可覆盖；zh 为 v1.1-zh 中文音色，en 为 v1.0 英文音色，ja 暂用英文音色读 CJK 音素）
+# 各语言默认音色（env 可覆盖；当前 Kokoro v1.0 为英文音色，zh/ja 暂用英文音色读 CJK 音素）
 _DEFAULT_VOICES = {
-    "zh": os.getenv("TTS_VOICE_ZH", "zf_xiaoxiao"),
+    "zh": os.getenv("TTS_VOICE_ZH", "af_bella"),
     "ja": os.getenv("TTS_VOICE_JA", "af_bella"),
     "en": os.getenv("TTS_VOICE_EN", "af_heart"),
 }
 # espeak-ng 音素化 voice（按语言；ja 缺 mbrola 库，暂用 cmn 读汉字，假名会回退）
 _ESPEAK_VOICE_FOR_LANG = {"zh": "cmn", "ja": "cmn", "en": "en-us"}
-# v1.1-zh 中文音色前缀（判断 voice 属于哪个模型目录）
-_ZH_VOICE_PREFIXES = ("zf_", "zm_")
 
 
 def detect_language(text: str) -> str:
@@ -64,88 +55,6 @@ def detect_language(text: str) -> str:
     if re.search(r"[\u4e00-\u9fff]", text):
         return "zh"
     return "en"
-
-
-def _model_dir_for_lang(lang: str) -> Path:
-    return _MODEL_FOR_LANG.get(lang, MODEL_DIR_EN)
-
-
-def _voice_model_dir(voice: str) -> Path:
-    """音色所属模型目录：zf_*/zm_* → v1.1-zh，其余 → v1.0。"""
-    if voice.startswith(_ZH_VOICE_PREFIXES):
-        return MODEL_DIR_ZH
-    return MODEL_DIR_EN
-
-
-def get_espeak() -> object:
-    """返回 espeakng_runtime.EspeakRuntime 单例。"""
-    global _espeak_rt
-    if _espeak_rt is None:
-        from espeakng_runtime import EspeakRuntime
-        _espeak_rt = EspeakRuntime(
-            library=str(ESPEAK_DIR / "libespeak_ng.dll"),
-            data=str(ESPEAK_DIR / "espeak-ng-data"),
-        )
-    return _espeak_rt
-
-
-def get_session(lang: str) -> ort.InferenceSession:
-    """按语言返回 ONNX session（每个模型目录一个 session，按需惰性加载）。"""
-    session = _session_cache.get(lang)
-    if session is None:
-        model_path = _model_dir_for_lang(lang) / "onnx" / "model_fp16.onnx"
-        if not model_path.exists():
-            raise FileNotFoundError(f"model not found: {model_path}")
-        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        _session_cache[lang] = session
-    return session
-
-
-def _load_phonemes_to_ids():
-    global _phonemes_to_ids
-    if _phonemes_to_ids is None:
-        from kokorog2p import phonemes_to_ids
-        _phonemes_to_ids = phonemes_to_ids
-    return _phonemes_to_ids
-
-
-def _phonemize_ids(text: str, lang: str) -> list[int]:
-    """文本 → espeak 音素 → Kokoro token ids（按语言选 espeak voice 与词表）。"""
-    espeak = get_espeak()
-    phonemes = espeak.phonemize(text, voice=_ESPEAK_VOICE_FOR_LANG.get(lang, "en-us"))
-    ids = _load_phonemes_to_ids()(phonemes, model=_VOCAB_FOR_LANG.get(lang, "1.0"))
-    if not ids:
-        raise ValueError(f"phonemization produced no tokens: {text!r}")
-    return ids
-
-
-def _voice_style(voice: str, n: int) -> np.ndarray:
-    """返回 (1, 256) 风格向量：对应模型目录 voices/<voice>.bin 的第 n 行（Kokoro 约定）。"""
-    style = _voice_style_cache.get(voice)
-    if style is None:
-        path = _voice_model_dir(voice) / "voices" / f"{voice}.bin"
-        if not path.exists():
-            raise ValueError(f"voice not found: {voice}")
-        style = np.fromfile(path, dtype=np.float32).reshape(-1, 1, 256)
-        _voice_style_cache[voice] = style
-    return style[n]
-
-
-def list_voices() -> list[dict]:
-    """返回全部已下载音色（v1.0 英文 + v1.1-zh 中文）。"""
-    global _voice_list_cache
-    if _voice_list_cache is None:
-        names: list[str] = []
-        for model_dir in (MODEL_DIR_EN, MODEL_DIR_ZH):
-            voices_dir = model_dir / "voices"
-            if voices_dir.is_dir():
-                names.extend(p.stem for p in voices_dir.glob("*.bin") if not p.stem.startswith("."))
-        _voice_list_cache = sorted(set(names))
-    return [{"name": name} for name in _voice_list_cache]
-
-
-def voice_exists(voice: str) -> bool:
-    return (_voice_model_dir(voice) / "voices" / f"{voice}.bin").exists()
 
 
 def resolve_voice(text: str, voice: str) -> str:
@@ -160,8 +69,72 @@ def resolve_voice(text: str, voice: str) -> str:
     return _DEFAULT_VOICES.get(lang, "af_bella")
 
 
+def get_runtime() -> tuple[object, ort.InferenceSession]:
+    """返回 (espeakng_runtime.EspeakRuntime, onnxruntime.InferenceSession) 单例。"""
+    global _espeak_rt, _session
+    if _espeak_rt is None:
+        from espeakng_runtime import EspeakRuntime
+        _espeak_rt = EspeakRuntime(
+            library=str(ESPEAK_DIR / "libespeak_ng.dll"),
+            data=str(ESPEAK_DIR / "espeak-ng-data"),
+        )
+    if _session is None:
+        _session = ort.InferenceSession(
+            str(MODEL_DIR / "onnx" / "model_fp16.onnx"),
+            providers=["CPUExecutionProvider"],
+        )
+    return _espeak_rt, _session
+
+
+def _load_phonemes_to_ids():
+    global _phonemes_to_ids
+    if _phonemes_to_ids is None:
+        from kokorog2p import phonemes_to_ids
+        _phonemes_to_ids = phonemes_to_ids
+    return _phonemes_to_ids
+
+
+def _phonemize_ids(text: str) -> list[int]:
+    """文本 → espeak 音素 → Kokoro token ids（espeak voice 按文本语言选择）。"""
+    rt, _ = get_runtime()
+    lang = detect_language(text)
+    phonemes = rt.phonemize(text, voice=_ESPEAK_VOICE_FOR_LANG.get(lang, "en-us"))
+    ids = _load_phonemes_to_ids()(phonemes)
+    if not ids:
+        raise ValueError(f"phonemization produced no tokens: {text!r}")
+    return ids
+
+
+def _voice_style(voice: str, n: int) -> np.ndarray:
+    """返回 (1, 256) 风格向量：voices/<voice>.bin 的第 n 行（Kokoro 约定）。"""
+    style = _voice_style_cache.get(voice)
+    if style is None:
+        path = MODEL_DIR / "voices" / f"{voice}.bin"
+        if not path.exists():
+            raise ValueError(f"voice not found: {voice}")
+        style = np.fromfile(path, dtype=np.float32).reshape(-1, 1, 256)
+        _voice_style_cache[voice] = style
+    return style[n]
+
+
+def list_voices() -> list[dict]:
+    """返回已下载的 Kokoro 音色列表（voices/*.bin）。"""
+    global _voice_list
+    if _voice_list is None:
+        voices_dir = MODEL_DIR / "voices"
+        if voices_dir.is_dir():
+            _voice_list = sorted(p.stem for p in voices_dir.glob("*.bin") if not p.stem.startswith("."))
+        else:
+            _voice_list = []
+    return [{"name": name} for name in _voice_list]
+
+
+def voice_exists(voice: str) -> bool:
+    return (MODEL_DIR / "voices" / f"{voice}.bin").exists()
+
+
 def split_text(text: str, max_chars: int = 120) -> list[str]:
-    """按句子边界将长文本切分为多段，避免单段超出 Kokoro token 上下文。
+    """按句子边界将长文本切分为多段，避免单段超出 Kokoro 510 token 上下文。
 
     Args:
         text: 待切分文本。
@@ -202,9 +175,8 @@ def split_text(text: str, max_chars: int = 120) -> list[str]:
 
 def _synthesize_segment(text: str, voice: str) -> np.ndarray:
     """合成单段文本，返回 24kHz float32 音频（一维）。"""
-    lang = detect_language(text)
-    sess = get_session(lang)
-    ids = _phonemize_ids(text, lang)
+    _, sess = get_runtime()
+    ids = _phonemize_ids(text)
     if len(ids) > 510:
         # 理论不应发生（split_text 已限长）；保险起见按 510 截断
         ids = ids[:510]
