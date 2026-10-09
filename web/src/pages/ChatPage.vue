@@ -244,9 +244,11 @@ const lastAssistantId = computed(() => {
   }
   return ''
 })
+// 运行状态只看 assistant 的 status：streaming 期间（含工具调用阶段）保持停止按钮，
+// 不再受 finalText 影响（finalText 在首个文本 chunk 后即非空，会误判"已停止"）
 const isRunning = computed(() => currentMessages.value.some(
   (item) => item.role === 'assistant'
-    && (item.status === 'pending' || item.status === 'waiting_permission' || (item.status === 'streaming' && !item.finalText))
+    && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
 ))
 const currentTitle = computed(() => currentConversation.value?.title ?? t('newSessionTitle'))
 const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
@@ -940,6 +942,7 @@ function handleSessionUpdate(update: any) {
     case 'tool_call':
     case 'tool_call_start': {
       const id = update.toolCallId ?? createId('tool')
+      assistant.status = 'streaming' // 工具调用阶段保持运行中，避免停止按钮误恢复
       if (!process.toolCalls.some((tool) => tool.id === id)) {
         process.toolCalls.push({
           id,
