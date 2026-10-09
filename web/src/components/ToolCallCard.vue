@@ -99,7 +99,7 @@ function statusText(status: string) {
 .tool-call-collapse :deep(.n-collapse-item__content-inner) { padding:0 16px 14px; }
 .tool-heading { flex:1; min-width:0; width:100%; display:flex; gap:8px; align-items:center; }
 .tool-badge { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px/1.5 "Cascadia Code",Consolas,monospace; color:#2563eb; background:rgba(37,99,235,.08); border:1px solid rgba(37,99,235,.25); border-radius:6px; padding:0 8px; }
-.tool-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text); }
+.tool-name { flex:1; min-width:0; max-width:calc(100% - 150px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text); }
 .tool-heading :deep(.n-tag) { flex:none; }
 .tool-tabs :deep(.n-tabs-nav) { padding:0; }
 .tool-tabs :deep(.n-tabs-tab) { padding:5px 12px 7px; }
