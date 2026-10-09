@@ -25,6 +25,8 @@ export default {
   upload: '上传附件',
   removeAttachment: '移除附件',
   inputPlaceholder: '输入任务，Enter 发送，Shift + Enter 换行',
+  loading: '加载中...',
+  noResults: '无匹配结果',
   send: '发送任务',
   cancel: '取消任务',
   permissionTitle: 'Agent 请求权限',

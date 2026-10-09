@@ -123,6 +123,7 @@ def _skill_entry(skill_dir: Path) -> dict:
         "description": description,
         "enabled": not _is_disabled(skill_dir),
         "path": str(skill_dir.relative_to(BASE_DIR)).replace("\\", "/"),
+        "absolute_path": str(skill_dir.resolve()),
         "updated_at": _mtime(md_path),
     }
 
@@ -132,6 +133,36 @@ def _mtime(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+# directories/files skipped by the @ file picker
+_SKIP_TOP = {".git", ".venv", "node_modules", "__pycache__", ".idea", ".vscode"}
+
+
+@router.get("/files")
+def list_files(q: str = ""):
+    """List top-level entries of the project root (for the @ file picker).
+
+    Returns name / absolute path / type, filtered by name prefix (q, case-insensitive).
+    Only one level is listed; dot-prefixed files like .env are kept, but common
+    heavyweight/vendor dirs (git, venv, node_modules, __pycache__) are skipped.
+    """
+    q = (q or "").strip().lower()
+    entries = []
+    try:
+        for p in sorted(BASE_DIR.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+            if p.name in _SKIP_TOP:
+                continue
+            if q and not p.name.lower().startswith(q):
+                continue
+            entries.append({
+                "name": p.name,
+                "path": str(p.resolve()),
+                "type": "dir" if p.is_dir() else "file",
+            })
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to list files: {exc}") from exc
+    return entries
 
 
 # ---------- skills ----------

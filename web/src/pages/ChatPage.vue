@@ -13,6 +13,8 @@ import {
   CopyOutline,
   CreateOutline,
   DesktopOutline,
+  DocumentOutline,
+  FolderOutline,
   EllipsisHorizontalOutline,
   LanguageOutline,
   CallOutline,
@@ -1452,9 +1454,81 @@ function openAttachment(attachment: AttachmentRef) {
   }
 }
 
+// ---------- 快捷动作（@ 文件 / 技能） ----------
+const quickAction = ref<'file' | 'skill' | null>(null)
+const quickItems = ref<any[]>([])
+const quickLoading = ref(false)
+const quickIndex = ref(0)
+let quickTimer: number | undefined
+
+function closeQuickAction() {
+  quickAction.value = null
+  quickItems.value = []
+  quickIndex.value = 0
+}
+
+async function loadQuickItems(action: 'file' | 'skill', q: string) {
+  quickLoading.value = true
+  try {
+    if (action === 'file') {
+      const res = await fetch(`/api/manage/files?q=${encodeURIComponent(q)}`)
+      const data = await res.json()
+      quickItems.value = Array.isArray(data) ? data : []
+    } else {
+      const res = await fetch('/api/manage/skills')
+      const data = await res.json()
+      const list = Array.isArray(data) ? data : []
+      quickItems.value = q
+        ? list.filter((s: any) => s.name.toLowerCase().includes(q.toLowerCase()))
+        : list
+    }
+    quickIndex.value = 0
+  } catch {
+    quickItems.value = []
+  } finally {
+    quickLoading.value = false
+  }
+}
+
+function selectQuickItem(item: any) {
+  // 绝对路径优先：技能取 absolute_path（目录），文件取 path（后端已 resolve 为绝对路径）
+  input.value = item.absolute_path ?? item.path ?? item.name
+  closeQuickAction()
+}
+
+watch(input, (value) => {
+  if (value.length >= 1) {
+    const ch = value[0]
+    if (value.length === 1 && (ch === '@' || ch === '/')) {
+      quickAction.value = ch === '@' ? 'file' : 'skill'
+      quickItems.value = []
+      quickLoading.value = true
+      clearTimeout(quickTimer)
+      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, ''), 120)
+      return
+    }
+    if (quickAction.value && (ch === '@' || ch === '/')) {
+      const q = value.slice(1)
+      clearTimeout(quickTimer)
+      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, q), 120)
+      return
+    }
+  }
+  closeQuickAction()
+})
+
+function onComposerBlur() {
+  closeQuickAction()
+}
+
 function submitOnEnter(event: KeyboardEvent) {
   if (!event.shiftKey) {
     event.preventDefault()
+    if (quickAction.value) {
+      if (quickItems.value.length) selectQuickItem(quickItems.value[quickIndex.value] ?? quickItems.value[0])
+      else closeQuickAction()
+      return
+    }
     submitPrompt()
   }
 }
@@ -1754,7 +1828,22 @@ onBeforeUnmount(() => {
           </div>
           <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles" @paste="onComposerPaste">
             <input ref="fileInput" class="hidden-input" type="file" multiple @change="uploadFile" />
-            <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" />
+            <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" @blur="onComposerBlur" />
+            <div v-if="quickAction" class="quick-action-panel" @mousedown.prevent>
+              <div v-if="quickLoading" class="quick-action-empty">{{ t('loading') }}</div>
+              <div v-else-if="!quickItems.length" class="quick-action-empty">{{ t('noResults') }}</div>
+              <div
+                v-for="(item, index) in quickItems"
+                :key="item.path ?? item.name"
+                class="quick-action-item"
+                :class="{ 'quick-action-item--active': index === quickIndex }"
+                @mousedown.prevent="selectQuickItem(item)"
+              >
+                <NIcon :component="quickAction === 'file' ? (item.type === 'dir' ? FolderOutline : DocumentOutline) : SparklesOutline" />
+                <span class="quick-action-name">{{ quickAction === 'file' ? item.name : item.name }}</span>
+                <span class="quick-action-desc">{{ quickAction === 'skill' ? item.description : item.path }}</span>
+              </div>
+            </div>
             <div class="composer-toolbar">
               <div class="composer-toolbar-left">
                 <NTooltip>
@@ -2024,7 +2113,7 @@ onBeforeUnmount(() => {
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
 .attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; cursor:pointer; } .attachment-chip .attachment-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip button { flex-shrink:0; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
-.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
+.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { position:relative; display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
 /* TEMP-HIDE：编辑/删除消息入口暂隐藏（display:none），代码保留，后期 MooFile 方案升级时恢复 */
 .hidden-action { display: none; }
@@ -2050,6 +2139,12 @@ onBeforeUnmount(() => {
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { font-size:13px; }
 .agent-option-desc { font-size:11px; color:var(--subtle); margin-top:2px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
+.quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
+.quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
+.quick-action-name { flex:0 0 auto; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.quick-action-desc { color:var(--subtle); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.quick-action-empty { padding:12px; color:var(--subtle); font-size:12px; text-align:center; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }

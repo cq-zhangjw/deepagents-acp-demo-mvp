@@ -25,6 +25,8 @@ export default {
   upload: 'Upload attachment',
   removeAttachment: 'Remove attachment',
   inputPlaceholder: 'Enter a task. Enter to send, Shift + Enter for a new line',
+  loading: 'Loading...',
+  noResults: 'No matches',
   send: 'Send task',
   cancel: 'Cancel task',
   permissionTitle: 'Agent requests permission',

@@ -25,6 +25,8 @@ export default {
   upload: '添付をアップロード',
   removeAttachment: '添付を削除',
   inputPlaceholder: 'タスクを入力。Enter で送信、Shift + Enter で改行',
+  loading: '読み込み中...',
+  noResults: '一致する結果がありません',
   send: '送信',
   cancel: 'タスクを中止',
   permissionTitle: 'Agent が権限を要求しています',
