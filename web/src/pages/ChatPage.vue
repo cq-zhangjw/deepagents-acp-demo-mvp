@@ -136,6 +136,7 @@ interface PermissionRequest {
   rawInput: unknown
 }
 
+// Legacy localStorage key, kept only for a one-time migration into MooFile.
 const STORE_KEY = 'deepagents-acp-ui-sessions-v1'
 const message = useMessage()
 const { t, locale } = useI18n()
@@ -148,8 +149,8 @@ const initializedSessions = new Set<string>()
 const restoringHistory = ref(false)
 const requestId = ref(1)
 const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void }>()
-const conversations = ref<Conversation[]>(loadConversations())
-const activeConversationId = ref(conversations.value[0]?.id ?? '')
+const conversations = ref<Conversation[]>([])
+const activeConversationId = ref('')
 const conversationSearch = ref('')
 const filteredConversations = computed(() => {
   const keyword = conversationSearch.value.trim().toLowerCase()
@@ -260,37 +261,97 @@ function isAssistantRunning(item: AssistantMessage) {
 const currentTitle = computed(() => currentConversation.value?.title ?? t('newSessionTitle'))
 const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
 
-function loadConversations(): Conversation[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]')
-    if (!Array.isArray(saved)) return []
-    return saved.map((conversation) => ({
-      ...conversation,
-      messages: (conversation.messages ?? []).map((item: ChatMessage) => {
-        if (item.role !== 'assistant') return item
-        const hasNewSegments = Array.isArray(item.segments)
-          && item.segments.some((segment) => segment.type === 'thought' || segment.type === 'tool' || segment.type === 'plan')
-        if (hasNewSegments) return item
-        // 旧数据迁移：按 计划 → 分析 → 工具调用 → 最终文本 重建交错段
-        const segments: AssistantSegment[] = []
-        if (item.process?.plan?.length) segments.push({ id: createId('plan'), type: 'plan' })
-        ;(item.process?.analyses ?? []).forEach((analysis) => {
-          segments.push({ id: createId('thought'), type: 'thought', text: analysis.text })
-        })
-        ;(item.process?.toolCalls ?? []).forEach((tool) => {
-          segments.push({ id: createId('tool'), type: 'tool', toolId: tool.id })
-        })
-        if (item.finalText) segments.push({ id: createId('text'), type: 'text', text: item.finalText })
-        return { ...item, segments }
+function migrateConversations(saved: unknown): Conversation[] {
+  if (!Array.isArray(saved)) return []
+  return saved.map((conversation) => ({
+    ...conversation,
+    messages: (conversation.messages ?? []).map((item: ChatMessage) => {
+      if (item.role !== 'assistant') return item
+      const hasNewSegments = Array.isArray(item.segments)
+        && item.segments.some((segment) => segment.type === 'thought' || segment.type === 'tool' || segment.type === 'plan')
+      if (hasNewSegments) return item
+      // 旧数据迁移：按 计划 → 分析 → 工具调用 → 最终文本 重建交错段
+      const segments: AssistantSegment[] = []
+      if (item.process?.plan?.length) segments.push({ id: createId('plan'), type: 'plan' })
+      ;(item.process?.analyses ?? []).forEach((analysis) => {
+        segments.push({ id: createId('thought'), type: 'thought', text: analysis.text })
       })
-    }))
+      ;(item.process?.toolCalls ?? []).forEach((tool) => {
+        segments.push({ id: createId('tool'), type: 'tool', toolId: tool.id })
+      })
+      if (item.finalText) segments.push({ id: createId('text'), type: 'text', text: item.finalText })
+      return { ...item, segments }
+    })
+  }))
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+
+async function syncHistory() {
+  try {
+    await fetch('/api/history', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversations: conversations.value }),
+    })
   } catch {
-    return []
+    // server unavailable: keep the in-memory state, next change retries
   }
 }
 
-function persistConversations() {
-  localStorage.setItem(STORE_KEY, JSON.stringify(conversations.value))
+function persistConversations(immediate = false) {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  if (immediate) {
+    void syncHistory()
+    return
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    void syncHistory()
+  }, 300)
+}
+
+async function loadHistory() {
+  let fromServer = false
+  try {
+    const res = await fetch('/api/history')
+    if (res.ok) {
+      const rows = await res.json()
+      conversations.value = migrateConversations(rows)
+      fromServer = true
+    }
+  } catch {
+    // fall through to the legacy localStorage copy below
+  }
+  if (!fromServer) {
+    // API unavailable (e.g. backend starting up): keep the previous behavior
+    try {
+      conversations.value = migrateConversations(JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]'))
+    } catch {
+      conversations.value = []
+    }
+    return
+  }
+  // One-time migration: when MooFile is empty, seed it from the legacy
+  // localStorage list, then drop the old key so it never re-imports.
+  if (!conversations.value.length) {
+    try {
+      const legacy = JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]')
+      if (Array.isArray(legacy) && legacy.length) {
+        conversations.value = migrateConversations(legacy)
+        void syncHistory()
+      }
+    } catch {
+      // ignore malformed legacy data
+    }
+  }
+  localStorage.removeItem(STORE_KEY)
+  if (conversations.value.length) {
+    activeConversationId.value = conversations.value[0]?.id ?? ''
+  }
 }
 
 function createId(prefix: string) {
@@ -342,7 +403,7 @@ function deleteConversation(id: string) {
   if (activeConversationId.value === id) {
     activeConversationId.value = conversations.value[0]?.id ?? ''
   }
-  persistConversations()
+  persistConversations(true)
 }
 
 const renameMenu = ref<{ id: string; x: number; y: number } | null>(null)
@@ -1690,14 +1751,16 @@ watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLoca
 onMounted(() => {
   void loadContextSize()
   setupChatBridge()
-  if (!conversations.value.length) createConversation()
-  const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
-  if (defaultEmpties.length > 1) {
-    const keepId = defaultEmpties[0].id
-    conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || conversation.title !== t('newSessionTitle'))
-    persistConversations()
-  }
-  void validateStoredSessions()
+  void loadHistory().then(() => {
+    if (!conversations.value.length) createConversation()
+    const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
+    if (defaultEmpties.length > 1) {
+      const keepId = defaultEmpties[0].id
+      conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || conversation.title !== t('newSessionTitle'))
+      persistConversations(true)
+    }
+    void validateStoredSessions()
+  })
   window.addEventListener('click', closeMessageMenu)
   window.addEventListener('click', closeRenameMenu)
 })

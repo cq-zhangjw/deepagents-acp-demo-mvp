@@ -22,3 +22,6 @@ soundfile
 numpy
 pydub
 
+
+# Local history persistence (MooFile BSON collections under db/history)
+moofile
