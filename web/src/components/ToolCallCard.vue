@@ -33,8 +33,9 @@ const display = computed(() => {
   const m = title.match(/^(Read|Write|Edit|Execute)\s*[:\s]\s*(.*)$/s)
   let badge = ''
   if (m) badge = m[1] === 'Execute' ? 'Run' : m[1]
-  else if (BUILTIN_TOOL_NAMES.has(title)) badge = title
-  if (!badge) badge = name || 'Run'
+  else if (BUILTIN_TOOL_NAMES.has(title) && title !== 'execute') badge = title
+  // name 兜底：与 title 相同（历史 execute 把整条命令存进 name）或本身就是 execute → 视为无名，占位 Run
+  if (!badge) badge = (name && name !== title && name !== 'execute') ? name : 'Run'
   // 正文：去掉工具名前缀；若剩余仍是工具名则留空（避免 "glob glob"）
   let body = m ? m[2].trim() : title
   if (body && (body === badge || BUILTIN_TOOL_NAMES.has(body))) body = ''
