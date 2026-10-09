@@ -197,6 +197,7 @@ const actionLabels = computed(() => ({
   deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message',
   skills: locale.value === 'zh' ? '技能' : locale.value === 'ja' ? 'スキル' : 'Skills',
   tools: locale.value === 'zh' ? '工具' : locale.value === 'ja' ? 'ツール' : 'Tools',
+  builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
   comingSoon: locale.value === 'zh' ? '该功能即将支持' : locale.value === 'ja' ? 'この機能はまもなく対応予定です' : 'Coming soon',
@@ -407,6 +408,7 @@ function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'settings') {
 // ---------- 管理面板（技能/工具/Agent） ----------
 const skillList = ref<any[]>([])
 const toolList = ref<any[]>([])
+const builtinTools = ref<any[]>([])
 const agentList = ref<any[]>([])
 const AGENT_STORAGE_KEY = 'currentAgentName'
 const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
@@ -430,13 +432,15 @@ function selectAgent(key: string) {
 
 async function fetchManageData() {
   try {
-    const [skills, tools, agents] = await Promise.all([
+    const [skills, tools, agents, builtins] = await Promise.all([
       fetch('/api/manage/skills').then((r) => r.json()),
       fetch('/api/manage/tools').then((r) => r.json()),
-      fetch('/api/manage/agents').then((r) => r.json())
+      fetch('/api/manage/agents').then((r) => r.json()),
+      fetch('/api/manage/builtin-tools').then((r) => r.json())
     ])
     skillList.value = Array.isArray(skills) ? skills : []
     toolList.value = Array.isArray(tools) ? tools : []
+    builtinTools.value = Array.isArray(builtins) ? builtins : []
     agentList.value = Array.isArray(agents) ? agents : []
     // 当前 Agent 失效时回退到第一个可用项
     if (!agentList.value.some((a) => a.name === currentAgentName.value)) {
@@ -546,9 +550,9 @@ function openSkillEdit(item?: any) {
     ? { name: item.name, description: item.description, content: '' }
     : { name: '', description: '', content: '' }
   if (item) {
-    fetch(item.path ? '/' + item.path : `/api/manage/skills/${item.name}`)
-      .then((r) => r.text())
-      .then((content) => { skillForm.value.content = content || '' })
+    fetch(`/api/manage/skills/${item.name}`)
+      .then((r) => r.json())
+      .then((data) => { skillForm.value.content = data.content || '' })
       .catch(() => {})
   }
   skillModalVisible.value = true
@@ -1096,6 +1100,14 @@ function copyAssistantText(assistant: AssistantMessage, asMarkdown: boolean) {
   void copyText(value)
 }
 
+function copyUserText(item: { text?: string }, asMarkdown: boolean) {
+  const raw = item.text ?? ''
+  const value = asMarkdown
+    ? raw
+    : new DOMParser().parseFromString(markdown.render(raw), 'text/html').body.textContent?.trim() ?? ''
+  void copyText(value)
+}
+
 // ---------- 语音合成（TTS）与语音桥接 ----------
 let speechAudio: HTMLAudioElement | null = null
 let speechStreamStop: (() => void) | null = null
@@ -1491,8 +1503,13 @@ async function loadQuickItems(action: 'file' | 'skill', q: string) {
 }
 
 function selectQuickItem(item: any) {
-  // 绝对路径优先：技能取 absolute_path（目录），文件取 path（后端已 resolve 为绝对路径）
-  input.value = item.absolute_path ?? item.path ?? item.name
+  if (quickAction.value === 'file') {
+    // @ + 反引号绝对路径 + 空格
+    input.value = '@' + '`' + (item.path ?? item.absolute_path ?? item.name) + '`' + ' '
+  } else if (quickAction.value === 'skill') {
+    // / + 反引号技能名 + 空格
+    input.value = '/' + '`' + item.name + '`' + ' '
+  }
   closeQuickAction()
 }
 
@@ -1717,7 +1734,7 @@ onBeforeUnmount(() => {
                 <span>{{ formatTime(item.createdAt) }}</span>
               </div>
               <div v-if="item.role === 'user'" class="message-bubble user-bubble">
-                <p v-if="item.text">{{ item.text }}</p>
+                <MarkdownMessage v-if="item.text" class="user-content" :content="item.text" />
                 <div v-if="item.attachments.length" class="attachment-list">
                   <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }" role="button" :aria-label="attachment.kind === 'image' ? t('previewAttachment') : t('downloadAttachment')" @click="openAttachment(attachment)">
                     <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
@@ -1726,19 +1743,47 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div v-if="item.role === 'user'" class="message-actions message-actions--user">
-                <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyText(item.text)">
-                  <template #icon><NIcon :component="CopyOutline" /></template>
-                </NButton>
-                <NButton quaternary circle size="tiny" :aria-label="actionLabels.speak" @click="speakMessage(item)">
-                  <template #icon><NIcon :component="speakingMessageId === item.id ? StopCircleOutline : VolumeHighOutline" /></template>
-                </NButton>
-                <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" @click="openEditMessage(item)">
-                  <template #icon><NIcon :component="CreateOutline" /></template>
-                </NButton>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyText" @click="copyUserText(item, false)">
+                      <template #icon><NIcon :component="CopyOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ actionLabels.copyText }}
+                </NTooltip>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.copyMarkdown" @click="copyUserText(item, true)">
+                      <template #icon><NIcon :component="CodeSlashOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ actionLabels.copyMarkdown }}
+                </NTooltip>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="tiny" :aria-label="actionLabels.speak" @click="speakMessage(item)">
+                      <template #icon><NIcon :component="speakingMessageId === item.id ? StopCircleOutline : VolumeHighOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ speakingMessageId === item.id ? actionLabels.stopSpeak : actionLabels.speak }}
+                </NTooltip>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton class="hidden-action" quaternary circle size="tiny" :aria-label="actionLabels.editMessage" @click="openEditMessage(item)">
+                      <template #icon><NIcon :component="CreateOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ actionLabels.editMessage }}
+                </NTooltip>
                 <div class="message-menu-wrap hidden-action" @click.stop>
-                  <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
-                    <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
-                  </NButton>
+                  <NTooltip>
+                    <template #trigger>
+                      <NButton quaternary circle size="tiny" :aria-label="actionLabels.more" @click.stop="toggleMessageMenu(item.id)">
+                        <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
+                      </NButton>
+                    </template>
+                    {{ actionLabels.more }}
+                  </NTooltip>
                   <div v-if="openMenuId === item.id" class="message-menu">
                     <button type="button" class="message-menu-item" @click="deleteMessage(item)">
                       <NIcon :component="TrashOutline" />{{ actionLabels.deleteMessage }}
@@ -1933,7 +1978,15 @@ onBeforeUnmount(() => {
         </div>
         <!-- 工具（MCP）管理 -->
         <div v-else-if="rightPanelTab === 'tools'" class="panel-section">
-          <div v-if="!toolList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div v-if="builtinTools.length" class="panel-section">
+            <label>{{ actionLabels.builtinTools }}</label>
+            <div class="builtin-tool-list">
+              <span v-for="tool in builtinTools" :key="tool.name" class="builtin-tool-chip" :title="tool.description">
+                <code>{{ tool.name }}</code>
+              </span>
+            </div>
+          </div>
+          <div v-if="!toolList.length && !builtinTools.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="tool in toolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
             <div class="manage-card-head">
               <strong>{{ tool.name }}</strong>
@@ -1987,11 +2040,23 @@ onBeforeUnmount(() => {
 
     <!-- 技能新建/编辑弹窗 -->
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
-      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal" role="dialog">
+      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
         <div class="manage-form">
           <NInput v-if="!skillForm.name" v-model:value="skillForm.name" size="small" :placeholder="'name'" />
           <NInput v-model:value="skillForm.description" size="small" :placeholder="'description'" />
-          <NInput v-model:value="skillForm.content" type="textarea" :autosize="{ minRows: 6, maxRows: 14 }" :placeholder="'SKILL.md content (markdown)'" class="manage-form-code" />
+          <div class="skill-edit-split">
+            <div class="skill-edit-col">
+              <label class="skill-edit-label">SKILL.md (markdown)</label>
+              <NInput v-model:value="skillForm.content" type="textarea" :autosize="{ minRows: 8, maxRows: 20 }" :placeholder="'SKILL.md content (markdown)'" class="manage-form-code skill-edit-editor" />
+            </div>
+            <div class="skill-edit-col skill-edit-preview">
+              <label class="skill-edit-label">Preview</label>
+              <div class="skill-edit-preview-body">
+                <MarkdownMessage v-if="skillForm.content" :content="skillForm.content" />
+                <p v-else class="skill-edit-preview-empty">No content</p>
+              </div>
+            </div>
+          </div>
         </div>
         <template #footer>
           <div class="manage-form-actions">
@@ -2145,6 +2210,16 @@ onBeforeUnmount(() => {
 .quick-action-name { flex:0 0 auto; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .quick-action-desc { color:var(--subtle); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .quick-action-empty { padding:12px; color:var(--subtle); font-size:12px; text-align:center; }
+.builtin-tool-list { display:flex; flex-wrap:wrap; gap:6px; }
+.builtin-tool-chip { padding:3px 8px; border:1px solid var(--border); border-radius:8px; background:rgba(37,99,235,.05); }
+.builtin-tool-chip code { font:12px/1.4 "Cascadia Code",Consolas,monospace; color:var(--text); }
+.skill-edit-split { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px; }
+.skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; }
+.skill-edit-label { color:var(--subtle); font-size:12px; }
+.skill-edit-editor :deep(textarea) { font:12px/1.5 "Cascadia Code",Consolas,monospace !important; }
+.skill-edit-preview-body { flex:1; min-height:280px; max-height:420px; overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
+.skill-edit-preview-empty { color:var(--subtle); font-size:12px; }
+.manage-modal--wide { width:min(860px, calc(100vw - 32px)); }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }

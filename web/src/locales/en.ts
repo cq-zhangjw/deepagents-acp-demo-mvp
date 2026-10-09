@@ -27,6 +27,7 @@ export default {
   inputPlaceholder: 'Enter a task. Enter to send, Shift + Enter for a new line',
   loading: 'Loading...',
   noResults: 'No matches',
+  builtinTools: 'Built-in tools',
   send: 'Send task',
   cancel: 'Cancel task',
   permissionTitle: 'Agent requests permission',

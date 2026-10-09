@@ -27,6 +27,7 @@ export default {
   inputPlaceholder: 'タスクを入力。Enter で送信、Shift + Enter で改行',
   loading: '読み込み中...',
   noResults: '一致する結果がありません',
+  builtinTools: '内蔵ツール',
   send: '送信',
   cancel: 'タスクを中止',
   permissionTitle: 'Agent が権限を要求しています',

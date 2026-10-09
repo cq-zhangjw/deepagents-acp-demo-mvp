@@ -33,15 +33,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
 DE_ROOT = BASE_DIR / ".deepagents"
 SKILLS_DIR = DE_ROOT / "skills"
 MCP_DIR = DE_ROOT / "mcp_servers"
-AGENTS_FILE = DE_ROOT / "agents.json"
+AGENTS_DIR = DE_ROOT / "agents"
+AGENTS_FILE = AGENTS_DIR / "agents.json"
+AGENT_MD_SUFFIX = ".agent.md"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 # directory creation is guaranteed on first module import
-for _d in (DE_ROOT, SKILLS_DIR, MCP_DIR):
+for _d in (DE_ROOT, SKILLS_DIR, MCP_DIR, AGENTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
-if not AGENTS_FILE.exists():
-    _write_agents({})
 
 _agents_lock = asyncio.Lock()
 
@@ -86,6 +86,62 @@ def _write_agents(data: dict) -> None:
 
 def _read_agents() -> dict:
     return _read_json(AGENTS_FILE, {})
+
+
+# ---------- built-in tools ----------
+
+BUILTIN_TOOLS = [
+    {"name": "ls", "description": "List directory contents"},
+    {"name": "read_file", "description": "Read a file's content"},
+    {"name": "write_file", "description": "Write a file"},
+    {"name": "edit_file", "description": "Edit a file in place"},
+    {"name": "glob", "description": "Find files by name pattern"},
+    {"name": "grep", "description": "Search file contents by regex"},
+    {"name": "execute", "description": "Run shell commands"},
+    {"name": "task", "description": "Call a subagent"},
+]
+
+
+@router.get("/builtin-tools")
+def list_builtin_tools():
+    """List the tools every deep agent gets by default (read-only reference)."""
+    return BUILTIN_TOOLS
+
+
+def _agent_md_template(name: str, data: dict) -> str:
+    """Default .agent.md body for a new agent."""
+    description = (data.get("description") or "").strip()
+    front = "---\nname: {0}\n".format(name)
+    if description:
+        front += "description: {0}\n".format(description)
+    return front + "---\n\n# {0}\n\nDefine the agent behavior here (system prompt / instructions).\n".format(name)
+
+
+def _agent_md_path(name: str) -> Path:
+    return AGENTS_DIR / (name + AGENT_MD_SUFFIX)
+
+
+def _migrate_legacy_agents() -> None:
+    """One-time migration: old `.deepagents/agents.json` -> `agents/*.agent.md` + `agents/agents.json`."""
+    legacy = DE_ROOT / "agents.json"
+    if not legacy.exists() or AGENTS_FILE.exists():
+        return
+    data = _read_json(legacy, {})
+    _write_json_atomic(AGENTS_FILE, data)
+    for name, defn in data.items():
+        md = _agent_md_path(name)
+        if not md.exists():
+            md.write_text(_agent_md_template(name, defn), encoding="utf-8")
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
+_migrate_legacy_agents()
+
+if not AGENTS_FILE.exists():
+    _write_agents({})
 
 
 def _frontmatter(md: str) -> dict:
@@ -177,6 +233,19 @@ def list_skills():
                 items.append(_skill_entry(d))
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
+
+
+@router.get("/skills/{name}")
+def get_skill(name: str):
+    """Fetch a single skill's SKILL.md body for editing."""
+    name = _ensure_name(name)
+    md = SKILLS_DIR / name / "SKILL.md"
+    if not md.exists():
+        raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    try:
+        return {"name": name, "content": md.read_text(encoding="utf-8")}
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to read skill: {exc}") from exc
 
 
 @router.post("/skills/{name}/toggle")
@@ -403,7 +472,17 @@ def delete_tool(name: str):
     return {"ok": True}
 
 
-# ---------- agents (global agents.json) ----------
+# ---------- agents (agents/*.agent.md + agents/agents.json) ----------
+
+def _agent_md_body(name: str) -> str:
+    md = _agent_md_path(name)
+    if md.exists():
+        try:
+            return md.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    return ""
+
 
 def _agent_entry(name: str, data: dict) -> dict:
     return {
@@ -414,14 +493,26 @@ def _agent_entry(name: str, data: dict) -> dict:
         "system_prompt": data.get("system_prompt"),
         "skills": data.get("skills") or [],
         "tools": data.get("tools") or [],
+        "file": name + AGENT_MD_SUFFIX,
+        "body": _agent_md_body(name),
     }
+
+
+def _scan_agent_files() -> list[str]:
+    """Agent names = `agents/*.agent.md` files (merged with agents.json keys)."""
+    names = set()
+    if AGENTS_DIR.is_dir():
+        for p in AGENTS_DIR.glob("*" + AGENT_MD_SUFFIX):
+            names.add(p.name[: -len(AGENT_MD_SUFFIX)])
+    names.update(_read_agents().keys())
+    return sorted(names)
 
 
 @router.get("/agents")
 def list_agents():
-    """Agent list: read the global agents.json."""
+    """Agent list: scan `agents/*.agent.md`, merge association data from `agents/agents.json`."""
     agents = _read_agents()
-    items = [_agent_entry(name, data) for name, data in agents.items()]
+    items = [_agent_entry(name, agents.get(name) or {}) for name in _scan_agent_files()]
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
 
@@ -430,9 +521,9 @@ def list_agents():
 def get_agent(name: str):
     name = _ensure_name(name)
     agents = _read_agents()
-    if name not in agents:
-        raise HTTPException(status_code=404, detail=f"agent not found: {name}")
-    return _agent_entry(name, agents[name])
+    if _agent_md_path(name).exists() or name in agents:
+        return _agent_entry(name, agents.get(name) or {})
+    raise HTTPException(status_code=404, detail=f"agent not found: {name}")
 
 
 async def _validate_agent(name: str, data: dict) -> dict:
@@ -455,47 +546,60 @@ async def _validate_agent(name: str, data: dict) -> dict:
 async def validate_agent(name: str):
     name = _ensure_name(name)
     agents = _read_agents()
-    if name not in agents:
-        raise HTTPException(status_code=404, detail=f"agent not found: {name}")
-    return await _validate_agent(name, agents[name])
+    if _agent_md_path(name).exists() or name in agents:
+        return await _validate_agent(name, agents.get(name) or {})
+    raise HTTPException(status_code=404, detail=f"agent not found: {name}")
 
 
 @router.post("/agents")
 async def create_agent(payload: dict):
-    """Create an agent: write to the global agents.json."""
+    """Create an agent: write `<name>.agent.md` + association entry in `agents/agents.json`."""
     name = _ensure_name(payload.get("name", ""))
+    body = (payload.get("body") or "").strip()
     async with _agents_lock:
         agents = _read_agents()
-        if name in agents:
+        if _agent_md_path(name).exists() or name in agents:
             raise HTTPException(status_code=409, detail=f"agent already exists: {name}")
-        agents[name] = _normalize_agent_def(payload)
+        defn = _normalize_agent_def(payload)
+        agents[name] = defn
         _write_agents(agents)
+        if not body:
+            body = _agent_md_template(name, defn)
+        _agent_md_path(name).write_text(body, encoding="utf-8")
     return _agent_entry(name, agents[name])
 
 
 @router.put("/agents/{name}")
 async def update_agent(name: str, payload: dict):
-    """Edit an agent: overwrite the AgentDef for this key."""
+    """Edit an agent: overwrite `.agent.md` (if body given) and the agents.json entry."""
     name = _ensure_name(name)
     async with _agents_lock:
         agents = _read_agents()
-        if name not in agents:
+        if not (_agent_md_path(name).exists() or name in agents):
             raise HTTPException(status_code=404, detail=f"agent not found: {name}")
-        agents[name] = _normalize_agent_def(payload)
+        defn = _normalize_agent_def(payload)
+        agents[name] = defn
         _write_agents(agents)
+        body = (payload.get("body") or "").strip()
+        if body:
+            _agent_md_path(name).write_text(body, encoding="utf-8")
+        elif not _agent_md_path(name).exists():
+            _agent_md_path(name).write_text(_agent_md_template(name, defn), encoding="utf-8")
     return _agent_entry(name, agents[name])
 
 
 @router.delete("/agents/{name}")
 async def delete_agent(name: str):
-    """Delete an agent: remove this key from agents.json."""
+    """Delete an agent: remove `*.agent.md` and the agents.json key."""
     name = _ensure_name(name)
     async with _agents_lock:
         agents = _read_agents()
-        if name not in agents:
+        md = _agent_md_path(name)
+        if not (md.exists() or name in agents):
             raise HTTPException(status_code=404, detail=f"agent not found: {name}")
-        del agents[name]
+        agents.pop(name, None)
         _write_agents(agents)
+        md.unlink(missing_ok=True)
     return {"ok": True}
 
 

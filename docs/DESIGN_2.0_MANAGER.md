@@ -1,6 +1,6 @@
 # DeepAgents 2.0 · 技能 / 工具（MCP）/ Agent 管理面板设计
 
-> 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-writer / tool-writer 技能由 AI 对话生成）
+> 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-writer / tool-writer 技能由 AI 对话生成；Agent 迁入 `.deepagents/agents/` 目录（`*.agent.md` + `agents.json`）；工具面板顶部展示内置工具一览；技能编辑弹窗改为左右布局（左编辑右预览）；输入框 `@`/`/` 快捷动作已实现）
 > 适用范围：`E:\my_projects\deepagents_acp`（Windows / FastAPI 网关 + ACP 子进程 + Vue3 前端）
 > 关联：DESIGN_ZH.md（系统总设计）、UI_DESIGN.md（界面设计）
 
@@ -44,8 +44,9 @@ deepagents_acp/
 │   │       ├── server.json       #    {"command","args","env","cwd","description"}
 │   │       ├── .disabled         #    存在 = 已停用
 │   │       └── (可选本地实现文件)
-│   └── agents.json               # ── Agent 定义（全局单文件管控）──
-│                                  #    对象映射：{ <agent-name>: AgentDef }，见 3.3
+│   └── agents/                   # ── Agent 定义（专属目录）──
+│       ├── agents.json           #    关联配置：{ <agent-name>: AgentDef }，见 3.3
+│       └── <name>.agent.md       #    Agent 定义文件（markdown，frontmatter + 正文）
 ├── app.py / acp_agent.py / web/  # 现有代码
 └── docs/
 ```
@@ -98,6 +99,8 @@ license: MIT
 
 ### 3.2 工具 / MCP 服务器（MCPServer）
 
+**内置工具一览**：每个 deep agent 默认获得 `ls / read_file / write_file / edit_file / glob / grep / execute / task` 8 个内置工具（后端 `GET /api/manage/builtin-tools` 只读返回）。工具面板顶部固定展示这些内置工具 chips，下方才是可管理的 MCP 服务器列表。
+
 每个 MCP server 一个目录，核心是 `server.json`（MCP stdio 启动规范）：
 
 ```json
@@ -122,9 +125,13 @@ license: MIT
   - `env` 中 `"${NAME}"` 形式从进程环境（`.env` 已 `load_dotenv`）解析；**明文密钥写入 server.json 时 UI 给出警告**（仅提示，不强制）。
   - MCP `command` 可执行任意程序 → 面板属本地自用工具，UI 文案提示“仅运行可信命令”。
 
-### 3.3 Agent 定义（全局 `agents.json`）
+### 3.3 Agent 定义（`.deepagents/agents/` 目录）
 
-**Agent 不使用每 agent 一个目录，统一由 `.deepagents/agents.json` 单文件管控**：对象映射，key 为 agent 名，value 为 AgentDef。面板对 Agent 的增删改 = 对该文件的安全读写。
+Agent 拥有专属目录 `.deepagents/agents/`：
+- **每个 Agent 一个 `<name>.agent.md` 文件**（markdown，frontmatter 含 name/description，正文为 Agent 行为/提示词定义，格式由用户后续自行约定）；
+- **`agents.json` 放在该目录下**，只记录关联配置：对象映射，key 为 agent 名，value 为 AgentDef（model / system_prompt / skills / tools / enabled / description）。
+
+面板的 Agent 增删改 = 同步操作 `<name>.agent.md`（创建/删除/可选正文覆写）+ `agents.json` 关联配置（原子写 + `.bak` 备份）。首次加载时自动把旧版根目录 `agents.json` 迁移到新结构。
 
 ```json
 {
@@ -157,8 +164,8 @@ license: MIT
 - **字段可省略**：省略 `model` → 装配侧用 `.env` 全局模型（保持现状）；省略 `skills/tools` → 面板侧不做关联（装配侧不加载对应资源）；省略 `description/system_prompt/enabled` → 分别默认空 / 默认提示词 / true。
 - **enabled**：Agent 自身的启停开关，存在 json 内（与 skills/tools 的 `.disabled` 文件不同——agents 是单文件管控，无需额外标记文件）。
 - **关联校验**：`skills`/`tools` 只接受“目录存在且未停用”的名称，加载时过滤并记录警告（不阻塞会话）。
-- **新增/编辑**：前端表单（名称即 key，编辑态只读）+ 技能/工具多选（来自 3.1/3.2 列表，含停用项标灰）。
-- **删除**：从 agents.json 移除该 key；删除当前正在使用的 Agent 时 UI 阻止并提示切换。
+- **新增/编辑**：前端表单（名称即 key，编辑态只读）+ 技能/工具多选（来自 3.1/3.2 列表，含停用项标灰）；创建时后端自动生成 `<name>.agent.md` 模板（frontmatter + 占位正文），正文可编辑后覆写。
+- **删除**：删除 `<name>.agent.md` 并从 agents.json 移除该 key；删除当前正在使用的 Agent 时 UI 阻止并提示切换。
 
 ---
 
@@ -168,7 +175,8 @@ license: MIT
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/manage/skills` | 技能列表：`[{name, description, enabled, path, updated_at}]` |
+| GET | `/api/manage/skills` | 技能列表：`[{name, description, enabled, path, absolute_path, updated_at}]` |
+| GET | `/api/manage/skills/{name}` | 技能 SKILL.md 正文（编辑弹窗回填） |
 | POST | `/api/manage/skills/{name}/toggle` | 切换启停（创建/删除 `.disabled`） |
 | POST | `/api/manage/skills` | 新建技能（name/description/content）→ 写 SKILL.md |
 | PUT | `/api/manage/skills/{name}` | 编辑技能正文/描述 |
@@ -179,12 +187,14 @@ license: MIT
 | POST | `/api/manage/tools/{name}/test` | 试连：启动→list_tools→返回工具名/错误 |
 | PUT | `/api/manage/tools/{name}` | 编辑配置 |
 | DELETE | `/api/manage/tools/{name}` | 删除 MCP 配置目录 |
-| GET | `/api/manage/agents` | Agent 列表：`[{name, description, enabled, skills, tools, model}]`（读 agents.json） |
-| GET | `/api/manage/agents/{name}` | Agent 详情（完整 AgentDef，供编辑表单回填） |
-| POST | `/api/manage/agents` | 新建 Agent（name + AgentDef）→ 写入 agents.json |
-| PUT | `/api/manage/agents/{name}` | 编辑 Agent（覆写该 key 的 AgentDef） |
-| DELETE | `/api/manage/agents/{name}` | 删除 Agent（移除该 key） |
+| GET | `/api/manage/agents` | Agent 列表：`[{name, description, enabled, skills, tools, model, file, body}]`（扫描 `agents/*.agent.md` 合并 agents.json） |
+| GET | `/api/manage/agents/{name}` | Agent 详情（完整 AgentDef + body，供编辑表单回填） |
+| POST | `/api/manage/agents` | 新建 Agent（name + AgentDef）→ 写 `<name>.agent.md` + agents.json |
+| PUT | `/api/manage/agents/{name}` | 编辑 Agent（覆写该 key 的 AgentDef；body 非空时覆写 .agent.md） |
+| DELETE | `/api/manage/agents/{name}` | 删除 Agent（删 `<name>.agent.md` 并移除该 key） |
 | GET | `/api/manage/agents/{name}/validate` | 预检：关联的技能/工具是否存在且已启用（不校验模型连通性） |
+| GET | `/api/manage/builtin-tools` | 内置工具一览（只读）：ls/read_file/write_file/edit_file/glob/grep/execute/task |
+| GET | `/api/manage/files?q=` | 项目根顶层条目（@ 快捷动作）：`[{name, path(绝对), type: dir|file}]`，q 前缀过滤 |
 
 **通用约定**：
 - 所有名称入参先过白名单校验（2.3），非法返回 400。
