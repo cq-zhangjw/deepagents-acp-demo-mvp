@@ -33,7 +33,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
 DE_ROOT = BASE_DIR / ".deepagents"
 SKILLS_DIR = DE_ROOT / "skills"
 MCP_DIR = DE_ROOT / "tools" / "mcp_servers"
-TOOLS_FILE = BASE_DIR / "tools.json"  # aggregated list of enabled tools (root level)
 AGENTS_DIR = DE_ROOT / "agents"
 AGENTS_FILE = AGENTS_DIR / "agents.json"
 AGENT_MD_SUFFIX = ".agent.md"
@@ -59,12 +58,6 @@ def _migrate_legacy_layout() -> None:
 
 
 _migrate_legacy_layout()
-
-# root tools.json holds the aggregated enabled-tool list; ensure it exists (default: [])
-if not TOOLS_FILE.exists():
-    TOOLS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(TOOLS_FILE, "w", encoding="utf-8") as _f:
-        json.dump([], _f, ensure_ascii=False, indent=2)
 
 _agents_lock = asyncio.Lock()
 
@@ -129,6 +122,90 @@ BUILTIN_TOOLS = [
 def list_builtin_tools():
     """List the tools every deep agent gets by default (read-only reference)."""
     return BUILTIN_TOOLS
+
+
+BUILTIN_TOOL_NAMES = [t["name"] for t in BUILTIN_TOOLS]
+
+
+def _default_agent_tools() -> dict:
+    """AgentDef.tools default: all builtin tools enabled, no MCP tools.
+
+    inner_tools: None = all builtin tools enabled; a list = the explicitly
+    enabled builtin tool names.
+    mcp_tools: list of manifest-style entries (serverInfo + selected tools[]).
+    """
+    return {"inner_tools": None, "mcp_tools": []}
+
+
+def _norm_inner_tools(value) -> list | None:
+    """Normalize inner_tools: None (all enabled) or a validated list of names."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    names = [v for v in value if isinstance(v, str) and v in BUILTIN_TOOL_NAMES]
+    if not names:
+        return None
+    # dedupe, keep order
+    return list(dict.fromkeys(names))
+
+
+def _norm_agent_tools(value) -> dict:
+    """Normalize an AgentDef.tools field.
+
+    Accepts the new dict form {inner_tools, mcp_tools}, the legacy list form
+    (server names -> full manifest entries), or nothing (defaults).
+    """
+    if isinstance(value, dict):
+        return {
+            "inner_tools": _norm_inner_tools(value.get("inner_tools")),
+            "mcp_tools": _norm_mcp_tools(value.get("mcp_tools")),
+        }
+    if isinstance(value, list):
+        # legacy: ["filesystem-mcp", ...] -> full manifest entries, inner all on
+        entries = []
+        for s in value:
+            if isinstance(s, str) and _valid_name(s) and (MCP_DIR / s).is_dir():
+                entries.append(_agent_mcp_entry(s, [t.get("name") for t in _manifest_tools(MCP_DIR / s)]))
+        return {"inner_tools": None, "mcp_tools": entries}
+    return _default_agent_tools()
+
+
+def _norm_mcp_tools(value) -> list[dict]:
+    """Normalize mcp_tools: manifest-style entries whose tools[] are selected."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        server = _mcp_entry_server(entry)
+        if not server or server in seen:
+            continue
+        tools = entry.get("tools")
+        if not isinstance(tools, list):
+            continue
+        sel = [t for t in tools if isinstance(t, dict) and t.get("name")]
+        if not sel:
+            continue
+        seen.add(server)
+        out.append({
+            "server": server,
+            "serverInfo": entry.get("serverInfo"),
+            "tools": sel,
+        })
+    return out
+
+
+def _agent_mcp_entry(server: str, tools: list[dict]) -> dict:
+    """Build a manifest-style mcp_tools entry for a server."""
+    server_dir = MCP_DIR / server
+    manifest = _read_json(server_dir / "manifest.json", {})
+    return {
+        "serverInfo": manifest.get("serverInfo") or {"name": server, "version": ""},
+        "tools": tools,
+    }
 
 
 def _agent_md_template(name: str, data: dict) -> str:
@@ -216,16 +293,6 @@ def _mtime(path: Path) -> float:
 
 # ---------- tools.json (aggregated enabled-tool list) ----------
 
-def _read_tools() -> list[dict]:
-    """Read root tools.json (list of enabled tools). Default: empty list."""
-    data = _read_json(TOOLS_FILE, [])
-    return data if isinstance(data, list) else []
-
-
-def _write_tools(items: list[dict]) -> None:
-    _write_json_atomic(TOOLS_FILE, items)
-
-
 def _manifest_tools(server_dir: Path) -> list[dict]:
     """Read manifest.json tools of a server; returns the raw tool entries."""
     try:
@@ -234,35 +301,6 @@ def _manifest_tools(server_dir: Path) -> list[dict]:
         return tools if isinstance(tools, list) else []
     except Exception:  # noqa: BLE001
         return []
-
-
-def _add_tools_to_registry(server: str, server_dir: Path) -> None:
-    """Append every tool of a server (from manifest.json) to tools.json."""
-    items = _read_tools()
-    existing = {(_t.get("server"), _t.get("name")) for _t in items}
-    added = False
-    for t in _manifest_tools(server_dir):
-        key = (server, t.get("name", ""))
-        if key in existing:
-            continue
-        items.append({"server": server, **t})
-        added = True
-    if added:
-        _write_tools(items)
-
-
-def _remove_tools_from_registry(server: str, tool: str | None = None) -> None:
-    """Drop a server's tools (or a single tool) from tools.json."""
-    items = _read_tools()
-    if tool is None:
-        items = [_t for _t in items if _t.get("server") != server]
-    else:
-        items = [_t for _t in items if not (_t.get("server") == server and _t.get("name") == tool)]
-    _write_tools(items)
-
-
-def _tool_enabled(server: str, tool: str) -> bool:
-    return any(_t.get("server") == server and _t.get("name") == tool for _t in _read_tools())
 
 
 # directories/files skipped by the @ file picker
@@ -391,26 +429,67 @@ def delete_skill(name: str):
     return {"ok": True}
 
 
-# ---------- tools (MCP servers, grouped under .deepagents/tools/mcp_servers) ----------
+# ---------- tools (MCP servers, per-agent enabled set in agents.json) ----------
 
-def _server_entry(server_dir: Path) -> dict:
-    """Group entry for one MCP server: server-level info + per-tool list.
+def _agent_tools_def(agent: str) -> dict:
+    """Get (and lazily create) the AgentDef.tools structure of an agent."""
+    agents = _read_agents()
+    defn = agents.setdefault(agent, {})
+    tools = defn.get("tools")
+    if not isinstance(tools, dict):
+        tools = _default_agent_tools()
+        defn["tools"] = tools
+    if "inner_tools" not in tools or "mcp_tools" not in tools:
+        tools = _default_agent_tools()
+        defn["tools"] = tools
+    return defn["tools"], agents
 
-    Tools come from manifest.json (each server root carries one); a tool is
-    enabled iff its (server, name) entry exists in the root tools.json.
-    server.json remains an optional launch config (command/env), absent for
-    pure-function servers.
+
+def _agent_mcp_entry(server: str, tool_names: list[str]) -> dict:
+    """Manifest-style mcp_tools entry for a server, tools[] filtered to selection.
+
+    `server` = directory name (the stable identity used for matching);
+    `serverInfo` keeps the manifest display info as-is.
+    """
+    server_dir = MCP_DIR / server
+    manifest = _read_json(server_dir / "manifest.json", {})
+    all_tools = manifest.get("tools") or []
+    sel = [t for t in all_tools if t.get("name") in set(tool_names)]
+    return {
+        "server": server,
+        "serverInfo": manifest.get("serverInfo") or {"name": server, "version": ""},
+        "tools": sel,
+    }
+
+
+def _mcp_entry_server(entry: dict) -> str:
+    """Identity of an mcp_tools entry: directory name (legacy entries fall back to serverInfo.name)."""
+    s = entry.get("server")
+    if isinstance(s, str) and s:
+        return s
+    info = entry.get("serverInfo") or {}
+    return str(info.get("name") or "").strip()
+
+
+def _server_entry(server_dir: Path, tools_def: dict) -> dict:
+    """Group entry for one MCP server, enable state driven by the agent's tools.
+
+    server.enabled  = an entry for this server exists in agent.mcp_tools;
+    tool.enabled    = the tool name is inside that entry's tools[].
     """
     cfg = _read_json(server_dir / "server.json", {})
     manifest = _read_json(server_dir / "manifest.json", {})
     server_info = manifest.get("serverInfo") or {}
+    mcp_tools = tools_def.get("mcp_tools") or []
+    entry = next((e for e in mcp_tools if _mcp_entry_server(e) == server_dir.name), None)
+    enabled_names = {t.get("name") for t in (entry or {}).get("tools") or []} if entry else set()
     tools = []
-    for t in _manifest_tools(server_dir):
+    for t in manifest.get("tools") or []:
         tname = t.get("name", "")
         tools.append({
             "name": tname,
             "description": (t.get("description") or "").strip(),
-            "enabled": _tool_enabled(server_dir.name, tname),
+            "enabled": tname in enabled_names,
         })
     description = (
         (cfg.get("description") or "").strip()
@@ -421,7 +500,7 @@ def _server_entry(server_dir: Path) -> dict:
         "description": description,
         "command": cfg.get("command", ""),
         "has_server_json": (server_dir / "server.json").exists(),
-        "enabled": not _is_disabled(server_dir),
+        "enabled": entry is not None,
         "tools": tools,
         "path": str(server_dir.relative_to(BASE_DIR)).replace("\\", "/"),
         "updated_at": _mtime(server_dir / "manifest.json") or _mtime(server_dir / "server.json"),
@@ -429,68 +508,115 @@ def _server_entry(server_dir: Path) -> dict:
 
 
 @router.get("/tools")
-def list_tools():
-    """MCP server groups: scan .deepagents/tools/mcp_servers/*/ (manifest.json)."""
+def list_tools(agent: str = "default"):
+    """MCP server groups for an agent: scan .deepagents/tools/mcp_servers/*/.
+
+    Enable state comes from the agent's tools.mcp_tools in agents.json.
+    """
+    agent = _ensure_name(agent)
+    tools_def, _ = _agent_tools_def(agent)
     items = []
     if MCP_DIR.is_dir():
         for d in sorted(MCP_DIR.iterdir()):
             if d.is_dir() and ((d / "manifest.json").exists() or (d / "server.json").exists()):
-                items.append(_server_entry(d))
+                items.append(_server_entry(d, tools_def))
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
 
 
 @router.post("/tools/{name}/toggle")
-def toggle_tool(name: str):
-    """Toggle an MCP server (group level).
+def toggle_tool(name: str, agent: str = "default"):
+    """Toggle an MCP server for one agent (group level).
 
-    Disabling drops every tool of the server from tools.json and from all
-    agent association lists; enabling re-reads manifest.json and registers
-    all its tools in tools.json (no auto re-add to agents).
+    Enabling adds a manifest-style entry (all tools selected) to the agent's
+    tools.mcp_tools; disabling removes the entry. Only the agent's tools
+    field in agents.json is touched.
     """
     name = _ensure_name(name)
+    agent = _ensure_name(agent)
     d = MCP_DIR / name
     if not d.is_dir() or not ((d / "manifest.json").exists() or (d / "server.json").exists()):
         raise HTTPException(status_code=404, detail=f"tool not found: {name}")
-    flag = d / ".disabled"
-    if flag.exists():
-        flag.unlink()
-        enabled = True
-        _add_tools_to_registry(name, d)
-    else:
-        flag.touch()
+    tools_def, agents = _agent_tools_def(agent)
+    mcp_tools = tools_def.get("mcp_tools") or []
+    entry = next((e for e in mcp_tools if _mcp_entry_server(e) == name), None)
+    if entry is not None:
+        tools_def["mcp_tools"] = [e for e in mcp_tools if _mcp_entry_server(e) != name]
         enabled = False
-        _remove_tools_from_registry(name)
-        # disabling drops the MCP server from every agent's association list
-        _remove_agent_ref("tool", name)
-    return {"name": name, "enabled": enabled}
+    else:
+        tools_def["mcp_tools"] = mcp_tools + [_agent_mcp_entry(name, [t.get("name") for t in _manifest_tools(d)])]
+        enabled = True
+    _write_agents(agents)
+    return {"name": name, "enabled": enabled, "agent": agent}
 
 
 @router.post("/tools/{server}/{tool}/toggle")
-def toggle_tool_item(server: str, tool: str):
-    """Toggle a single tool inside an MCP server group (tools.json entry)."""
+def toggle_tool_item(server: str, tool: str, agent: str = "default"):
+    """Toggle a single tool inside a server for one agent.
+
+    The tool is added/removed in the agent's mcp_tools entry; if no entry
+    exists yet, enabling a tool creates the server entry with that tool.
+    """
     server = _ensure_name(server)
+    agent = _ensure_name(agent)
     if not tool:
         raise HTTPException(status_code=400, detail="tool name must not be empty")
     d = MCP_DIR / server
     if not d.is_dir():
         raise HTTPException(status_code=404, detail=f"tool not found: {server}")
-    if _is_disabled(d):
-        raise HTTPException(status_code=409, detail=f"server disabled: {server}")
-    names = {t.get("name") for t in _manifest_tools(d)}
+    manifest = _read_json(d / "manifest.json", {})
+    names = {t.get("name") for t in manifest.get("tools") or []}
     if tool not in names:
         raise HTTPException(status_code=404, detail=f"tool not found: {server}/{tool}")
-    if _tool_enabled(server, tool):
-        _remove_tools_from_registry(server, tool)
+    tools_def, agents = _agent_tools_def(agent)
+    mcp_tools = tools_def.get("mcp_tools") or []
+    entry = next((e for e in mcp_tools if _mcp_entry_server(e) == server), None)
+    if entry is not None:
+        sel = [t.get("name") for t in entry.get("tools") or []]
+        if tool in sel:
+            sel = [x for x in sel if x != tool]
+            enabled = False
+        else:
+            sel.append(tool)
+            enabled = True
+        if sel:
+            entry["tools"] = [t for t in manifest.get("tools") or [] if t.get("name") in set(sel)]
+            tools_def["mcp_tools"] = [e if e is not entry else entry for e in mcp_tools]
+        else:
+            tools_def["mcp_tools"] = [e for e in mcp_tools if e is not entry]
+    else:
+        tools_def["mcp_tools"] = mcp_tools + [_agent_mcp_entry(server, [tool])]
+        enabled = True
+    _write_agents(agents)
+    return {"server": server, "tool": tool, "enabled": enabled, "agent": agent}
+
+
+@router.post("/agents/{agent}/inner-tools/{tool}/toggle")
+def toggle_inner_tool(agent: str, tool: str):
+    """Toggle one builtin tool for an agent (agents.json tools.inner_tools).
+
+    inner_tools: None = all builtin tools enabled (default); toggling a tool
+    off materializes the full list minus that tool; toggling back on restores
+    None when the list equals the full builtin set.
+    """
+    agent = _ensure_name(agent)
+    if tool not in BUILTIN_TOOL_NAMES:
+        raise HTTPException(status_code=404, detail=f"inner tool not found: {tool}")
+    tools_def, agents = _agent_tools_def(agent)
+    inner = _norm_inner_tools(tools_def.get("inner_tools"))
+    if inner is None:
+        # currently all enabled -> turn this one off
+        inner = [n for n in BUILTIN_TOOL_NAMES if n != tool]
+        enabled = False
+    elif tool in inner:
+        inner = [n for n in inner if n != tool]
         enabled = False
     else:
-        manifest = _read_json(d / "manifest.json", {})
-        entry = next((t for t in (manifest.get("tools") or []) if t.get("name") == tool), {})
-        items = _read_tools()
-        items.append({"server": server, **entry})
-        _write_tools(items)
+        inner = inner + [tool]
         enabled = True
-    return {"server": server, "tool": tool, "enabled": enabled}
+    tools_def["inner_tools"] = None if set(inner) == set(BUILTIN_TOOL_NAMES) else inner
+    _write_agents(agents)
+    return {"agent": agent, "tool": tool, "enabled": enabled}
 
 
 def _resolve_env(env: dict) -> dict:
@@ -611,7 +737,6 @@ def delete_tool(name: str):
         shutil.rmtree(d)
     except OSError as exc:
         raise HTTPException(status_code=409, detail=f"failed to delete tool: {exc}") from exc
-    _remove_tools_from_registry(name)
     _remove_agent_ref("tool", name)
     return {"ok": True}
 
@@ -619,20 +744,28 @@ def delete_tool(name: str):
 # ---------- agents (agents/*.agent.md + agents/agents.json) ----------
 
 def _remove_agent_ref(kind: str, name: str) -> None:
-    """Remove a skill/tool reference from every agent's list (disable/delete cleanup).
+    """Remove a skill/tool reference from every agent (disable/delete cleanup).
 
-    agents.json `skills`/`tools` hold only *enabled* associations; when a skill or
-    MCP server is disabled or deleted, drop it from all agents so no stale
-    reference survives. Re-enabling does NOT re-add it (user picks it again).
+    skills: drop the name from the enabled skills list.
+    tools:  drop the whole mcp_tools entry whose serverInfo.name == name.
+    Re-enabling does NOT re-add it (user picks it again).
     """
-    key = "skills" if kind == "skill" else "tools"
     agents = _read_agents()
     changed = False
     for defn in agents.values():
-        items = defn.get(key) or []
-        if name in items:
-            defn[key] = [x for x in items if x != name]
-            changed = True
+        if kind == "skill":
+            items = defn.get("skills") or []
+            if name in items:
+                defn["skills"] = [x for x in items if x != name]
+                changed = True
+        elif kind == "tool":
+            tools = defn.get("tools")
+            if isinstance(tools, dict):
+                mcp = tools.get("mcp_tools") or []
+                kept = [e for e in mcp if _mcp_entry_server(e) != name]
+                if len(kept) != len(mcp):
+                    tools["mcp_tools"] = kept
+                    changed = True
     if changed:
         _write_agents(agents)
 
@@ -655,7 +788,7 @@ def _agent_entry(name: str, data: dict) -> dict:
         "model": data.get("model"),
         "system_prompt": data.get("system_prompt"),
         "skills": data.get("skills") or [],
-        "tools": data.get("tools") or [],
+        "tools": _norm_agent_tools(data.get("tools")),
         "file": name + AGENT_MD_SUFFIX,
         "body": _agent_md_body(name),
     }
@@ -727,7 +860,6 @@ async def create_agent(payload: dict):
         _agent_md_path(name).write_text(body, encoding="utf-8")
     return _agent_entry(name, agents[name])
 
-
 @router.put("/agents/{name}")
 async def update_agent(name: str, payload: dict):
     """Edit an agent: overwrite `.agent.md` (if body given) and the agents.json entry."""
@@ -736,7 +868,7 @@ async def update_agent(name: str, payload: dict):
         agents = _read_agents()
         if not (_agent_md_path(name).exists() or name in agents):
             raise HTTPException(status_code=404, detail=f"agent not found: {name}")
-        defn = _normalize_agent_def(payload)
+        defn = _normalize_agent_def(payload, agents.get(name, {}).get("tools") or {})
         agents[name] = defn
         _write_agents(agents)
         body = (payload.get("body") or "").strip()
@@ -762,7 +894,7 @@ async def delete_agent(name: str):
     return {"ok": True}
 
 
-def _normalize_agent_def(payload: dict) -> dict:
+def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> dict:
     """Whitelist fields: keep only the known AgentDef keys."""
     def_data = {
         "description": (payload.get("description") or "").strip(),
@@ -778,10 +910,13 @@ def _normalize_agent_def(payload: dict) -> dict:
         def_data["system_prompt"] = sp.strip()
     skills = [s for s in (payload.get("skills") or []) if isinstance(s, str) and _valid_name(s)
               and not _is_disabled(SKILLS_DIR / s)]
-    tools = [t for t in (payload.get("tools") or []) if isinstance(t, str) and _valid_name(t)
-             and not _is_disabled(MCP_DIR / t)]
     if skills:
         def_data["skills"] = skills
-    if tools:
+    tools = _norm_agent_tools(payload.get("tools"))
+    # the agent form sends a server-name list; keep the existing per-agent
+    # inner_tools state instead of resetting it to "all enabled"
+    if isinstance(payload.get("tools"), list) and existing_tools:
+        tools["inner_tools"] = _norm_inner_tools(existing_tools.get("inner_tools"))
+    if not (tools["inner_tools"] is None and not tools["mcp_tools"]):
         def_data["tools"] = tools
     return def_data

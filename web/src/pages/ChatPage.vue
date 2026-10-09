@@ -428,25 +428,28 @@ const agentDropdownOptions = computed(() =>
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
+  fetchManageData() // 工具面板状态随 Agent 切换
 }
 
 async function fetchManageData() {
   try {
-    const [skills, tools, agents, builtins] = await Promise.all([
+    const [skills, agents, builtins] = await Promise.all([
       fetch('/api/manage/skills').then((r) => r.json()),
-      fetch('/api/manage/tools').then((r) => r.json()),
       fetch('/api/manage/agents').then((r) => r.json()),
       fetch('/api/manage/builtin-tools').then((r) => r.json())
     ])
     skillList.value = Array.isArray(skills) ? skills : []
-    toolList.value = Array.isArray(tools) ? tools : []
-    builtinTools.value = Array.isArray(builtins) ? builtins : []
     agentList.value = Array.isArray(agents) ? agents : []
+    builtinTools.value = Array.isArray(builtins) ? builtins : []
     // 当前 Agent 失效时回退到第一个可用项
     if (!agentList.value.some((a) => a.name === currentAgentName.value)) {
       const first = agentList.value.find((a) => a.enabled !== false)
       currentAgentName.value = first?.name || ''
     }
+    // 工具启用状态按当前 Agent 查询（per-agent tools.mcp_tools）
+    const agent = currentAgentName.value || 'default'
+    const tools = await fetch(`/api/manage/tools?agent=${agent}`).then((r) => r.json())
+    toolList.value = Array.isArray(tools) ? tools : []
   } catch {
     // 后端不可用时保持空列表，面板显示空态
   }
@@ -481,7 +484,7 @@ async function deleteSkill(name: string) {
 }
 async function toggleTool(name: string) {
   try {
-    await apiManage(`/api/manage/tools/${name}/toggle`, 'POST')
+    await apiManage(`/api/manage/tools/${name}/toggle?agent=${currentAgentName.value || 'default'}`, 'POST')
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -511,10 +514,30 @@ function toggleToolGroup(name: string) {
   if (idx >= 0) expandedToolGroups.value.splice(idx, 1)
   else expandedToolGroups.value.push(name)
 }
-/** 单工具启停（tools.json 条目增删） */
+/** 单工具启停（当前 agent 的 mcp_tools 条目增删） */
 async function toggleToolItem(server: string, tool: string) {
   try {
-    await apiManage(`/api/manage/tools/${server}/${tool}/toggle`, 'POST')
+    await apiManage(`/api/manage/tools/${server}/${tool}/toggle?agent=${currentAgentName.value || 'default'}`, 'POST')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+/** 当前 agent 的工具配置（inner_tools + mcp_tools） */
+const currentAgentTools = computed(() =>
+  agentList.value.find((a) => a.name === currentAgentName.value)?.tools
+)
+/** 内置工具是否启用：inner_tools 为 null（默认全启用）或包含该工具 */
+function innerToolEnabled(name: string): boolean {
+  const tools = currentAgentTools.value
+  if (!tools || !tools.inner_tools) return true
+  return tools.inner_tools.includes(name)
+}
+/** 点击内置工具标签：切换当前 agent 的 inner_tools */
+async function toggleInnerTool(name: string) {
+  if (!currentAgentName.value) return
+  try {
+    await apiManage(`/api/manage/agents/${currentAgentName.value}/inner-tools/${name}/toggle`, 'POST')
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -612,7 +635,7 @@ const agentSkillOptions = computed(() =>
   skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
 )
 const agentToolOptions = computed(() =>
-  toolList.value.filter((t) => t.enabled).map((t) => ({ label: t.name, value: t.name }))
+  toolList.value.map((t) => ({ label: t.name, value: t.name }))
 )
 async function submitAgent() {
   try {
@@ -630,7 +653,13 @@ async function submitAgent() {
 }
 function openAgentEdit(item?: any) {
   agentForm.value = item
-    ? { name: item.name, description: item.description || '', skills: item.skills || [], tools: item.tools || [] }
+    ? {
+        name: item.name,
+        description: item.description || '',
+        skills: item.skills || [],
+        // tools 新结构：提取已关联的 MCP server 目录名数组
+        tools: (item.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
+      }
     : { name: '', description: '', skills: [], tools: [] }
   agentModalVisible.value = true
 }
@@ -2015,7 +2044,15 @@ onBeforeUnmount(() => {
           <div v-if="builtinTools.length" class="panel-section">
             <label>{{ actionLabels.builtinTools }}</label>
             <div class="builtin-tool-list">
-              <span v-for="tool in builtinTools" :key="tool.name" class="builtin-tool-chip" :title="tool.description">
+              <span
+                v-for="tool in builtinTools"
+                :key="tool.name"
+                class="builtin-tool-chip"
+                :class="{ 'builtin-tool-chip--active': innerToolEnabled(tool.name) }"
+                :title="tool.description"
+                role="button"
+                @click="toggleInnerTool(tool.name)"
+              >
                 <code>{{ tool.name }}</code>
               </span>
             </div>
@@ -2266,8 +2303,12 @@ onBeforeUnmount(() => {
 .quick-action-desc { color:var(--subtle); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .quick-action-empty { padding:12px; color:var(--subtle); font-size:12px; text-align:center; }
 .builtin-tool-list { display:flex; flex-wrap:wrap; gap:6px; }
-.builtin-tool-chip { padding:3px 8px; border:1px solid var(--border); border-radius:8px; background:rgba(37,99,235,.05); }
+.builtin-tool-chip { padding:3px 8px; border:1px solid var(--border); border-radius:8px; background:rgba(37,99,235,.05); cursor:pointer; transition:all .15s ease; }
+.builtin-tool-chip:hover { border-color:rgba(37,99,235,.6); }
 .builtin-tool-chip code { font:12px/1.4 "Cascadia Code",Consolas,monospace; color:var(--text); }
+.builtin-tool-chip--active { background:rgba(37,99,235,.14); border-color:rgba(37,99,235,.55); }
+.builtin-tool-chip--active code { color:#2563eb; font-weight:600; }
+.builtin-tool-chip:not(.builtin-tool-chip--active) { opacity:.62; }
 .skill-edit-split { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px; }
 .skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; }
 .skill-edit-label { color:var(--subtle); font-size:12px; }
