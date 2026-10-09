@@ -250,6 +250,11 @@ const isRunning = computed(() => currentMessages.value.some(
   (item) => item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
 ))
+// 单条 AI 消息是否仍在运行（用于消息下方 loading 图标）
+function isAssistantRunning(item: AssistantMessage) {
+  return item.role === 'assistant'
+    && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
+}
 const currentTitle = computed(() => currentConversation.value?.title ?? t('newSessionTitle'))
 const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
 
@@ -1892,6 +1897,7 @@ onBeforeUnmount(() => {
                   <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
                   <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
                 </template>
+                <span v-if="isAssistantRunning(item)" class="msg-loader" aria-label="loading" />
                 <span v-if="item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
                 <div v-if="(item.finalText || (item.status === 'failed' && item.segments.length > 0)) && !isRunning" class="message-actions">
                   <NTooltip v-if="item.id === lastAssistantId">
@@ -2347,4 +2353,41 @@ onBeforeUnmount(() => {
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
+/* AI 运行中消息下方的动态 loading 图标（三竖线跳动） */
+.msg-loader {
+  --color-1: #9aa3b2;
+  --size: 1px;
+  width: calc(8 * var(--size));
+  height: calc(40 * var(--size));
+  border-radius: calc(4 * var(--size));
+  display: block;
+  margin: 10px 0 2px 4px;
+  position: relative;
+  background: currentColor;
+  color: var(--color-1);
+  box-sizing: border-box;
+  animation: animloader 0.3s 0.3s linear infinite alternate;
+}
+.msg-loader::after,
+.msg-loader::before {
+  content: '';
+  width: calc(8 * var(--size));
+  height: calc(40 * var(--size));
+  border-radius: calc(4 * var(--size));
+  background: currentColor;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: calc(20 * var(--size));
+  box-sizing: border-box;
+  animation: animloader 0.3s 0.45s linear infinite alternate;
+}
+.msg-loader::before {
+  left: calc(-20 * var(--size));
+  animation-delay: 0s;
+}
+@keyframes animloader {
+  0% { height: calc(48 * var(--size)); }
+  100% { height: calc(4 * var(--size)); }
+}
 </style>
