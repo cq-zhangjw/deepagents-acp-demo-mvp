@@ -32,16 +32,39 @@ router = APIRouter(prefix="/api/manage", tags=["manage"])
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
 DE_ROOT = BASE_DIR / ".deepagents"
 SKILLS_DIR = DE_ROOT / "skills"
-MCP_DIR = DE_ROOT / "mcp_servers"
+MCP_DIR = DE_ROOT / "tools" / "mcp_servers"
+TOOLS_FILE = BASE_DIR / "tools.json"  # aggregated list of enabled tools (root level)
 AGENTS_DIR = DE_ROOT / "agents"
 AGENTS_FILE = AGENTS_DIR / "agents.json"
 AGENT_MD_SUFFIX = ".agent.md"
 
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# allows underscores too (MCP server dirs like calc_server are common)
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # directory creation is guaranteed on first module import
 for _d in (DE_ROOT, SKILLS_DIR, MCP_DIR, AGENTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_legacy_layout() -> None:
+    """One-time migration: .deepagents/mcp_servers -> .deepagents/tools/mcp_servers."""
+    legacy = DE_ROOT / "mcp_servers"
+    if legacy.is_dir() and not MCP_DIR.exists():
+        try:
+            MCP_DIR.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(MCP_DIR))
+            logger.info("migrated %s -> %s", legacy, MCP_DIR)
+        except OSError as exc:
+            logger.error("migrate mcp_servers failed: %s", exc)
+
+
+_migrate_legacy_layout()
+
+# root tools.json holds the aggregated enabled-tool list; ensure it exists (default: [])
+if not TOOLS_FILE.exists():
+    TOOLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(TOOLS_FILE, "w", encoding="utf-8") as _f:
+        json.dump([], _f, ensure_ascii=False, indent=2)
 
 _agents_lock = asyncio.Lock()
 
@@ -191,6 +214,57 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+# ---------- tools.json (aggregated enabled-tool list) ----------
+
+def _read_tools() -> list[dict]:
+    """Read root tools.json (list of enabled tools). Default: empty list."""
+    data = _read_json(TOOLS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def _write_tools(items: list[dict]) -> None:
+    _write_json_atomic(TOOLS_FILE, items)
+
+
+def _manifest_tools(server_dir: Path) -> list[dict]:
+    """Read manifest.json tools of a server; returns the raw tool entries."""
+    try:
+        manifest = _read_json(server_dir / "manifest.json", {})
+        tools = manifest.get("tools") or []
+        return tools if isinstance(tools, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _add_tools_to_registry(server: str, server_dir: Path) -> None:
+    """Append every tool of a server (from manifest.json) to tools.json."""
+    items = _read_tools()
+    existing = {(_t.get("server"), _t.get("name")) for _t in items}
+    added = False
+    for t in _manifest_tools(server_dir):
+        key = (server, t.get("name", ""))
+        if key in existing:
+            continue
+        items.append({"server": server, **t})
+        added = True
+    if added:
+        _write_tools(items)
+
+
+def _remove_tools_from_registry(server: str, tool: str | None = None) -> None:
+    """Drop a server's tools (or a single tool) from tools.json."""
+    items = _read_tools()
+    if tool is None:
+        items = [_t for _t in items if _t.get("server") != server]
+    else:
+        items = [_t for _t in items if not (_t.get("server") == server and _t.get("name") == tool)]
+    _write_tools(items)
+
+
+def _tool_enabled(server: str, tool: str) -> bool:
+    return any(_t.get("server") == server and _t.get("name") == tool for _t in _read_tools())
+
+
 # directories/files skipped by the @ file picker
 _SKIP_TOP = {".git", ".venv", "node_modules", "__pycache__", ".idea", ".vscode"}
 
@@ -317,27 +391,50 @@ def delete_skill(name: str):
     return {"ok": True}
 
 
-# ---------- tools (MCP servers) ----------
+# ---------- tools (MCP servers, grouped under .deepagents/tools/mcp_servers) ----------
 
 def _server_entry(server_dir: Path) -> dict:
+    """Group entry for one MCP server: server-level info + per-tool list.
+
+    Tools come from manifest.json (each server root carries one); a tool is
+    enabled iff its (server, name) entry exists in the root tools.json.
+    server.json remains an optional launch config (command/env), absent for
+    pure-function servers.
+    """
     cfg = _read_json(server_dir / "server.json", {})
+    manifest = _read_json(server_dir / "manifest.json", {})
+    server_info = manifest.get("serverInfo") or {}
+    tools = []
+    for t in _manifest_tools(server_dir):
+        tname = t.get("name", "")
+        tools.append({
+            "name": tname,
+            "description": (t.get("description") or "").strip(),
+            "enabled": _tool_enabled(server_dir.name, tname),
+        })
+    description = (
+        (cfg.get("description") or "").strip()
+        or (server_info.get("name") or "").strip()
+    )
     return {
         "name": server_dir.name,
-        "description": cfg.get("description", ""),
+        "description": description,
         "command": cfg.get("command", ""),
+        "has_server_json": (server_dir / "server.json").exists(),
         "enabled": not _is_disabled(server_dir),
+        "tools": tools,
         "path": str(server_dir.relative_to(BASE_DIR)).replace("\\", "/"),
-        "updated_at": _mtime(server_dir / "server.json"),
+        "updated_at": _mtime(server_dir / "manifest.json") or _mtime(server_dir / "server.json"),
     }
 
 
 @router.get("/tools")
 def list_tools():
-    """MCP server list: scan .deepagents/mcp_servers/*/server.json."""
+    """MCP server groups: scan .deepagents/tools/mcp_servers/*/ (manifest.json)."""
     items = []
     if MCP_DIR.is_dir():
         for d in sorted(MCP_DIR.iterdir()):
-            if d.is_dir() and (d / "server.json").exists():
+            if d.is_dir() and ((d / "manifest.json").exists() or (d / "server.json").exists()):
                 items.append(_server_entry(d))
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
@@ -345,21 +442,55 @@ def list_tools():
 
 @router.post("/tools/{name}/toggle")
 def toggle_tool(name: str):
-    """Toggle an MCP server."""
+    """Toggle an MCP server (group level).
+
+    Disabling drops every tool of the server from tools.json and from all
+    agent association lists; enabling re-reads manifest.json and registers
+    all its tools in tools.json (no auto re-add to agents).
+    """
     name = _ensure_name(name)
     d = MCP_DIR / name
-    if not (d / "server.json").exists():
+    if not d.is_dir() or not ((d / "manifest.json").exists() or (d / "server.json").exists()):
         raise HTTPException(status_code=404, detail=f"tool not found: {name}")
     flag = d / ".disabled"
     if flag.exists():
         flag.unlink()
         enabled = True
+        _add_tools_to_registry(name, d)
     else:
         flag.touch()
         enabled = False
+        _remove_tools_from_registry(name)
         # disabling drops the MCP server from every agent's association list
         _remove_agent_ref("tool", name)
     return {"name": name, "enabled": enabled}
+
+
+@router.post("/tools/{server}/{tool}/toggle")
+def toggle_tool_item(server: str, tool: str):
+    """Toggle a single tool inside an MCP server group (tools.json entry)."""
+    server = _ensure_name(server)
+    if not tool:
+        raise HTTPException(status_code=400, detail="tool name must not be empty")
+    d = MCP_DIR / server
+    if not d.is_dir():
+        raise HTTPException(status_code=404, detail=f"tool not found: {server}")
+    if _is_disabled(d):
+        raise HTTPException(status_code=409, detail=f"server disabled: {server}")
+    names = {t.get("name") for t in _manifest_tools(d)}
+    if tool not in names:
+        raise HTTPException(status_code=404, detail=f"tool not found: {server}/{tool}")
+    if _tool_enabled(server, tool):
+        _remove_tools_from_registry(server, tool)
+        enabled = False
+    else:
+        manifest = _read_json(d / "manifest.json", {})
+        entry = next((t for t in (manifest.get("tools") or []) if t.get("name") == tool), {})
+        items = _read_tools()
+        items.append({"server": server, **entry})
+        _write_tools(items)
+        enabled = True
+    return {"server": server, "tool": tool, "enabled": enabled}
 
 
 def _resolve_env(env: dict) -> dict:
@@ -428,12 +559,18 @@ async def create_tool(payload: dict):
 
 @router.post("/tools/{name}/test")
 async def test_tool(name: str):
-    """Probe a specific MCP server and return available tool names or the error."""
+    """Return the tool list of a server.
+
+    With a server.json the server is probed (stdio launch -> list_tools);
+    without one (pure-function server) the tools are read from manifest.json.
+    """
     name = _ensure_name(name)
     d = MCP_DIR / name
+    if not d.is_dir():
+        raise HTTPException(status_code=404, detail=f"tool not found: {name}")
     cfg = _read_json(d / "server.json", {})
     if not cfg:
-        raise HTTPException(status_code=404, detail=f"tool not found: {name}")
+        return {"name": name, "tools": [t.get("name", "") for t in _manifest_tools(d)], "error": None}
     tools, error = await _probe_mcp(cfg)
     return {"name": name, "tools": tools, "error": error}
 
@@ -465,7 +602,7 @@ async def update_tool(name: str, payload: dict):
 
 @router.delete("/tools/{name}")
 def delete_tool(name: str):
-    """Delete an MCP config directory (irreversible; frontend double-confirms)."""
+    """Delete an MCP server directory (irreversible; frontend double-confirms)."""
     name = _ensure_name(name)
     d = MCP_DIR / name
     if not d.exists():
@@ -474,6 +611,7 @@ def delete_tool(name: str):
         shutil.rmtree(d)
     except OSError as exc:
         raise HTTPException(status_code=409, detail=f"failed to delete tool: {exc}") from exc
+    _remove_tools_from_registry(name)
     _remove_agent_ref("tool", name)
     return {"ok": True}
 

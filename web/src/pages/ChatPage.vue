@@ -504,6 +504,22 @@ async function deleteTool(name: string) {
     message.error(e.message)
   }
 }
+/** 展开/收起一个 MCP server 组（工具面板） */
+const expandedToolGroups = ref<string[]>([])
+function toggleToolGroup(name: string) {
+  const idx = expandedToolGroups.value.indexOf(name)
+  if (idx >= 0) expandedToolGroups.value.splice(idx, 1)
+  else expandedToolGroups.value.push(name)
+}
+/** 单工具启停（tools.json 条目增删） */
+async function toggleToolItem(server: string, tool: string) {
+  try {
+    await apiManage(`/api/manage/tools/${server}/${tool}/toggle`, 'POST')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
 async function deleteAgent(name: string) {
   try {
     await apiManage(`/api/manage/agents/${name}`, 'DELETE')
@@ -2006,12 +2022,24 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="!toolList.length && !builtinTools.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="tool in toolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
-            <div class="manage-card-head">
+            <div class="manage-card-head manage-card-head--group" @click="toggleToolGroup(tool.name)">
+              <span class="tool-group-caret">{{ expandedToolGroups.includes(tool.name) ? '▾' : '▸' }}</span>
               <strong>{{ tool.name }}</strong>
-              <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" />
+              <span v-if="tool.tools?.length" class="tool-count">{{ tool.tools.length }}</span>
+              <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" @click.stop />
             </div>
             <p v-if="tool.description" class="manage-card-desc">{{ tool.description }}</p>
-            <code class="manage-card-cmd">{{ tool.command }}</code>
+            <code v-if="tool.command" class="manage-card-cmd">{{ tool.command }}</code>
+            <div v-if="expandedToolGroups.includes(tool.name)" class="tool-item-list">
+              <div v-for="t in tool.tools || []" :key="t.name" class="tool-item" :class="{ 'tool-item--disabled': !t.enabled }">
+                <div class="tool-item-head">
+                  <code>{{ t.name }}</code>
+                  <NSwitch size="small" :value="t.enabled" :disabled="!tool.enabled" @update:value="toggleToolItem(tool.name, t.name)" />
+                </div>
+                <p v-if="t.description" class="tool-item-desc">{{ t.description }}</p>
+              </div>
+              <div v-if="!(tool.tools || []).length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+            </div>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="testTool(tool.name)">{{ actionLabels.test }}</NButton>
               <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteTool(tool.name)">
@@ -2215,6 +2243,15 @@ onBeforeUnmount(() => {
 .manage-card-chips { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
 .manage-chip-label { font-size:11px; color:var(--subtle); margin-right:2px; }
 .manage-card-actions { display:flex; justify-content:flex-end; gap:2px; }
+.manage-card-head--group { cursor:pointer; user-select:none; }
+.tool-group-caret { font-size:12px; color:var(--subtle); width:14px; text-align:center; }
+.tool-count { font-size:10px; color:var(--subtle); background:var(--surface); border-radius:99px; padding:0 6px; line-height:16px; }
+.tool-item-list { display:flex; flex-direction:column; gap:6px; border-left:2px solid var(--border); margin:2px 0 2px 10px; padding:2px 0 2px 10px; }
+.tool-item { padding:6px 8px; border-radius:8px; background:var(--surface); display:flex; flex-direction:column; gap:4px; }
+.tool-item--disabled { opacity:.55; }
+.tool-item-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.tool-item-head code { font-size:12px; color:var(--primary, inherit); }
+.tool-item-desc { font-size:11px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; max-height:3em; overflow:hidden; }
 .agent-current { font-size:10px; color:#2563eb; border:1px solid rgba(37,99,235,.4); border-radius:99px; padding:1px 7px; }
 .manage-modal { width:min(520px, calc(100vw - 32px)); }
 .manage-form { display:flex; flex-direction:column; gap:10px; }

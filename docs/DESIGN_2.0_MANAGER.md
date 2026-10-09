@@ -1,6 +1,6 @@
 # DeepAgents 2.0 · 技能 / 工具（MCP）/ Agent 管理面板设计
 
-> 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-writer / tool-writer 技能由 AI 对话生成；Agent 迁入 `.deepagents/agents/` 目录（`*.agent.md` + `agents.json`）；工具面板顶部展示内置工具一览；技能编辑弹窗改为左右布局（左编辑右预览）；输入框 `@`/`/` 快捷动作已实现）
+> 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-creator / tool-creator 技能由 AI 对话生成；Agent 迁入 `.deepagents/agents/` 目录（`*.agent.md` + `agents.json`）；工具面板顶部展示内置工具一览；技能编辑弹窗改为左右布局（左编辑右预览）；输入框 `@`/`/` 快捷动作已实现；工具面板按 MCP server 分组折叠展示、组内工具可单独启停；工具目录迁移至 `.deepagents/tools/mcp_servers/`，根目录 `tools.json` 聚合已启用的工具清单）
 > 适用范围：`E:\my_projects\deepagents_acp`（Windows / FastAPI 网关 + ACP 子进程 + Vue3 前端）
 > 关联：DESIGN_ZH.md（系统总设计）、UI_DESIGN.md（界面设计）
 
@@ -18,9 +18,9 @@
 **本设计目标**：
 
 1. **技能面板**：通过本地 `.deepagents/skills/` 文件夹管理技能（SKILL.md 标准格式），支持启停、删除、编辑。
-2. **工具面板（MCP）**：通过本地 `.deepagents/mcp_servers/` 文件夹管理 MCP 服务器配置，支持启停、删除、试连校验。
+2. **工具面板（MCP）**：通过本地 `.deepagents/tools/mcp_servers/` 文件夹管理 MCP 服务器配置，以服务名为单位分组折叠展示、支持整体与组内工具单独启停、删除、试连校验。
 3. **Agent 管理**：由全局 `.deepagents/agents.json` 单文件管控 Agent（模型覆盖、系统提示词、关联的技能与工具），支持增删改查与“当前使用 Agent”选择。
-4. **内置生成技能**：`.deepagents/skills/skill-writer`（生成符合规范的 SKILL.md）与 `tool-writer`（生成符合 stdio 规范的 server.json）随仓库内置，新建技能/工具通过对话让 AI 按规范生成，**不再提供表单式新建**。
+4. **内置生成技能**：`.deepagents/skills/skill-creator`（生成符合规范的 SKILL.md）与 `tool-creator`（生成符合 manifest.json/server.json 规范的工具目录）随仓库内置，新建技能/工具通过对话让 AI 按规范生成，**不再提供表单式新建**。
 5. **装配生效**：面板只负责**管理配置**（写 `.deepagents/` 文件）；acp_agent.py 如何按 Agent 配置装配模型/技能/MCP 工具，**由用户后续自行调整**，不在本设计实施范围。
 
 **不做**（本轮范围外）：会话管理迁移 moofile（2.0 需求 5，另行设计）；共享屏幕（已完成）；语音通话（已完成）。
@@ -39,14 +39,17 @@ deepagents_acp/
 │   │       ├── SKILL.md          #    frontmatter(name/description) + 指令正文
 │   │       ├── .disabled         #    存在 = 已停用（启停开关切换该文件）
 │   │       └── helper.py / 素材   #    可选辅助文件（随技能一起分发）
-│   ├── mcp_servers/              # ── MCP 服务器配置（文件夹管理）──
-│   │   └── <server-name>/
-│   │       ├── server.json       #    {"command","args","env","cwd","description"}
-│   │       ├── .disabled         #    存在 = 已停用
-│   │       └── (可选本地实现文件)
+│   ├── tools/                    # ── 工具目录（MCP 服务器，文件夹管理）──
+│   │   └── mcp_servers/
+│   │       └── <server-name>/
+│   │           ├── manifest.json  #    工具清单（必选）：serverInfo + tools（name/description/inputSchema）
+│   │           ├── server.json    #    可选：MCP stdio 启动配置 {"command","args","env","cwd"}
+│   │           ├── .disabled      #    存在 = 该服务已停用
+│   │           └── (可选本地实现文件)
 │   └── agents/                   # ── Agent 定义（专属目录）──
 │       ├── agents.json           #    关联配置：{ <agent-name>: AgentDef }，见 3.3
 │       └── <name>.agent.md       #    Agent 定义文件（markdown，frontmatter + 正文）
+├── tools.json                    # 根目录：已启用工具的聚合清单（默认 []，启用时从 manifest.json 读取写入）
 ├── app.py / acp_agent.py / web/  # 现有代码
 └── docs/
 ```
@@ -95,34 +98,39 @@ license: MIT
 - **启停**：目录内 `.disabled` 文件存在 = 停用。启停开关 = 创建/删除该文件。
 - **删除**：删整个技能目录。
 - **编辑**：前端弹窗（正文 markdown 编辑）→ 覆写 `SKILL.md`。
-- **新建（不提供表单）**：由内置 `skill-writer` 技能驱动——用户对话中描述需求，AI 按规范生成 `SKILL.md` 写入 `.deepagents/skills/<name>/SKILL.md`；面板列表即时刷新可见。
+- **新建（不提供表单）**：由内置 `skill-creator` 技能驱动——用户对话中描述需求，AI 按规范生成 `SKILL.md` 写入 `.deepagents/skills/<name>/SKILL.md`；面板列表即时刷新可见。
 
 ### 3.2 工具 / MCP 服务器（MCPServer）
 
-**内置工具一览**：每个 deep agent 默认获得 `ls / read_file / write_file / edit_file / glob / grep / execute / task` 8 个内置工具（后端 `GET /api/manage/builtin-tools` 只读返回）。工具面板顶部固定展示这些内置工具 chips，下方才是可管理的 MCP 服务器列表。
+**内置工具一览**：每个 deep agent 默认获得 `ls / read_file / write_file / edit_file / glob / grep / execute / task` 8 个内置工具（后端 `GET /api/manage/builtin-tools` 只读返回）。工具面板顶部固定展示这些内置工具 chips，下方才是可管理的 MCP 服务器组列表。
 
-每个 MCP server 一个目录，核心是 `server.json`（MCP stdio 启动规范）：
+**目录与识别**：所有 MCP 服务器位于 `.deepagents/tools/mcp_servers/<server-name>/`（旧布局 `.deepagents/mcp_servers/` 在模块加载时自动迁移）。每个服务器目录以 `manifest.json` 为**工具信息源**（必选），`server.json` 仅作可选启动配置：
 
 ```json
 {
-  "name": "filesystem-mcp",
-  "description": "本地文件系统 MCP 工具",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "E:\\workspace"],
-  "cwd": null,
-  "env": {
-    "API_TOKEN": "${MY_TOKEN}"
-  }
+  "serverInfo": { "name": "calc_server", "version": "1.0.0" },
+  "tools": [
+    {
+      "name": "calculate",
+      "description": "calc the expression str",
+      "inputSchema": { "type": "object", "properties": { "expression": { "type": "string" } }, "required": ["expression"] }
+    }
+  ]
 }
 ```
 
-- **识别**：扫描 `.deepagents/mcp_servers/*/server.json`。
-- **启停**：`.disabled` 标记文件（同技能）。
-- **删除**：删目录（含配置与本地实现文件）。
-- **试连**：面板按钮 → 后端用 `mcp` SDK `stdio_client` 启动 → `initialize + list_tools` → 断开，返回可用工具清单与错误。
-- **新建（不提供表单）**：由内置 `tool-writer` 技能驱动——用户对话中描述需求，AI 按 stdio 规范生成 `server.json` 写入 `.deepagents/mcp_servers/<name>/server.json`；后端 POST 时自动试连并把 probe 结果带回前端。
+**分组折叠展示**：`GET /api/manage/tools` 返回服务组数组 `[{name, description, command, has_server_json, enabled, tools: [{name, description, enabled}], path, updated_at}]`。前端工具面板以**服务名为单位**的可折叠卡片展示：组头显示服务名、工具数、整体启停开关（点击组头展开/收起）；展开后列出组内每个工具，工具级也有独立启停开关。
+
+**tools.json 聚合清单**：根目录 `tools.json` 保存**所有已启用工具**的信息（默认 `[]`，模块加载时自动创建）。启用规则：
+- **服务级启用**（`.disabled` 移除）：读取该服务 `manifest.json` 的全部 `tools[]` 追加进 `tools.json`。
+- **服务级停用**（`.disabled` 创建）：`tools.json` 移除该服务的全部条目，并从所有 Agent 的 `tools` 关联中移除。
+- **工具级启停**：`POST /api/manage/tools/{server}/{tool}/toggle` 仅增删 `tools.json` 中对应 `(server, tool)` 条目；服务停用时组内工具开关禁用。
+- **删除服务**：删目录 + 清理 `tools.json` 与 Agent 引用。
+
+- **试连**：面板按钮 → 有 `server.json` 时后端用 `mcp` SDK `stdio_client` 启动 → `initialize + list_tools` → 断开；无 `server.json`（纯函数型服务）时直接返回 `manifest.json` 中的工具名清单。
+- **新建（不提供表单）**：由内置 `tool-creator` 技能驱动——用户对话中描述需求，AI 按规范生成 `manifest.json`（+ 可选 `server.json`）写入 `.deepagents/tools/mcp_servers/<name>/`；后端 POST 时自动试连并把 probe 结果带回前端。
 - **安全约定**：
-  - `env` 中 `"${NAME}"` 形式从进程环境（`.env` 已 `load_dotenv`）解析；**明文密钥写入 server.json 时 UI 给出警告**（仅提示，不强制）。
+  - `server.json` 的 `env` 中 `"${NAME}"` 形式从进程环境（`.env` 已 `load_dotenv`）解析；**明文密钥写入 server.json 时 UI 给出警告**（仅提示，不强制）。
   - MCP `command` 可执行任意程序 → 面板属本地自用工具，UI 文案提示“仅运行可信命令”。
 
 ### 3.3 Agent 定义（`.deepagents/agents/` 目录）
@@ -181,12 +189,12 @@ Agent 拥有专属目录 `.deepagents/agents/`：
 | POST | `/api/manage/skills` | 新建技能（name/description/content）→ 写 SKILL.md |
 | PUT | `/api/manage/skills/{name}` | 编辑技能正文/描述 |
 | DELETE | `/api/manage/skills/{name}` | 删除技能目录 |
-| GET | `/api/manage/tools` | MCP server 列表：`[{name, description, command, enabled, tools_count?}]` |
-| POST | `/api/manage/tools/{name}/toggle` | 切换启停 |
-| POST | `/api/manage/tools` | 新建 MCP 配置（写 server.json）→ 自动试连 |
-| POST | `/api/manage/tools/{name}/test` | 试连：启动→list_tools→返回工具名/错误 |
+| GET | `/api/manage/tools` | MCP server 组列表：`[{name, description, command, has_server_json, enabled, tools: [{name, description, enabled}], path, updated_at}]` |
+| POST | `/api/manage/tools/{name}/toggle` | 服务级启停（同步 tools.json 聚合 + Agent 引用清理） |
+| POST | `/api/manage/tools/{server}/{tool}/toggle` | 工具级启停（仅增删 tools.json 中对应条目） |
+| POST | `/api/manage/tools/{name}/test` | 试连：有 server.json 启动 probe；无则读 manifest.json 返回工具名 |
 | PUT | `/api/manage/tools/{name}` | 编辑配置 |
-| DELETE | `/api/manage/tools/{name}` | 删除 MCP 配置目录 |
+| DELETE | `/api/manage/tools/{name}` | 删除 MCP 服务目录 + 清理 tools.json 与 Agent 引用 |
 | GET | `/api/manage/agents` | Agent 列表：`[{name, description, enabled, skills, tools, model, file, body}]`（扫描 `agents/*.agent.md` 合并 agents.json） |
 | GET | `/api/manage/agents/{name}` | Agent 详情（完整 AgentDef + body，供编辑表单回填） |
 | POST | `/api/manage/agents` | 新建 Agent（name + AgentDef）→ 写 `<name>.agent.md` + agents.json |
@@ -206,12 +214,13 @@ Agent 拥有专属目录 `.deepagents/agents/`：
 
 ## 5. 装配机制（说明与边界）
 
-> **实施范围声明**：本文档实施部分**仅覆盖管理面板**（`.deepagents/` 文件读写 + 管理 API + 前端面板）。acp_agent.py 如何按 Agent 装配模型/技能/MCP 工具，**用户后续自行调整**，本设计仅给出装配所需的数据契约（agents.json / SKILL.md / server.json 的格式与字段），确保用户调整装配逻辑时无需改动面板侧协议。
+> **实施范围声明**：本文档实施部分**仅覆盖管理面板**（`.deepagents/` 文件读写 + 管理 API + 前端面板）。acp_agent.py 如何按 Agent 装配模型/技能/MCP 工具，**用户后续自行调整**，本设计仅给出装配所需的数据契约（agents.json / SKILL.md / manifest.json / server.json 的格式与字段），确保用户调整装配逻辑时无需改动面板侧协议。
 
 ### 5.1 数据契约（面板产出，装配侧消费）
 
 - `.deepagents/skills/<name>/SKILL.md`：标准技能格式（frontmatter + markdown 正文），装配侧可用 deepagents `SkillsMiddleware(sources=[...])` 直接加载（deepagents 0.7.19 已验证支持 `skills=` 参数）。
-- `.deepagents/mcp_servers/<name>/server.json`：MCP stdio 启动参数（command/args/cwd/env），装配侧可用官方 `mcp` SDK `stdio_client` 启动并 `list_tools()` 收集工具。
+- `.deepagents/tools/mcp_servers/<name>/manifest.json`：工具清单（serverInfo + tools），**已启用工具由根目录 `tools.json` 聚合**（每条含 server / name / description / inputSchema）；装配侧可直接读 `tools.json` 获取启用工具集。
+- `.deepagents/tools/mcp_servers/<name>/server.json`：可选 MCP stdio 启动参数（command/args/cwd/env），装配侧可用官方 `mcp` SDK `stdio_client` 启动并 `list_tools()` 收集工具。
 - `.deepagents/agents.json`：Agent 全局定义（对象映射，见 3.3），装配侧据此覆盖模型 / 提示词 / 关联技能与工具。
 
 ### 5.2 面板侧与装配侧的边界
@@ -284,7 +293,7 @@ zh/ja/en 三语（`web/src/locales/*.ts` 新增 `manager` section）：skills/to
 
 | 文件 | 改动 |
 |---|---|
-| `.deepagents/skills\|mcp_servers/` 骨架 + `.deepagents/agents.json` | 新建目录骨架 + agents.json 含 1 个示例（default Agent） |
+| `.deepagents/skills\|tools/mcp_servers/` 骨架 + `.deepagents/agents.json` | 新建目录骨架 + agents.json 含 1 个示例（default Agent） |
 | `api/manage/manager.py` | 新增：4. 的 API 全部实现 + 路径安全校验 + 文件读写 |
 | `app.py` | 仅挂载 `/api/manage` 子路由（**不涉及 ACP 子进程参数改动**） |
 | `requirements.txt` | 追加 `mcp`（英文注释；仅用于 tools 试连校验） |
@@ -311,7 +320,7 @@ zh/ja/en 三语（`web/src/locales/*.ts` 新增 `manager` section）：skills/to
 
 | # | 决策 | 建议 | 备选 |
 |---|---|---|---|
-| 1 | 统一目录 `.deepagents/`（skills/ mcp_servers/ 文件夹 + agents.json 单文件） | ✅ 采用 | 根目录散放 / 每 agent 一目录 |
+| 1 | 统一目录 `.deepagents/`（skills/ tools/mcp_servers/ 文件夹 + agents.json 单文件） | ✅ 采用 | 根目录散放 / 每 agent 一目录 |
 | 2 | 启停机制 `.disabled` 标记文件 | ✅ 采用（不改 SKILL.md/json 结构即可切换） | frontmatter / json 字段 |
 | 3 | MCP 工具命名 / 连接生命周期 | 装配侧决策（用户后续调整时自定） | — |
 | 4 | Agent 当前值存 localStorage + 随消息携带 | ✅ 采用（仅前端记录与展示） | 后端 session 级记忆 |

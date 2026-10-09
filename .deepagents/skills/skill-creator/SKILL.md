@@ -1,9 +1,9 @@
 ---
-name: skill-writer
+name: skill-creator
 description: 根据用户描述生成符合 Anthropic Agent Skills 规范的技能（SKILL.md）。当用户要求"写一个技能 / 新建 skill / 帮我做一个 XX 技能"时使用，产出一个结构完整、命名规范、可直接落盘的 SKILL.md。
 ---
 
-# Skill 生成规范（Skill Writer）
+# Skill 生成规范（Skill Creator）
 
 当你被要求创建一个新技能（skill）时，按本规范生成一个完整的 `SKILL.md` 文件内容，并写入 `.deepagents/skills/<skill-name>/SKILL.md`。
 

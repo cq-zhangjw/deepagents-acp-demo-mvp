@@ -1,0 +1,56 @@
+{
+  "environment": {
+    "fastmcp": "3.1.1",
+    "mcp": "1.26.0"
+  },
+  "serverInfo": {
+    "name": "Calculator Server",
+    "title": null,
+    "version": "3.1.1",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "capabilities": {},
+  "tools": [
+    {
+      "name": "calculate",
+      "title": null,
+      "description": "calc the expression str\n\nArgs:\n    expression: expression str，egg: \"2 + 3 * 4\"\n\nReturns:\n    the result of expression",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "expression": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      },
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    }
+  ],
+  "prompts": [],
+  "resources": [],
+  "resourceTemplates": []
+}
