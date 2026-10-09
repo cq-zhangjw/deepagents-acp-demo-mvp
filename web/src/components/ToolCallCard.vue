@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { CodeSlashOutline } from '@vicons/ionicons5'
-import { NCollapse, NCollapseItem, NIcon, NTag, NTabs, NTabPane } from 'naive-ui'
+import { NCollapse, NCollapseItem, NTag, NTabs, NTabPane } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import MarkdownMessage from './MarkdownMessage.vue'
 
@@ -52,8 +51,8 @@ function statusText(status: string) {
     <NCollapseItem name="tool">
       <template #header>
         <div class="tool-heading">
-          <NIcon :component="CodeSlashOutline" />
-          <span class="tool-name">{{ tool.title || tool.name }}</span>
+          <code class="tool-badge">{{ tool.name || 'Run' }}</code>
+          <span v-if="tool.title" class="tool-name" :title="tool.title">{{ tool.title }}</span>
           <NTag size="small" :type="tagType(tool.status)">{{ statusText(tool.status) }}</NTag>
         </div>
       </template>
@@ -74,8 +73,9 @@ function statusText(status: string) {
 .tool-call-collapse :deep(.n-collapse-item__header) { padding:12px 16px; }
 .tool-call-collapse :deep(.n-collapse-item:first-child > .n-collapse-item__header) { padding-top:12px; }
 .tool-call-collapse :deep(.n-collapse-item__content-inner) { padding:0 16px 14px; }
-.tool-heading { display:flex; gap:9px; align-items:center; min-width:0; }
-.tool-heading .tool-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-heading { display:flex; gap:8px; align-items:center; min-width:0; }
+.tool-badge { flex:none; font:12px/1.5 "Cascadia Code",Consolas,monospace; color:#2563eb; background:rgba(37,99,235,.08); border:1px solid rgba(37,99,235,.25); border-radius:6px; padding:0 8px; }
+.tool-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text); }
 .tool-heading :deep(.n-tag) { flex:none; }
 .tool-tabs :deep(.n-tabs-nav) { padding:0; }
 .tool-tabs :deep(.n-tabs-tab) { padding:5px 12px 7px; }
