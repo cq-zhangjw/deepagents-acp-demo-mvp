@@ -45,7 +45,7 @@ __pycache__/
 db/
 # 文件上传存储目录（由 .env 的 UPLOAD_ROOT 指定，默认 ./uploads）
 uploads/
-# 本地 TTS 模型（Audio8 0.6B ONNX，约 600MB，由 ARKTTS_MODEL_DIR 指定，默认 ./models）
+# 本地 TTS 模型（Kokoro-82M ONNX，约 155MB，由 KOKORO_MODEL_DIR 指定，默认 ./models）
 models/
 
 # 环境配置备份（含敏感凭据，不提交）

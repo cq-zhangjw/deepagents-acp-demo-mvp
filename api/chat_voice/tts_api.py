@@ -10,7 +10,7 @@
 
 模型/工具目录（可用环境变量覆盖）：
   KOKORO_MODEL_DIR  默认 ./models/Kokoro-82M-v1.0-ONNX
-  ESPEAK_DIR        默认 ./models/espeak-ng（便携解包版，含 libespeak_ng.dll + espeak-ng-data）
+  ESPEAK_DIR        默认 ./third_party/espeak-ng（便携解包版，含 libespeak_ng.dll + espeak-ng-data，随仓库分发）
 """
 
 import io
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # 项目根目录
 MODEL_DIR = Path(os.getenv("KOKORO_MODEL_DIR", BASE_DIR / "models" / "Kokoro-82M-v1.0-ONNX"))
-ESPEAK_DIR = Path(os.getenv("ESPEAK_DIR", BASE_DIR / "models" / "espeak-ng"))
+ESPEAK_DIR = Path(os.getenv("ESPEAK_DIR", BASE_DIR / "third_party" / "espeak-ng"))
 SAMPLE_RATE = 24000
 
 _espeak_rt = None
