@@ -159,7 +159,7 @@ flowchart TD
 | 元素 | 说明 |
 | --- | --- |
 | 入口 | `ChatPage.vue` 顶部操作区（语言选择右侧）通话图标（`CallOutline`），点击 `window.open` 打开独立窗口（`#/voice`，约 440×720，深色主题 `#0f1115` 画布 / `#171a21` 顶栏），与主聊天界面隔离；通话图标右侧依次为"回复朗读"开关（默认关闭）与"共享屏幕"按钮（`DesktopOutline`，开启后高亮）。 |
-| 顶部栏 | 通话状态指示（未连接灰点 / 通话中绿色呼吸点）、音色下拉（`NSelect`，数据来自 `GET /api/chat_voice/voices`，Audio8 注册音色 zh/en，持久化 `localStorage.chat_voice_name`）、挂断（红色 `StopCircleOutline`）、关闭（`Close`）。 |
+| 顶部栏 | 通话状态指示（未连接灰点 / 通话中绿色呼吸点）、音色下拉（`NSelect`，数据来自 `GET /api/chat_voice/voices`，Kokoro 预置音色 `af_*`/`am_*`/`bf_*`/`bm_*`（英文，v1.0 共 54 个），持久化 `localStorage.chat_voice_name`）、挂断（红色 `StopCircleOutline`）、关闭（`Close`）。 |
 | 中央区 | 圆形麦克风按钮（聆听时绿色光环 + `Mic`，否则 `MicOff`）、状态文字（聆听中/AI 思考中/AI 说话中）、实时识别中间结果与 AI 回复字幕。 |
 | 桥接逻辑 | 识别文字实时同步主窗口输入框（`chatBridge.updateInput`）；识别停顿约 0.9s 自动发送（`chatBridge.sendMessage`，无手动发送按钮）走正常 ACP 会话；AI 回复完成后回调触发 → 按 `GET /api/chat_voice/config` 的 `TTS_MODE` 选择播放路径：`file`（默认）调 `POST /api/chat_voice/tts` 获取完整 WAV base64 播放，`stream` 调 `/tts_stream` 流式播放（首包低延迟，失败回退 `/tts`）；长文本自动分段合成（`split_text`，PCM 无缝拼接），播完自动恢复聆听。无 `opener`（直接访问 `#/voice`）时显示琥珀色"请从主界面语音通话入口打开"提示。 |
 | 状态机 | `idle → listening → thinking → speaking`；播报结束后自动恢复 `listening`；挂断重置为 `idle`。 |

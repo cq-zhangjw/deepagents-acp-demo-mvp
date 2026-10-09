@@ -11,7 +11,7 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 - **Attachments**: upload or paste images/files, inline preview, download on click; context usage (used / `CONTENT_SIZE`) shown as percentage with hover detail.
 - **Error handling**: ACP error details are returned to the frontend, displayed as the AI message content plus a red error block; the stop button always recovers to send after failures or disconnects.
 - **Multi-language**: UI supports Simplified Chinese / Japanese / English (i18n locale files under `web/src/locales/`).
-- **Voice call** (2.0): a top-bar call icon opens a dedicated voice-call window (`#/voice`, dark theme) that stays separate from the chat UI. It captures your speech with the browser Web Speech API (STT), synchronizes the recognized text into the main window's input box, and auto-sends it on pause through a `window.opener` bridge (`chatBridge`) so it runs as a normal session message; when the AI reply finishes, the call window fetches local TTS (`/api/chat_voice/tts`, Audio8 TTS ONNX INT4 in `models/`, in-memory WAV) and speaks it aloud, then resumes listening. Long text is split per sentence (`split_text`) and PCM-concatenated, so nothing is truncated by the `max_new_tokens` limit. Playback mode is chosen by `TTS_MODE` (default `file`, non-streaming full WAV; `stream` uses `/tts_stream` with low first-chunk latency and `TTS_STREAM_CHUNK_FRAMES=48` frames per chunk). The main window keeps a reply-speak toggle next to the call icon plus a screen-share toggle (when on, sending a message auto-captures the screen as an image attachment), and message action bars have a speak button for any plain-text message.
+- **Voice call** (2.0): a top-bar call icon opens a dedicated voice-call window (`#/voice`, dark theme) that stays separate from the chat UI. It captures your speech with the browser Web Speech API (STT), synchronizes the recognized text into the main window's input box, and auto-sends it on pause through a `window.opener` bridge (`chatBridge`) so it runs as a normal session message; when the AI reply finishes, the call window fetches local TTS (`/api/chat_voice/tts`, Kokoro-82M ONNX fp16 in `models/`, in-memory WAV, 24 kHz) and speaks it aloud, then resumes listening. Long text is split per sentence (`split_text`) and PCM-concatenated, so nothing is truncated by the 510-token context limit. Phonemization uses a portable eSpeak-ng (`models/espeak-ng`, DLL-loaded) with `kokorog2p` token mapping. Playback mode is chosen by `TTS_MODE` (default `file`, non-streaming full WAV; `stream` uses `/tts_stream` with sentence-level streaming and `TTS_STREAM_CHUNK_FRAMES=48` kept for compatibility). The main window keeps a reply-speak toggle next to the call icon plus a screen-share toggle (when on, sending a message auto-captures the screen as an image attachment), and message action bars have a speak button for any plain-text message.
 - **Local run**: `start.ps1` / `stop.ps1` manage the gateway and agent processes; all runtime knobs are configured via `.env`.
 
 ## Architecture
@@ -28,7 +28,7 @@ flowchart LR
     UploadAPI["/upload saves file and returns resource URL"]
     WSProxy["/acp-ws WebSocket ⇄ stdio bidirectional forwarding"]
     Static["/ static hosting of web/dist"]
-    VoiceAPI["/api/chat_voice/voices + /tts + /tts_stream<br/>Audio8 TTS (ONNX INT4, local)"]
+    VoiceAPI["/api/chat_voice/voices + /tts + /tts_stream<br/>Kokoro-82M TTS (ONNX fp16, local, 24 kHz)"]
   end
 
   subgraph Agent["ACP Agent subprocess"]

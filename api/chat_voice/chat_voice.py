@@ -18,15 +18,12 @@ from .tts_api import iter_pcm_chunks, list_voices, split_text, synthesize_wav_by
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat_voice", tags=["chat_voice"])
 
-# 音色名 → 前端展示标签（Audio8 注册音色：zh / en）
-_VOICE_LABELS = {
-    "zh": "中文",
-    "en": "English",
-}
+# 音色名 → 前端展示标签（Kokoro 预置音色：af_*/am_*/bf_*/bm_* 英文，v1.0 共 54 个）
+_VOICE_LABELS = {}
 
 # 播报模式：TTS_MODE=stream（流式，首包低延迟）| file（非流式，等完整 WAV 后播放）
-# 流式每块音频帧数：TTS_STREAM_CHUNK_FRAMES（越大首包延迟越高、全量解码开销越小，CPU 机器建议 48+）
-_SAMPLE_RATE = 44100
+# 流式每块音频帧数：TTS_STREAM_CHUNK_FRAMES（Kokoro 为句子级流式，该值仅兼容保留）
+_SAMPLE_RATE = 24000
 
 
 def _tts_mode() -> str:
@@ -43,7 +40,7 @@ def _stream_chunk_frames() -> int:
 
 
 def _voice_list() -> list[dict]:
-    """将 Audio8 已注册音色映射为前端 {label, value} 格式。"""
+    """将 Kokoro 已下载音色映射为前端 {label, value} 格式。"""
     try:
         items = list_voices()
     except Exception as exc:  # noqa: BLE001
@@ -109,7 +106,7 @@ def tts_stream(req: TTSRequest):
             if not voice_exists(voice):
                 voice = "zh"
             for seg in split_text(req.text):
-                for _seq, pcm in iter_pcm_chunks(seg, voice=voice, max_new_tokens=512, chunk_frames=_stream_chunk_frames()):
+                for _seq, pcm in iter_pcm_chunks(seg, voice=voice):
                     yield pcm
         except Exception as exc:  # noqa: BLE001
             logger.error("audio8 tts stream failed: %s", exc)
@@ -123,7 +120,7 @@ def _synthesize(text: str, voice: str) -> bytes:
     try:
         if not voice or not voice_exists(voice):
             voice = "zh"
-        wav_bytes, _sample_rate = synthesize_wav_bytes(text, voice=voice, max_new_tokens=512)
+        wav_bytes, _sample_rate = synthesize_wav_bytes(text, voice=voice)
         return wav_bytes
     except Exception as exc:  # noqa: BLE001
         logger.error("audio8 tts synthesis failed: %s", exc)

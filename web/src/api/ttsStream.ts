@@ -52,7 +52,8 @@ export async function playTtsStream(
     if (!resp.ok || !resp.body) return null
     const Ctor = window.AudioContext || (window as any).webkitAudioContext
     if (!Ctor) return null
-    const ctx = new Ctor({ sampleRate: 44100 })
+    const cfg = await getTtsConfig()
+    const ctx = new Ctor({ sampleRate: cfg.sample_rate })
     activeCtx = ctx
     if (ctx.state === 'suspended') await ctx.resume()
 
@@ -69,7 +70,7 @@ export async function playTtsStream(
           const float = new Float32Array(value.byteLength / 2)
           const dv = new DataView(value.buffer, value.byteOffset, value.byteLength)
           for (let i = 0; i < float.length; i++) float[i] = dv.getInt16(i * 2, true) / 32768
-          const buf = ctx.createBuffer(1, float.length, 44100)
+          const buf = ctx.createBuffer(1, float.length, cfg.sample_rate)
           buf.copyToChannel(float, 0)
           const src = ctx.createBufferSource()
           src.buffer = buf
