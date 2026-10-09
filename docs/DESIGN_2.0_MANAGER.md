@@ -101,7 +101,7 @@ license: MIT
 
 ### 3.2 工具 / MCP 服务器（MCPServer）
 
-**内置工具一览与启停**：每个 deep agent 默认获得 `ls / read_file / write_file / edit_file / glob / grep / execute / task` 8 个内置工具。工具面板顶部展示这些内置工具 chips，**点击即可启用/关闭**（启用高亮、关闭半透明），状态写入**当前 Agent** 的 `tools.inner_tools`（`null` = 全部启用，默认值；列表 = 显式启用的工具名）。
+**内置工具一览与启停**：每个 deep agent 默认获得 `ls / read_file / write_file / edit_file / glob / grep / execute / task` 8 个内置工具。工具面板顶部展示这些内置工具 chips，**点击即可启用/关闭**（启用高亮、关闭半透明），状态写入**当前 Agent** 的 `tools.inner_tools`（**始终为数组**，默认值为全部 8 个内置工具名，启停即数组增删；旧 `null` 数据自动迁移为全量数组）。
 
 **目录与识别**：所有 MCP 服务器位于 `.deepagents/tools/mcp_servers/<server-name>/`（旧布局 `.deepagents/mcp_servers/` 在模块加载时自动迁移）。每个服务器目录以 `manifest.json` 为**工具信息源**（必选），`server.json` 仅作可选启动配置：
 
@@ -121,10 +121,10 @@ license: MIT
 **分组折叠展示（按 Agent 生效）**：`GET /api/manage/tools?agent=<name>` 返回该 Agent 视角的服务组数组 `[{name, description, command, has_server_json, enabled, tools: [{name, description, enabled}], path, updated_at}]`。前端工具面板以**服务名为单位**的可折叠卡片展示：组头显示服务名、工具数、整体启停开关（点击组头展开/收起）；展开后列出组内每个工具，工具级也有独立启停开关。**切换当前 Agent 后工具面板随之刷新**。
 
 **per-agent 启停（agents.json tools 字段）**：工具启停**只更新对应 Agent 的 `tools` 字段**，不再维护根目录聚合清单或 `.disabled` 标记：
-- AgentDef.tools 结构：`{"inner_tools": null | string[], "mcp_tools": [manifest 风格条目]}`；每个 mcp_tools 条目含 `server`（目录名，匹配键）、`serverInfo`（manifest 原样显示）、`tools`（**只含用户选定的工具**）。
+- AgentDef.tools 结构：`{"inner_tools": string[], "mcp_tools": [manifest 风格条目]}`；`inner_tools` 始终为数组（默认全量 8 个内置工具名，旧 `null` 迁移为全量数组）；每个 mcp_tools 条目含 `server`（目录名，匹配键）、`serverInfo`（manifest 原样显示）、`tools`（**只含用户选定的工具**）。
 - **服务级启用**：读取该服务 `manifest.json`，以全量 `tools` 追加为一个 mcp_tools 条目；**服务级停用**：移除该条目。
 - **工具级启停**：`POST /api/manage/tools/{server}/{tool}/toggle?agent=<name>` 增删条目内对应工具；工具全移除时条目自动消失；对未启用服务启用工具会自动创建条目。
-- **内置工具启停**：`POST /api/manage/agents/{agent}/inner-tools/{tool}/toggle` 增删 `inner_tools` 列表；列表等于全量时归一为 `null`。
+- **内置工具启停**：`POST /api/manage/agents/{agent}/inner-tools/{tool}/toggle` 增删 `inner_tools` 数组（按内置工具固定顺序排列）。
 - **删除服务**：删目录 + 从所有 Agent 的 `mcp_tools` 移除对应条目。
 - **Agent 编辑表单**：勾选关联的 MCP server（目录名多选），保存时映射为 mcp_tools 全量条目，并**保留该 Agent 已有的 inner_tools 状态**。
 
@@ -150,7 +150,7 @@ Agent 拥有专属目录 `.deepagents/agents/`：
     "system_prompt": null,
     "skills": ["web-research"],
     "tools": {
-      "inner_tools": null,
+      "inner_tools": ["ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task"],
       "mcp_tools": [
         {
           "server": "calc_server",
@@ -174,7 +174,7 @@ Agent 拥有专属目录 `.deepagents/agents/`：
     "system_prompt": "可选；缺省时使用 acp_agent.py 默认提示词 + AGENTS.md",
     "skills": ["web-research"],
     "tools": {
-      "inner_tools": null,
+      "inner_tools": ["ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task"],
       "mcp_tools": []
     },
     "enabled": true
@@ -205,7 +205,7 @@ Agent 拥有专属目录 `.deepagents/agents/`：
 | GET | `/api/manage/tools?agent=<name>` | MCP server 组列表（该 Agent 视角）：`[{name, description, command, has_server_json, enabled, tools: [{name, description, enabled}], path, updated_at}]` |
 | POST | `/api/manage/tools/{name}/toggle?agent=<name>` | 服务级启停（增删该 Agent 的 mcp_tools 条目） |
 | POST | `/api/manage/tools/{server}/{tool}/toggle?agent=<name>` | 工具级启停（增删条目内工具；全移除时条目消失） |
-| POST | `/api/manage/agents/{agent}/inner-tools/{tool}/toggle` | 内置工具启停（inner_tools 增删；等于全量时归一为 null） |
+| POST | `/api/manage/agents/{agent}/inner-tools/{tool}/toggle` | 内置工具启停（inner_tools 数组增删，按固定顺序） |
 | POST | `/api/manage/tools/{name}/test` | 试连：有 server.json 启动 probe；无则读 manifest.json 返回工具名 |
 | PUT | `/api/manage/tools/{name}` | 编辑配置 |
 | DELETE | `/api/manage/tools/{name}` | 删除 MCP 服务目录 + 清理所有 Agent 的 mcp_tools 条目 |

@@ -4,8 +4,67 @@
     "enabled": true,
     "skills": [],
     "tools": {
-      "inner_tools": null,
-      "mcp_tools": []
+      "inner_tools": [
+        "ls",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "execute",
+        "task",
+        "read_file"
+      ],
+      "mcp_tools": [
+        {
+          "server": "calc_server",
+          "serverInfo": {
+            "name": "Calculator Server",
+            "title": null,
+            "version": "3.1.1",
+            "websiteUrl": null,
+            "icons": null
+          },
+          "tools": [
+            {
+              "name": "calculate",
+              "title": null,
+              "description": "calc the expression str\n\nArgs:\n    expression: expression str，egg: \"2 + 3 * 4\"\n\nReturns:\n    the result of expression",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expression": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "expression"
+                ],
+                "type": "object"
+              },
+              "outputSchema": {
+                "properties": {
+                  "result": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "type": "object",
+                "x-fastmcp-wrap-result": true
+              },
+              "icons": null,
+              "annotations": null,
+              "_meta": {
+                "fastmcp": {
+                  "tags": []
+                }
+              },
+              "execution": null
+            }
+          ]
+        }
+      ]
     }
   }
 }

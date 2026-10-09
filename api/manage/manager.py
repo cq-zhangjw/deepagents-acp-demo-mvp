@@ -128,26 +128,27 @@ BUILTIN_TOOL_NAMES = [t["name"] for t in BUILTIN_TOOLS]
 
 
 def _default_agent_tools() -> dict:
-    """AgentDef.tools default: all builtin tools enabled, no MCP tools.
+    """AgentDef.tools default: every builtin tool enabled, no MCP tools.
 
-    inner_tools: None = all builtin tools enabled; a list = the explicitly
-    enabled builtin tool names.
-    mcp_tools: list of manifest-style entries (serverInfo + selected tools[]).
+    inner_tools is ALWAYS an array (toggle is an array operation); the default
+    is the full builtin tool name list. Legacy `null` values are migrated to
+    the full list on read/normalize.
+    mcp_tools: list of manifest-style entries (server + serverInfo + selected tools[]).
     """
-    return {"inner_tools": None, "mcp_tools": []}
+    return {"inner_tools": list(BUILTIN_TOOL_NAMES), "mcp_tools": []}
 
 
-def _norm_inner_tools(value) -> list | None:
-    """Normalize inner_tools: None (all enabled) or a validated list of names."""
-    if value is None:
-        return None
+def _norm_inner_tools(value) -> list[str]:
+    """Normalize inner_tools: always a validated list of builtin tool names.
+
+    None / missing / empty legacy values are migrated to the full builtin set
+    (i.e. "all enabled" is expressed as the full array, not null).
+    """
     if not isinstance(value, list):
-        return None
-    names = [v for v in value if isinstance(v, str) and v in BUILTIN_TOOL_NAMES]
-    if not names:
-        return None
-    # dedupe, keep order
-    return list(dict.fromkeys(names))
+        return list(BUILTIN_TOOL_NAMES)
+    names = {v for v in value if isinstance(v, str) and v in BUILTIN_TOOL_NAMES}
+    # keep the canonical builtin order, always an array
+    return [n for n in BUILTIN_TOOL_NAMES if n in names] if names else list(BUILTIN_TOOL_NAMES)
 
 
 def _norm_agent_tools(value) -> dict:
@@ -593,28 +594,23 @@ def toggle_tool_item(server: str, tool: str, agent: str = "default"):
 
 @router.post("/agents/{agent}/inner-tools/{tool}/toggle")
 def toggle_inner_tool(agent: str, tool: str):
-    """Toggle one builtin tool for an agent (agents.json tools.inner_tools).
+    """Toggle one builtin tool for an agent (array operation on tools.inner_tools).
 
-    inner_tools: None = all builtin tools enabled (default); toggling a tool
-    off materializes the full list minus that tool; toggling back on restores
-    None when the list equals the full builtin set.
+    inner_tools is always an array defaulting to the full builtin set; toggling
+    simply adds/removes the tool name.
     """
     agent = _ensure_name(agent)
     if tool not in BUILTIN_TOOL_NAMES:
         raise HTTPException(status_code=404, detail=f"inner tool not found: {tool}")
     tools_def, agents = _agent_tools_def(agent)
     inner = _norm_inner_tools(tools_def.get("inner_tools"))
-    if inner is None:
-        # currently all enabled -> turn this one off
-        inner = [n for n in BUILTIN_TOOL_NAMES if n != tool]
-        enabled = False
-    elif tool in inner:
+    if tool in inner:
         inner = [n for n in inner if n != tool]
         enabled = False
     else:
         inner = inner + [tool]
         enabled = True
-    tools_def["inner_tools"] = None if set(inner) == set(BUILTIN_TOOL_NAMES) else inner
+    tools_def["inner_tools"] = inner
     _write_agents(agents)
     return {"agent": agent, "tool": tool, "enabled": enabled}
 
@@ -917,6 +913,7 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
     # inner_tools state instead of resetting it to "all enabled"
     if isinstance(payload.get("tools"), list) and existing_tools:
         tools["inner_tools"] = _norm_inner_tools(existing_tools.get("inner_tools"))
-    if not (tools["inner_tools"] is None and not tools["mcp_tools"]):
+    # omit the field when it equals the default (full inner set, no MCP tools)
+    if not (set(tools["inner_tools"]) == set(BUILTIN_TOOL_NAMES) and not tools["mcp_tools"]):
         def_data["tools"] = tools
     return def_data

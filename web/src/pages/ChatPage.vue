@@ -527,11 +527,11 @@ async function toggleToolItem(server: string, tool: string) {
 const currentAgentTools = computed(() =>
   agentList.value.find((a) => a.name === currentAgentName.value)?.tools
 )
-/** 内置工具是否启用：inner_tools 为 null（默认全启用）或包含该工具 */
+/** 内置工具是否启用：inner_tools 为数组且包含该工具（默认全量数组=全启用） */
 function innerToolEnabled(name: string): boolean {
-  const tools = currentAgentTools.value
-  if (!tools || !tools.inner_tools) return true
-  return tools.inner_tools.includes(name)
+  const inner = currentAgentTools.value?.inner_tools
+  if (!Array.isArray(inner)) return true // 后端兜底：旧数据/null 视为全启用
+  return inner.includes(name)
 }
 /** 点击内置工具标签：切换当前 agent 的 inner_tools */
 async function toggleInnerTool(name: string) {
