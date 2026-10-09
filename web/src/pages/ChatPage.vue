@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 import {
@@ -19,6 +19,7 @@ import {
   MenuOutline,
   MicOutline,
   PaperPlaneOutline,
+  PersonOutline,
   RefreshOutline,
   SearchOutline,
   SparklesOutline,
@@ -208,7 +209,9 @@ const actionLabels = computed(() => ({
   previewAttachment: locale.value === 'zh' ? '预览附件' : locale.value === 'ja' ? '添付をプレビュー' : 'Preview attachment',
   downloadAttachment: locale.value === 'zh' ? '下载附件' : locale.value === 'ja' ? '添付をダウンロード' : 'Download attachment',
   screenShare: locale.value === 'zh' ? '共享屏幕' : locale.value === 'ja' ? '画面共有' : 'Share screen',
-  screenShareActive: locale.value === 'zh' ? '共享屏幕已开启，发送消息时自动截屏' : locale.value === 'ja' ? '画面共有をオン、送信時に自動でスクリーンショット' : 'Screen share on, screenshots on send'
+  screenShareActive: locale.value === 'zh' ? '共享屏幕已开启，发送消息时自动截屏' : locale.value === 'ja' ? '画面共有をオン、送信時に自動でスクリーンショット' : 'Screen share on, screenshots on send',
+  agent: locale.value === 'zh' ? 'Agent' : locale.value === 'ja' ? 'エージェント' : 'Agent',
+  selectAgent: locale.value === 'zh' ? '选择 Agent' : locale.value === 'ja' ? 'エージェントを選択' : 'Select agent'
 }))
 
 const currentConversation = computed(() =>
@@ -380,6 +383,33 @@ const rightPanelTitle = computed(() =>
 function openRightPanel(tab: 'skills' | 'tools' | 'settings') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
+}
+
+// ---------- Agent 选择（输入框工具栏） ----------
+// 后台未实装：先内置示例一览，后续接入 /api/manage/agents 读取 .deepagents/agents.json
+const agentList = [
+  { name: 'default', description: 'Default agent (current behavior)', enabled: true },
+  { name: 'coder', description: 'Coding expert', enabled: true },
+  { name: 'researcher', description: 'Research expert', enabled: false }
+]
+const AGENT_STORAGE_KEY = 'currentAgentName'
+const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
+const agentDropdownOptions = computed(() =>
+  agentList
+    .filter((agent) => agent.enabled !== false)
+    .map((agent) => ({
+      key: agent.name,
+      label: agent.name,
+      render: () =>
+        h('div', { class: 'agent-option' }, [
+          h('div', { class: 'agent-option-name' }, agent.name),
+          agent.description ? h('div', { class: 'agent-option-desc' }, agent.description) : null
+        ])
+    }))
+)
+function selectAgent(key: string) {
+  currentAgentName.value = key
+  localStorage.setItem(AGENT_STORAGE_KEY, key)
 }
 
 function notifyComingSoon(_feature: string) {
@@ -1522,6 +1552,11 @@ onBeforeUnmount(() => {
                   </template>
                   {{ t('upload') }}
                 </NTooltip>
+                <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
+                  <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
+                    <template #icon><NIcon :component="PersonOutline" /></template>{{ currentAgentName || actionLabels.agent }}
+                  </NButton>
+                </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click.capture="openRightPanel('skills')">
                   <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
@@ -1667,6 +1702,8 @@ onBeforeUnmount(() => {
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
 /* TEMP-HIDE：编辑/删除消息入口暂隐藏（display:none），代码保留，后期 MooFile 方案升级时恢复 */
 .hidden-action { display: none; }
+.agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
+.agent-option { padding:2px 0; } .agent-option-name { font-weight:600; } .agent-option-desc { margin-top:2px; color:#999; font-size:12px; line-height:1.4; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
 .right-panel { display:none; flex:0 0 300px; width:300px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
