@@ -229,6 +229,9 @@ const actionLabels = computed(() => ({
   linkedSkills: locale.value === 'zh' ? '关联技能' : locale.value === 'ja' ? '連携スキル' : 'Linked skills',
   linkedTools: locale.value === 'zh' ? '关联工具' : locale.value === 'ja' ? '連携ツール' : 'Linked tools',
   currentAgent: locale.value === 'zh' ? '当前使用' : locale.value === 'ja' ? '現在使用中' : 'In use',
+  searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
+  noMatch: locale.value === 'zh' ? '无匹配结果' : locale.value === 'ja' ? '一致する結果がありません' : 'No matches',
+  mcpServers: locale.value === 'zh' ? 'MCP 服务' : locale.value === 'ja' ? 'MCP サーバー' : 'MCP Servers',
   emptyList: locale.value === 'zh' ? '暂无内容，可通过对话让 AI 生成' : locale.value === 'ja' ? 'まだありません。会話でAIに生成させることができます' : 'Empty. Ask the AI to create one via conversation'
 }))
 
@@ -409,13 +412,44 @@ const rightPanelTitle = computed(() =>
 function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'settings') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
+  panelQuery.value = ''
 }
 
 // ---------- 管理面板（技能/工具/Agent） ----------
+const panelQuery = ref('')
 const skillList = ref<any[]>([])
 const toolList = ref<any[]>([])
 const builtinTools = ref<any[]>([])
 const agentList = ref<any[]>([])
+
+/** 技能：按名称/描述过滤，启用优先（开启的排前面）。 */
+const filteredSkills = computed(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  const list = skillList.value.filter((s) =>
+    !q
+      || s.name?.toLowerCase().includes(q)
+      || (s.description || '').toLowerCase().includes(q)
+  )
+  return [...list].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0))
+})
+
+/** 内置工具：按名称过滤。 */
+const filteredBuiltinTools = computed(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  if (!q) return builtinTools.value
+  return builtinTools.value.filter((t) => (t.name || '').toLowerCase().includes(q))
+})
+
+/** MCP 服务：按服务名/描述/工具名过滤（后端已按启用状态排序）。 */
+const filteredToolList = computed(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  if (!q) return toolList.value
+  return toolList.value.filter((t) => {
+    if ((t.name || '').toLowerCase().includes(q)) return true
+    if ((t.description || '').toLowerCase().includes(q)) return true
+    return (t.tools || []).some((x: any) => (x.name || '').toLowerCase().includes(q))
+  })
+})
 const AGENT_STORAGE_KEY = 'currentAgentName'
 const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
 const agentDropdownOptions = computed(() =>
@@ -2052,12 +2086,17 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <div class="right-panel-body">
+        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools'" class="panel-search">
+          <NInput v-model:value="panelQuery" size="small" clearable :placeholder="actionLabels.searchPlaceholder">
+            <template #prefix><NIcon :component="SearchOutline" /></template>
+          </NInput>
+        </div>
         <!-- 技能管理 -->
         <div v-if="rightPanelTab === 'skills'" class="panel-section">
-          <div v-if="!skillList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
-          <div v-for="skill in skillList" :key="skill.name" class="manage-card" :class="{ 'manage-card--disabled': !skill.enabled }">
+          <div v-if="!filteredSkills.length" class="panel-placeholder"><p>{{ panelQuery ? actionLabels.noMatch : actionLabels.emptyList }}</p></div>
+          <div v-for="skill in filteredSkills" :key="skill.name" class="manage-card" :class="{ 'manage-card--disabled': !skill.enabled }">
             <div class="manage-card-head">
-              <strong>{{ skill.name }}</strong>
+              <strong class="manage-card-title">{{ skill.name }}</strong>
               <NSwitch size="small" :value="skill.enabled" @update:value="toggleSkill(skill.name)" />
             </div>
             <p v-if="skill.description" class="manage-card-desc">{{ skill.description }}</p>
@@ -2072,11 +2111,14 @@ onBeforeUnmount(() => {
         </div>
         <!-- 工具（MCP）管理 -->
         <div v-else-if="rightPanelTab === 'tools'" class="panel-section">
-          <div v-if="builtinTools.length" class="panel-section">
-            <label>{{ actionLabels.builtinTools }}</label>
+          <template v-if="filteredBuiltinTools.length">
+            <div class="panel-group-head">
+              <span class="panel-group-label">{{ actionLabels.builtinTools }}</span>
+              <span class="panel-group-count">{{ filteredBuiltinTools.length }}</span>
+            </div>
             <div class="builtin-tool-list">
               <span
-                v-for="tool in builtinTools"
+                v-for="tool in filteredBuiltinTools"
                 :key="tool.name"
                 class="builtin-tool-chip"
                 :class="{ 'builtin-tool-chip--active': innerToolEnabled(tool.name) }"
@@ -2087,34 +2129,42 @@ onBeforeUnmount(() => {
                 <code>{{ tool.name }}</code>
               </span>
             </div>
-          </div>
-          <div v-if="!toolList.length && !builtinTools.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
-          <div v-for="tool in toolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
-            <div class="manage-card-head manage-card-head--group" @click="toggleToolGroup(tool.name)">
-              <span class="tool-group-caret">{{ expandedToolGroups.includes(tool.name) ? '▾' : '▸' }}</span>
-              <strong>{{ tool.name }}</strong>
-              <span v-if="tool.tools?.length" class="tool-count">{{ tool.tools.length }}</span>
-              <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" @click.stop />
+          </template>
+          <template v-if="filteredToolList.length">
+            <div class="panel-group-head panel-group-head--mcp">
+              <span class="panel-group-label">{{ actionLabels.mcpServers }}</span>
+              <span class="panel-group-count">{{ filteredToolList.length }}</span>
             </div>
-            <p v-if="tool.description" class="manage-card-desc">{{ tool.description }}</p>
-            <code v-if="tool.command" class="manage-card-cmd">{{ tool.command }}</code>
-            <div v-if="expandedToolGroups.includes(tool.name)" class="tool-item-list">
-              <div v-for="t in tool.tools || []" :key="t.name" class="tool-item" :class="{ 'tool-item--disabled': !t.enabled }">
-                <div class="tool-item-head">
-                  <code>{{ t.name }}</code>
-                  <NSwitch size="small" :value="t.enabled" :disabled="!tool.enabled" @update:value="toggleToolItem(tool.name, t.name)" />
-                </div>
-                <p v-if="t.description" class="tool-item-desc">{{ t.description }}</p>
+            <div v-for="tool in filteredToolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
+              <div class="manage-card-head manage-card-head--group" @click="toggleToolGroup(tool.name)">
+                <span class="tool-group-caret">{{ expandedToolGroups.includes(tool.name) ? '▾' : '▸' }}</span>
+                <span class="manage-card-title">{{ tool.name }}</span>
+                <span v-if="tool.tools?.length" class="tool-count">{{ tool.tools.length }}</span>
+                <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" @click.stop />
               </div>
-              <div v-if="!(tool.tools || []).length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+              <p v-if="tool.description" class="manage-card-desc">{{ tool.description }}</p>
+              <code v-if="tool.command" class="manage-card-cmd">{{ tool.command }}</code>
+              <div v-if="expandedToolGroups.includes(tool.name)" class="tool-item-list">
+                <div v-for="t in tool.tools || []" :key="t.name" class="tool-item" :class="{ 'tool-item--disabled': !t.enabled }">
+                  <div class="tool-item-head">
+                    <code>{{ t.name }}</code>
+                    <NSwitch size="small" :value="t.enabled" :disabled="!tool.enabled" @update:value="toggleToolItem(tool.name, t.name)" />
+                  </div>
+                  <p v-if="t.description" class="tool-item-desc">{{ t.description }}</p>
+                </div>
+                <div v-if="!(tool.tools || []).length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+              </div>
+              <div class="manage-card-actions">
+                <NButton quaternary size="tiny" @click="testTool(tool.name)">{{ actionLabels.test }}</NButton>
+                <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteTool(tool.name)">
+                  <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
+                  {{ actionLabels.confirmDelete }}
+                </NPopconfirm>
+              </div>
             </div>
-            <div class="manage-card-actions">
-              <NButton quaternary size="tiny" @click="testTool(tool.name)">{{ actionLabels.test }}</NButton>
-              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteTool(tool.name)">
-                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
-                {{ actionLabels.confirmDelete }}
-              </NPopconfirm>
-            </div>
+          </template>
+          <div v-if="!filteredToolList.length && !filteredBuiltinTools.length" class="panel-placeholder">
+            <p>{{ panelQuery ? actionLabels.noMatch : actionLabels.emptyList }}</p>
           </div>
         </div>
         <!-- Agent 管理 -->
@@ -2299,13 +2349,19 @@ onBeforeUnmount(() => {
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .agent-option { padding:2px 0; } .agent-option-name { font-weight:600; } .agent-option-desc { margin-top:2px; color:#999; font-size:12px; line-height:1.4; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
-.right-panel { display:none; flex:0 0 300px; width:300px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:10px; }
+.right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+.panel-search { position:sticky; top:0; z-index:2; background:var(--surface); padding-bottom:6px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section > .n-button { align-self:flex-start; }
-.manage-card { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--canvas); display:flex; flex-direction:column; gap:6px; }
+.panel-group-head { display:flex; align-items:center; gap:6px; margin-top:2px; }
+.panel-group-head--mcp { margin-top:6px; padding-top:8px; border-top:1px dashed var(--border); }
+.panel-group-label { font-size:12px; font-weight:600; color:var(--text); }
+.panel-group-count { font-size:10px; color:var(--subtle); background:var(--canvas); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
+.manage-card { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--canvas); display:flex; flex-direction:column; gap:6px; transition:box-shadow .15s ease; }
+.manage-card:hover { box-shadow:0 2px 8px rgba(29,39,51,.06); }
 .manage-card--disabled { opacity:.55; }
 .manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.manage-card-head strong { font-size:13px; }
+.manage-card-title { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .manage-card-desc { font-size:12px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; }
 .manage-card-cmd { display:block; font-size:11px; color:var(--subtle); background:var(--surface); border-radius:6px; padding:4px 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .manage-card-chips { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
