@@ -114,10 +114,14 @@ def _match_voice(lang: str, voice: str) -> str:
 
 
 def resolve_voice(text: str, voice: str) -> str:
-    voice = (voice or "").strip()
-    if not voice:
-        voice = _match_voice(detect_language(text), "")
-    return voice
+    """Resolve a system voice by description.
+
+    Priority: explicit voice (description substring) > SAPI_VOICE_<LANG>
+    fragment > first installed voice matching the language keyword. An
+    unknown/legacy voice name (e.g. 'zh') never leaks into SAPI; it simply
+    falls through to the per-language pick.
+    """
+    return _match_voice(detect_language(text), (voice or "").strip())
 
 
 def _wav_from_pcm(pcm: bytes) -> bytes:
@@ -131,21 +135,57 @@ def _wav_from_pcm(pcm: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _resample_pcm16(pcm: bytes, src_rate: int) -> bytes:
+    """Linear-interpolate 16-bit PCM to SAMPLE_RATE (defensive resample)."""
+    if src_rate == SAMPLE_RATE:
+        return pcm
+    import numpy as np
+
+    x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if x.size == 0:
+        return pcm
+    n = max(1, int(round(len(x) * SAMPLE_RATE / src_rate)))
+    y = np.interp(np.linspace(0.0, len(x) - 1, n), np.arange(len(x)), x)
+    return y.astype(np.int16).tobytes()
+
+
 def _synthesize_segment(text: str, voice: str) -> bytes:
-    """Synthesize one segment; returns (pcm_bytes, rate=24000)."""
+    """Synthesize one segment; returns WAV bytes at SAMPLE_RATE.
+
+    The SAPI output format is read back (WaveFormatEx) and resampled to
+    24 kHz 16-bit mono when the system SAPI downgraded the requested format,
+    so playback never runs at the wrong speed (no harsh/glitchy sound).
+    """
     import pythoncom
 
     try:
         sp, stream = _sp_voice()
-        for i, d in enumerate(_token_descriptions()):
-            if voice == d:
+        descs = _token_descriptions()
+        for i, d in enumerate(descs):
+            if voice.lower() in d.lower() or d.lower() in voice.lower():
                 sp.Voice = sp.GetVoices().Item(i)
                 break
         sp.Speak(text)  # synchronous
         data = bytes(stream.GetData())
+        # read back the actual output format
+        try:
+            fmt_info = stream.Format.WaveFormatEx
+            rate = int(fmt_info.nSamplesPerSec)
+            bits = int(fmt_info.wBitsPerSample)
+            channels = int(fmt_info.nChannels)
+        except Exception:  # noqa: BLE001
+            rate, bits, channels = SAMPLE_RATE, 16, _CHANNELS
         # GetData returns raw PCM without a RIFF header; wrap it as WAV
         if data[:4] == b"RIFF":
             return data
+        if (rate, bits, channels) != (SAMPLE_RATE, 16, _CHANNELS):
+            if bits != 16:
+                logger.warning("sapi output bits=%s, converting via numpy", bits)
+                import numpy as np
+
+                arr = np.frombuffer(data, dtype=np.uint8).view(np.int16) if bits == 16 else np.frombuffer(data, dtype=np.int8)
+                data = arr.astype(np.int16).tobytes()
+            data = _resample_pcm16(data, rate)
         return _wav_from_pcm(data)
     finally:
         pythoncom.CoUninitialize()
@@ -184,6 +224,8 @@ def iter_pcm_chunks(
     """Sentence-level streaming, same contract as tts_api.iter_pcm_chunks."""
     for seg in split_text(text):
         wav = _synthesize_segment(seg, resolve_voice(seg, voice))
-        # strip the WAV header (44 bytes for standard PCM) and yield PCM
-        pcm = wav[44:]
+        # parse the PCM out of the WAV container (header size may vary)
+        with io.BytesIO(wav) as b:
+            w = wave.open(b, "rb")
+            pcm = w.readframes(w.getnframes())
         yield 0, pcm

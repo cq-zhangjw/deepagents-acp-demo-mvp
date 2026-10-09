@@ -55,11 +55,21 @@ _voice_cache: list[dict] | None = None
 
 
 def resolve_voice(text: str, voice: str) -> str:
-    """Resolve the requested voice: explicit choice wins, otherwise the
-    language default for the detected text language."""
+    """Resolve the requested voice.
+
+    Explicit voice wins only when it exists in the online catalogue; an
+    unknown/legacy name (e.g. 'zh') falls back to the language default for
+    the detected text language (prevents 'Invalid voice' on the Edge API).
+    """
     voice = (voice or "").strip()
     if voice:
-        return voice
+        try:
+            names = {item["name"] for item in list_voices()}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("resolve voice catalogue failed: %s", exc)
+            names = set()
+        if voice in names:
+            return voice
     return _DEFAULT_VOICES.get(detect_language(text), _DEFAULT_VOICES["en"])
 
 

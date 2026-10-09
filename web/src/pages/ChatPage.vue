@@ -1115,6 +1115,23 @@ const speakingMessageId = ref<string | null>(null)
 const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
 const speakReplyEnabled = ref(localStorage.getItem('chat_speak_reply') === '1')
 
+let cachedVoiceNames: string[] | null = null
+/** 返回对当前引擎有效的音色名；localStorage 遗留的无效值（如 'zh'）回退为空字符串，
+ *  由后端按文本语言自动选择默认音色，避免每次朗读先失败再回退。 */
+async function resolveVoiceParam(): Promise<string> {
+  const v = selectedVoice.value
+  if (!v) return ''
+  if (cachedVoiceNames === null) {
+    try {
+      const list = await fetch('/api/chat_voice/voices').then((r) => r.json())
+      cachedVoiceNames = list.map((x: any) => x.value)
+    } catch {
+      cachedVoiceNames = []
+    }
+  }
+  return cachedVoiceNames.includes(v) ? v : ''
+}
+
 function messagePlainText(item: { role: string; text?: string; finalText?: string }): string {
   return item.role === 'user' ? (item.text ?? '') : (item.finalText ?? '')
 }
@@ -1136,12 +1153,13 @@ function stopSpeech() {
 async function speakText(text: string): Promise<boolean> {
   if (!text.trim()) return false
   stopSpeech()
+  const voice = await resolveVoiceParam()
   const cfg = await getTtsConfig()
   if (cfg.mode !== 'stream') {
-    return await playBase64Speech(text, selectedVoice.value)
+    return await playBase64Speech(text, voice)
   }
   // 流式优先
-  const handle = await playTtsStream(text, selectedVoice.value, () => {
+  const handle = await playTtsStream(text, voice, () => {
     speechStreamStop = null
     speakingMessageId.value = null
   })
@@ -1150,7 +1168,7 @@ async function speakText(text: string): Promise<boolean> {
     return true
   }
   // 回退：非流式 base64（保留当前可用版本）
-  return await playBase64Speech(text, selectedVoice.value)
+  return await playBase64Speech(text, voice)
 }
 
 async function playBase64Speech(text: string, voice: string): Promise<boolean> {

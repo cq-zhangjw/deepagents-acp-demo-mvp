@@ -213,7 +213,8 @@ onMounted(async () => {
     const resp = await fetch('/api/chat_voice/voices')
     voices.value = await resp.json()
     const saved = localStorage.getItem('chat_voice_name')
-    if (saved && voices.value.some((v) => v.value === saved)) selectedVoice.value = saved
+    // 无效/遗留音色名（如 'zh'）置空，由后端按文本语言自动选择
+    selectedVoice.value = saved && voices.value.some((v) => v.value === saved) ? saved : ''
   } catch { /* noop */ }
   if (hasBridge) startListening()
 })
