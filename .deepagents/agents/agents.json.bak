@@ -1,9 +1,0 @@
-{
-  "default": {
-    "description": "Default agent (current behavior)",
-    "enabled": true,
-    "skills": [
-      "tool-writer"
-    ]
-  }
-}
