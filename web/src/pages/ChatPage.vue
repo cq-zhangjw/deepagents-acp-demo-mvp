@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
+import { cleanSpeechText, getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 import {
   AddOutline,
   ArrowDownOutline,
@@ -21,7 +21,6 @@ import {
   MenuOutline,
   MicOutline,
   PaperPlaneOutline,
-  HardwareChipOutline,
   RefreshOutline,
   SearchOutline,
   SparklesOutline,
@@ -1085,8 +1084,9 @@ async function sendAgentPrompt(
         data: resource.data,
         mimeType: resource.mimeType ?? 'image/png'
       }))
+    cancelRequested = false // 新一轮生成开始，重置取消标记
     await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content })
-    if (assistantMessage.status !== 'cancelled' && assistantMessage.status !== 'failed') {
+    if (assistantMessage.status !== 'cancelled' && assistantMessage.status !== 'failed' && !cancelRequested) {
       assistantMessage.status = 'completed'
       assistantMessage.process.completedAt = Date.now()
       if (!assistantMessage.finalText) appendTextSegment(assistantMessage, t('taskComplete'))
@@ -1189,6 +1189,7 @@ function copyUserText(item: { text?: string }, asMarkdown: boolean) {
 // ---------- 语音合成（TTS）与语音桥接 ----------
 let speechAudio: HTMLAudioElement | null = null
 let speechStreamStop: (() => void) | null = null
+let cancelRequested = false
 const speakingMessageId = ref<string | null>(null)
 const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
 const speakReplyEnabled = ref(localStorage.getItem('chat_speak_reply') === '1')
@@ -1229,6 +1230,7 @@ function stopSpeech() {
 /** 合成并播放一段文本（返回是否成功）；用于消息朗读与 AI 回复播报。
  *  按后端 TTS_MODE 分流：file 直接走非流式 base64；stream 流式优先（首包低延迟），失败回退非流式。 */
 async function speakText(text: string): Promise<boolean> {
+  text = cleanSpeechText(text)
   if (!text.trim()) return false
   stopSpeech()
   const voice = await resolveVoiceParam()
@@ -1341,16 +1343,19 @@ async function cancelTask() {
   const conversation = currentConversation.value
   const assistant = activeAssistantMessage()
   if (!conversation || !assistant) return
+  cancelRequested = true
+  // 立即置为 cancelled：防止 prompt Promise 先于 session/cancel 返回时误判为完成并朗读残缺文本
+  assistant.status = 'cancelled'
+  assistant.process.completedAt = Date.now()
+  assistant.process.toolCalls.forEach((tool) => {
+    if (tool.status === 'running' || tool.status === 'waiting_permission') tool.status = 'cancelled'
+  })
+  stopSpeech() // 停止生成时同时停掉朗读（含尚未结束的 TTS 合成请求播放）
   try {
     await callAcp('session/cancel', { sessionId: conversation.agentSessionId ?? conversation.id })
   } catch {
     // Some ACP servers omit session/cancel. Closing this dedicated connection terminates its Agent subprocess.
   } finally {
-    assistant.status = 'cancelled'
-    assistant.process.completedAt = Date.now()
-    assistant.process.toolCalls.forEach((tool) => {
-      if (tool.status === 'running' || tool.status === 'waiting_permission') tool.status = 'cancelled'
-    })
     ws.value?.close()
     persistConversations()
   }
@@ -1789,14 +1794,6 @@ onBeforeUnmount(() => {
           </NTooltip>
           <NTooltip>
             <template #trigger>
-              <NButton quaternary circle :type="rightPanelTab === 'agents' && rightPanelVisible ? 'primary' : 'default'" :aria-label="actionLabels.agents" @click="openRightPanel('agents')">
-                <template #icon><NIcon :component="HardwareChipOutline" /></template>
-              </NButton>
-            </template>
-            {{ actionLabels.agents }}
-          </NTooltip>
-          <NTooltip>
-            <template #trigger>
               <NButton quaternary circle :type="screenShareActive ? 'primary' : 'default'" :aria-label="actionLabels.screenShare" @click="toggleScreenShare">
                 <template #icon><NIcon :component="DesktopOutline" /></template>
               </NButton>
@@ -1998,11 +1995,11 @@ onBeforeUnmount(() => {
                 </NTooltip>
                 <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
                   <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
-                    <template #icon><NIcon :component="HardwareChipOutline" /></template>{{ currentAgentName || actionLabels.agent }}
+                    <template #icon><NIcon :component="SparklesOutline" /></template>{{ currentAgentName || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click="openRightPanel('skills')">
-                  <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}
+                  <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}

@@ -6,7 +6,7 @@ import {
   Mic, MicOff, Close, StopCircleOutline
 } from '@vicons/ionicons5'
 
-import { getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
+import { cleanSpeechText, getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 
 const { t } = useI18n()
 
@@ -141,6 +141,8 @@ function stopPlayback() {
 
 async function speak(content: string) {
   stopPlayback()
+  content = cleanSpeechText(content)
+  if (!content.trim()) return
   // 按后端 TTS_MODE 分流：file 直接走非流式；stream 流式优先（首包低延迟），失败回退非流式
   const cfg = await getTtsConfig()
   if (cfg.mode !== 'stream') {

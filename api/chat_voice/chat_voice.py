@@ -143,23 +143,46 @@ def tts(req: TTSRequest):
     return TTSResponse(text=req.text, audio=base64.b64encode(audio).decode())
 
 
+def _resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear-interpolate 16-bit mono PCM to a target sample rate.
+
+    Used when the fallback engine (Windows SAPI, 24 kHz) streams PCM into a
+    frontend that decodes at the primary engine's sample rate (genie 32 kHz);
+    without this the fallback audio plays at the wrong speed/pitch.
+    """
+    if src_rate == dst_rate or not pcm:
+        return pcm
+    import numpy as np
+
+    x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if x.size == 0:
+        return pcm
+    n = max(1, int(round(len(x) * dst_rate / src_rate)))
+    y = np.interp(np.linspace(0.0, len(x) - 1, n), np.arange(len(x)), x)
+    return y.astype(np.int16).tobytes()
+
+
 @router.post("/tts_stream")
 def tts_stream(req: TTSRequest):
-    """Streaming TTS: yield 16-bit PCM (mono 24kHz LE) segment by segment to lower first-packet latency.
+    """Streaming TTS: yield 16-bit PCM (mono, engine sample rate) segment by segment.
 
     Long text is split into sentence segments and streamed; the frontend receives
     a continuous PCM byte stream. On primary-engine failure the stream falls back
-    to Windows SAPI (when TTS_FALLBACK=true) so playback still works.
+    to Windows SAPI (when TTS_FALLBACK=true), resampled to the primary engine's
+    sample rate so playback never runs at the wrong speed/pitch.
     """
     engine = _engine()
     mod = _engine_module()
 
-    def _stream(mod_):
+    def _stream(mod_, out_sr=None):
         voice = mod_.resolve_voice(req.text, req.voice)
+        src_sr = getattr(mod_, "SAMPLE_RATE", 24000)
         splitter = getattr(mod_, "split_text", None)
         segs = splitter(req.text) if splitter else [req.text]
         for seg in segs:
             for _seq, pcm in mod_.iter_pcm_chunks(seg, voice=voice):
+                if out_sr is not None and src_sr != out_sr:
+                    pcm = _resample_pcm16(pcm, src_sr, out_sr)
                 yield pcm
 
     def generate():
@@ -172,7 +195,7 @@ def tts_stream(req: TTSRequest):
             fallback = _fallback_module() if _fallback_enabled() else None
             if fallback is not None:
                 try:
-                    yield from _stream(fallback)
+                    yield from _stream(fallback, out_sr=getattr(mod, "SAMPLE_RATE", 24000))
                 except Exception as exc2:  # noqa: BLE001
                     logger.error("sapi tts stream fallback failed: %s", exc2)
             else:

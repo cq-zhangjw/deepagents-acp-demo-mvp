@@ -1,4 +1,4 @@
-﻿fastapi==0.141.1
+fastapi==0.141.1
 uvicorn[standard]==0.54.0
 python-multipart==0.0.32
 deepagents==0.7.19
@@ -6,6 +6,9 @@ deepagents-acp==0.0.12
 langchain-openai==1.6.6
 langgraph-checkpoint-sqlite==3.1.1
 pillow==12.3.0
+
+# Windows SAPI fallback TTS (win32com; Windows only, no model files)
+pywin32; sys_platform == "win32"
 
 # Edge TTS engine (online Microsoft Edge voices; optional, used when TTS_ENGINE=edge_tts)
 edge-tts
