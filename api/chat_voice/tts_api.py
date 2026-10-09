@@ -33,9 +33,12 @@ MODEL_DIR_ZH = Path(os.getenv("KOKORO_MODEL_DIR_ZH", BASE_DIR / "models" / "Koko
 ESPEAK_DIR = Path(os.getenv("ESPEAK_DIR", BASE_DIR / "third_party" / "espeak-ng"))
 SAMPLE_RATE = 24000
 
-# 语言 → 模型目录 / 词表 variant
+# 语言 → 模型目录 / 词表 variant / 模型文件名
+# 注：v1.1-zh 的 model_fp16.onnx 在 onnxruntime 1.24 CPU 上加载即崩（IR v9 兼容问题），
+#     中文统一使用 fp32 model.onnx；v1.0 的 fp16 正常。
 _MODEL_FOR_LANG = {"zh": MODEL_DIR_ZH, "ja": MODEL_DIR_EN, "en": MODEL_DIR_EN}
 _VOCAB_FOR_LANG = {"zh": "1.1-zh", "ja": "1.0", "en": "1.0"}
+_MODEL_FILE_FOR_LANG = {"zh": "model.onnx", "ja": "model_fp16.onnx", "en": "model_fp16.onnx"}
 
 _espeak_rt = None
 _session_cache: dict[str, ort.InferenceSession] = {}
@@ -93,7 +96,7 @@ def get_session(lang: str) -> ort.InferenceSession:
     """按语言返回 ONNX session（每个模型目录一个 session，按需惰性加载）。"""
     session = _session_cache.get(lang)
     if session is None:
-        model_path = _model_dir_for_lang(lang) / "onnx" / "model_fp16.onnx"
+        model_path = _model_dir_for_lang(lang) / "onnx" / _MODEL_FILE_FOR_LANG.get(lang, "model_fp16.onnx")
         if not model_path.exists():
             raise FileNotFoundError(f"model not found: {model_path}")
         session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
@@ -148,6 +151,20 @@ def voice_exists(voice: str) -> bool:
     return (_voice_model_dir(voice) / "voices" / f"{voice}.bin").exists()
 
 
+def _fallback_voice(lang: str) -> str:
+    """语言默认音色；若 env 配置的音色名不存在（如误配），回退到该语言第一个可用音色。"""
+    default = _DEFAULT_VOICES.get(lang, "af_bella")
+    if voice_exists(default):
+        return default
+    for item in list_voices():
+        name = item["name"]
+        if lang == "zh" and name.startswith(_ZH_VOICE_PREFIXES):
+            return name
+        if lang != "zh" and not name.startswith(_ZH_VOICE_PREFIXES):
+            return name
+    return "af_bella"
+
+
 def resolve_voice(text: str, voice: str) -> str:
     """将请求音色解析为实际音色名：
     1) voice 为已存在的音色名 → 直接使用（尊重显式选择）；
@@ -156,8 +173,7 @@ def resolve_voice(text: str, voice: str) -> str:
     voice = (voice or "").strip()
     if voice and voice_exists(voice):
         return voice
-    lang = detect_language(text)
-    return _DEFAULT_VOICES.get(lang, "af_bella")
+    return _fallback_voice(detect_language(text))
 
 
 def split_text(text: str, max_chars: int = 120) -> list[str]:
@@ -214,7 +230,9 @@ def _synthesize_segment(text: str, voice: str) -> np.ndarray:
         None,
         dict(input_ids=tokens, style=style, speed=np.ones(1, dtype=np.float32)),
     )[0]
-    return audio[0].astype(np.float32)
+    # 兼容输出维度：v1.0 为 (1, N)，v1.1-zh 为 (N,)
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    return audio
 
 
 def synthesize_wav_bytes(
