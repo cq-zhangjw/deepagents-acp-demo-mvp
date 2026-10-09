@@ -1,0 +1,6 @@
+{
+  "default": {
+    "description": "Default agent (current behavior)",
+    "enabled": true
+  }
+}

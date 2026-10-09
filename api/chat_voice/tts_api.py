@@ -1,8 +1,10 @@
 """Kokoro TTS 本地推理（ONNX Runtime，纯 CPU）。
 
-替代原 Audio8-TTS 实现（备份见 `tts_api.audio8.bak.py`）。自 v1.1-zh 起支持双模型：
+替代原 Audio8-TTS 实现（备份见 `tts_api.audio8.bak.py`）。自 v1.1-zh 起支持多模型：
   - zh 文本 → Kokoro-82M-v1.1-zh（models/Kokoro-82M-v1.1-zh-ONNX，中文音色 zf_*/zm_*，词表 model='1.1-zh'）
-  - en / ja 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，英文音色 af_*/am_*/bf_*/bm_*，词表 model='1.0'）
+  - ja 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，日文音色 jf_*/jm_*，词表 model='1.0'；
+    v1.0 为多语言模型，自带日语音色与日语音素支持，无需单独日文模型）
+  - en 文本 → Kokoro-82M-v1.0（models/Kokoro-82M-v1.0-ONNX，英文音色 af_*/am_*/bf_*/bm_*，词表 model='1.0'）
 
 链路（与 v1.0 相同）：
   文本 → espeak-ng 音素化（espeakng-runtime 直接加载 libespeak_ng.dll）→ kokorog2p
@@ -10,7 +12,7 @@
   长文本按句子分段（split_text），逐段合成后 PCM 拼接，不受 token 上下文限制截断。
 
 模型/工具目录（可用环境变量覆盖）：
-  KOKORO_MODEL_DIR_EN   默认 ./models/Kokoro-82M-v1.0-ONNX（英文）
+  KOKORO_MODEL_DIR_EN   默认 ./models/Kokoro-82M-v1.0-ONNX（英文/日文共用）
   KOKORO_MODEL_DIR_ZH   默认 ./models/Kokoro-82M-v1.1-zh-ONNX（中文）
   ESPEAK_DIR            默认 ./third_party/espeak-ng（便携解包版，随仓库分发）
 """
@@ -24,6 +26,9 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import soundfile as sf
+from dotenv import load_dotenv
+
+load_dotenv()  # 确保 .env 的 TTS_* 配置生效（模块级 getenv 依赖此步）
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,7 @@ SAMPLE_RATE = 24000
 
 # 语言 → 模型目录 / 词表 variant / 模型文件名
 # 注：v1.1-zh 的 model_fp16.onnx 在 onnxruntime 1.24 CPU 上加载即崩（IR v9 兼容问题），
-#     中文统一使用 fp32 model.onnx；v1.0 的 fp16 正常。
+#     中文统一使用 fp32 model.onnx；v1.0（含日文）的 fp16 正常。
 _MODEL_FOR_LANG = {"zh": MODEL_DIR_ZH, "ja": MODEL_DIR_EN, "en": MODEL_DIR_EN}
 _VOCAB_FOR_LANG = {"zh": "1.1-zh", "ja": "1.0", "en": "1.0"}
 _MODEL_FILE_FOR_LANG = {"zh": "model.onnx", "ja": "model_fp16.onnx", "en": "model_fp16.onnx"}
@@ -45,16 +50,17 @@ _session_cache: dict[str, ort.InferenceSession] = {}
 _voice_style_cache: dict[str, np.ndarray] = {}
 _phonemes_to_ids = None
 
-# 各语言默认音色（env 可覆盖；zh 为 v1.1-zh 中文音色，en 为 v1.0 英文音色，ja 暂用英文音色读 CJK 音素）
+# 各语言默认音色（env 可覆盖：TTS_VOICE_ZH / TTS_VOICE_JA / TTS_VOICE_EN）
 _DEFAULT_VOICES = {
-    "zh": os.getenv("TTS_VOICE_ZH", "zf_xiaoxiao"),
-    "ja": os.getenv("TTS_VOICE_JA", "af_bella"),
+    "zh": os.getenv("TTS_VOICE_ZH", "zf_001"),
+    "ja": os.getenv("TTS_VOICE_JA", "jf_alpha"),
     "en": os.getenv("TTS_VOICE_EN", "af_heart"),
 }
-# espeak-ng 音素化 voice（按语言；ja 缺 mbrola 库，暂用 cmn 读汉字，假名会回退）
-_ESPEAK_VOICE_FOR_LANG = {"zh": "cmn", "ja": "cmn", "en": "en-us"}
-# v1.1-zh 中文音色前缀（判断 voice 属于哪个模型目录）
+# espeak-ng 音素化 voice（按语言；ja 使用 espeak-ng 自带 ja voice 读假名与汉字）
+_ESPEAK_VOICE_FOR_LANG = {"zh": "cmn", "ja": "ja", "en": "en-us"}
+# v1.1-zh 中文音色前缀 / v1.0 日文音色前缀（判断 voice 属于哪个模型目录）
 _ZH_VOICE_PREFIXES = ("zf_", "zm_")
+_JA_VOICE_PREFIXES = ("jf_", "jm_")
 
 
 def detect_language(text: str) -> str:
@@ -73,7 +79,7 @@ def _model_dir_for_lang(lang: str) -> Path:
 
 
 def _voice_model_dir(voice: str) -> Path:
-    """音色所属模型目录：zf_*/zm_* → v1.1-zh，其余 → v1.0。"""
+    """音色所属模型目录：zf_*/zm_* → v1.1-zh；jf_*/jm_* 及其余 → v1.0（多语言模型自带日文音色）。"""
     if voice.startswith(_ZH_VOICE_PREFIXES):
         return MODEL_DIR_ZH
     return MODEL_DIR_EN
@@ -111,10 +117,36 @@ def _load_phonemes_to_ids():
     return _phonemes_to_ids
 
 
+_kakasi = None
+
+
+def _to_romaji(text: str) -> str:
+    """日文文本（汉字+假名）→ 罗马字。
+
+    使用 pykakasi（纯 Python，内置词典）：汉字与假名均转为 Hepburn 罗马字，
+    供 espeak en-us 音素化（避开 espeak-ng 日语 voice 对 mbrola 的依赖）。
+    """
+    global _kakasi
+    if _kakasi is None:
+        from pykakasi import kakasi
+        _kakasi = kakasi()
+    return "".join(item["hepburn"] for item in _kakasi.convert(text))
+
+
 def _phonemize_ids(text: str, lang: str) -> list[int]:
-    """文本 → espeak 音素 → Kokoro token ids（按语言选 espeak voice 与词表）。"""
+    """文本 → espeak 音素 → Kokoro token ids（按语言选 espeak voice 与词表）。
+
+    日文特殊路径：espeak-ng 的 ja voice 依赖 mbrola 库（本项目未内置），
+    故日文先经 pykakasi 转为罗马字，再用 en-us voice 音素化并映射 v1.0 词表
+    （Kokoro v1.0 为多语言词表，含日语音素；发音为近似日文口音，可稳定合成）。
+    """
     espeak = get_espeak()
-    phonemes = espeak.phonemize(text, voice=_ESPEAK_VOICE_FOR_LANG.get(lang, "en-us"))
+    if lang == "ja":
+        text = _to_romaji(text)
+        voice = "en-us"
+    else:
+        voice = _ESPEAK_VOICE_FOR_LANG.get(lang, "en-us")
+    phonemes = espeak.phonemize(text, voice=voice)
     ids = _load_phonemes_to_ids()(phonemes, model=_VOCAB_FOR_LANG.get(lang, "1.0"))
     if not ids:
         raise ValueError(f"phonemization produced no tokens: {text!r}")
@@ -122,7 +154,11 @@ def _phonemize_ids(text: str, lang: str) -> list[int]:
 
 
 def _voice_style(voice: str, n: int) -> np.ndarray:
-    """返回 (1, 256) 风格向量：对应模型目录 voices/<voice>.bin 的第 n 行（Kokoro 约定）。"""
+    """返回 (1, 256) 风格向量：对应模型目录 voices/<voice>.bin 的第 n 行（Kokoro 约定）。
+
+    n 为音素 token 长度；.bin 行数有限（如 v1.1-zh 为 510 行，索引 0..509），
+    n 超出行数时取最后一行，避免 index out of bounds。
+    """
     style = _voice_style_cache.get(voice)
     if style is None:
         path = _voice_model_dir(voice) / "voices" / f"{voice}.bin"
@@ -130,11 +166,11 @@ def _voice_style(voice: str, n: int) -> np.ndarray:
             raise ValueError(f"voice not found: {voice}")
         style = np.fromfile(path, dtype=np.float32).reshape(-1, 1, 256)
         _voice_style_cache[voice] = style
-    return style[n]
+    return style[min(n, len(style) - 1)]
 
 
 def list_voices() -> list[dict]:
-    """返回全部已下载音色（v1.0 英文 + v1.1-zh 中文）。
+    """返回全部已下载音色（v1.0 多语言英文/日文 + v1.1-zh 中文）。
 
     每次实时扫描两个模型的 voices 文件夹（*.bin 文件名即音色名），
     本地增删音色文件后无需重启即可生效。
@@ -160,7 +196,9 @@ def _fallback_voice(lang: str) -> str:
         name = item["name"]
         if lang == "zh" and name.startswith(_ZH_VOICE_PREFIXES):
             return name
-        if lang != "zh" and not name.startswith(_ZH_VOICE_PREFIXES):
+        if lang == "ja" and name.startswith(_JA_VOICE_PREFIXES):
+            return name
+        if lang == "en" and not name.startswith(_ZH_VOICE_PREFIXES) and not name.startswith(_JA_VOICE_PREFIXES):
             return name
     return "af_bella"
 

@@ -1,0 +1,13 @@
+{
+  "default": {
+    "description": "Default agent (current behavior)",
+    "enabled": true
+  },
+  "coder": {
+    "description": "Coding expert v2",
+    "enabled": true,
+    "skills": [
+      "web-research"
+    ]
+  }
+}

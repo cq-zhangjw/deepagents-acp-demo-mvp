@@ -42,6 +42,8 @@ import {
   NPopconfirm,
   NSelect,
   NSpin,
+  NSwitch,
+  NTag,
   NTabs,
   NTabPane,
   NTooltip,
@@ -211,7 +213,21 @@ const actionLabels = computed(() => ({
   screenShare: locale.value === 'zh' ? '共享屏幕' : locale.value === 'ja' ? '画面共有' : 'Share screen',
   screenShareActive: locale.value === 'zh' ? '共享屏幕已开启，发送消息时自动截屏' : locale.value === 'ja' ? '画面共有をオン、送信時に自動でスクリーンショット' : 'Screen share on, screenshots on send',
   agent: locale.value === 'zh' ? 'Agent' : locale.value === 'ja' ? 'エージェント' : 'Agent',
-  selectAgent: locale.value === 'zh' ? '选择 Agent' : locale.value === 'ja' ? 'エージェントを選択' : 'Select agent'
+  selectAgent: locale.value === 'zh' ? '选择 Agent' : locale.value === 'ja' ? 'エージェントを選択' : 'Select agent',
+  agents: locale.value === 'zh' ? 'Agent 管理' : locale.value === 'ja' ? 'エージェント管理' : 'Agents',
+  newSkill: locale.value === 'zh' ? '新建技能' : locale.value === 'ja' ? '新しいスキル' : 'New skill',
+  newTool: locale.value === 'zh' ? '新建工具' : locale.value === 'ja' ? '新しいツール' : 'New tool',
+  newAgent: locale.value === 'zh' ? '新建 Agent' : locale.value === 'ja' ? '新しいエージェント' : 'New agent',
+  edit: locale.value === 'zh' ? '编辑' : locale.value === 'ja' ? '編集' : 'Edit',
+  delete: locale.value === 'zh' ? '删除' : locale.value === 'ja' ? '削除' : 'Delete',
+  confirmDelete: locale.value === 'zh' ? '确定删除？此操作不可恢复' : locale.value === 'ja' ? '削除しますか？元に戻せません' : 'Delete? This cannot be undone',
+  test: locale.value === 'zh' ? '试连' : locale.value === 'ja' ? 'テスト' : 'Test',
+  enabled: locale.value === 'zh' ? '已启用' : locale.value === 'ja' ? '有効' : 'Enabled',
+  disabled: locale.value === 'zh' ? '已停用' : locale.value === 'ja' ? '無効' : 'Disabled',
+  linkedSkills: locale.value === 'zh' ? '关联技能' : locale.value === 'ja' ? '連携スキル' : 'Linked skills',
+  linkedTools: locale.value === 'zh' ? '关联工具' : locale.value === 'ja' ? '連携ツール' : 'Linked tools',
+  currentAgent: locale.value === 'zh' ? '当前使用' : locale.value === 'ja' ? '現在使用中' : 'In use',
+  emptyList: locale.value === 'zh' ? '暂无内容，点击上方按钮新建' : locale.value === 'ja' ? 'まだありません。上のボタンから作成' : 'Empty. Create one from the button above'
 }))
 
 const currentConversation = computed(() =>
@@ -374,28 +390,26 @@ async function loadContextSize() {
 
 const sidebarCollapsed = ref(false)
 const rightPanelVisible = ref(false)
-const rightPanelTab = ref<'skills' | 'tools' | 'settings'>('skills')
+const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'settings'>('skills')
 const rightPanelTitle = computed(() =>
   rightPanelTab.value === 'skills' ? actionLabels.value.skills
     : rightPanelTab.value === 'tools' ? actionLabels.value.tools
-      : actionLabels.value.settings
+      : rightPanelTab.value === 'agents' ? actionLabels.value.agents
+        : actionLabels.value.settings
 )
-function openRightPanel(tab: 'skills' | 'tools' | 'settings') {
+function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'settings') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
 }
 
-// ---------- Agent 选择（输入框工具栏） ----------
-// 后台未实装：先内置示例一览，后续接入 /api/manage/agents 读取 .deepagents/agents.json
-const agentList = [
-  { name: 'default', description: 'Default agent (current behavior)', enabled: true },
-  { name: 'coder', description: 'Coding expert', enabled: true },
-  { name: 'researcher', description: 'Research expert', enabled: false }
-]
+// ---------- 管理面板（技能/工具/Agent） ----------
+const skillList = ref<any[]>([])
+const toolList = ref<any[]>([])
+const agentList = ref<any[]>([])
 const AGENT_STORAGE_KEY = 'currentAgentName'
 const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
 const agentDropdownOptions = computed(() =>
-  agentList
+  agentList.value
     .filter((agent) => agent.enabled !== false)
     .map((agent) => ({
       key: agent.name,
@@ -411,6 +425,197 @@ function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
 }
+
+async function fetchManageData() {
+  try {
+    const [skills, tools, agents] = await Promise.all([
+      fetch('/api/manage/skills').then((r) => r.json()),
+      fetch('/api/manage/tools').then((r) => r.json()),
+      fetch('/api/manage/agents').then((r) => r.json())
+    ])
+    skillList.value = Array.isArray(skills) ? skills : []
+    toolList.value = Array.isArray(tools) ? tools : []
+    agentList.value = Array.isArray(agents) ? agents : []
+    // 当前 Agent 失效时回退到第一个可用项
+    if (!agentList.value.some((a) => a.name === currentAgentName.value)) {
+      const first = agentList.value.find((a) => a.enabled !== false)
+      currentAgentName.value = first?.name || ''
+    }
+  } catch {
+    // 后端不可用时保持空列表，面板显示空态
+  }
+}
+
+async function apiManage(path: string, method = 'GET', body?: unknown) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`)
+  return data
+}
+
+async function toggleSkill(name: string) {
+  try {
+    await apiManage(`/api/manage/skills/${name}/toggle`, 'POST')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function deleteSkill(name: string) {
+  try {
+    await apiManage(`/api/manage/skills/${name}`, 'DELETE')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function toggleTool(name: string) {
+  try {
+    await apiManage(`/api/manage/tools/${name}/toggle`, 'POST')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function testTool(name: string) {
+  try {
+    const r = await apiManage(`/api/manage/tools/${name}/test`, 'POST')
+    if (r.error) message.error(`${actionLabels.value.test}: ${r.error}`)
+    else message.success(`${r.tools.length} tools`)
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function deleteTool(name: string) {
+  try {
+    await apiManage(`/api/manage/tools/${name}`, 'DELETE')
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function deleteAgent(name: string) {
+  try {
+    await apiManage(`/api/manage/agents/${name}`, 'DELETE')
+    if (currentAgentName.value === name) {
+      currentAgentName.value = ''
+      localStorage.removeItem(AGENT_STORAGE_KEY)
+    }
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+async function setAgentEnabled(agent: any) {
+  try {
+    await apiManage(`/api/manage/agents/${agent.name}`, 'PUT', {
+      ...agent,
+      enabled: !(agent.enabled !== false)
+    })
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+
+// 新建技能弹窗
+const skillModalVisible = ref(false)
+const skillForm = ref({ name: '', description: '', content: '' })
+async function submitSkill() {
+  try {
+    if (skillForm.value.name) {
+      await apiManage(`/api/manage/skills/${skillForm.value.name}`, 'PUT', skillForm.value)
+    } else {
+      await apiManage('/api/manage/skills', 'POST', skillForm.value)
+    }
+    skillModalVisible.value = false
+    skillForm.value = { name: '', description: '', content: '' }
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+function openSkillEdit(item?: any) {
+  skillForm.value = item
+    ? { name: item.name, description: item.description, content: '' }
+    : { name: '', description: '', content: '' }
+  if (item) {
+    fetch(item.path ? '/' + item.path : `/api/manage/skills/${item.name}`)
+      .then((r) => r.text())
+      .then((content) => { skillForm.value.content = content || '' })
+      .catch(() => {})
+  }
+  skillModalVisible.value = true
+}
+
+// 新建工具弹窗
+const toolModalVisible = ref(false)
+const toolForm = ref({ name: '', description: '', command: '', args: '', cwd: '', env: '' })
+async function submitTool() {
+  try {
+    const payload = {
+      name: toolForm.value.name,
+      description: toolForm.value.description,
+      command: toolForm.value.command,
+      args: toolForm.value.args.split('\n').map((s) => s.trim()).filter(Boolean),
+      cwd: toolForm.value.cwd || undefined,
+      env: Object.fromEntries(
+        toolForm.value.env.split('\n').map((s) => s.trim()).filter(Boolean).map((line) => {
+          const i = line.indexOf('=')
+          return i > 0 ? [line.slice(0, i).trim(), line.slice(i + 1).trim()] : [line, '']
+        })
+      )
+    }
+    if (toolForm.value.name) {
+      await apiManage(`/api/manage/tools/${toolForm.value.name}`, 'PUT', payload)
+    } else {
+      await apiManage('/api/manage/tools', 'POST', payload)
+    }
+    toolModalVisible.value = false
+    toolForm.value = { name: '', description: '', command: '', args: '', cwd: '', env: '' }
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+
+// 新建 Agent 弹窗
+const agentModalVisible = ref(false)
+const agentForm = ref({ name: '', description: '', skills: [] as string[], tools: [] as string[] })
+const agentSkillOptions = computed(() =>
+  skillList.value.map((s) => ({ label: s.name, value: s.name, disabled: !s.enabled }))
+)
+const agentToolOptions = computed(() =>
+  toolList.value.map((t) => ({ label: t.name, value: t.name, disabled: !t.enabled }))
+)
+async function submitAgent() {
+  try {
+    if (agentForm.value.name) {
+      await apiManage(`/api/manage/agents/${agentForm.value.name}`, 'PUT', agentForm.value)
+    } else {
+      await apiManage('/api/manage/agents', 'POST', agentForm.value)
+    }
+    agentModalVisible.value = false
+    agentForm.value = { name: '', description: '', skills: [], tools: [] }
+    await fetchManageData()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+function openAgentEdit(item?: any) {
+  agentForm.value = item
+    ? { name: item.name, description: item.description || '', skills: item.skills || [], tools: item.tools || [] }
+    : { name: '', description: '', skills: [], tools: [] }
+  agentModalVisible.value = true
+}
+
+onMounted(() => {
+  fetchManageData()
+})
 
 function notifyComingSoon(_feature: string) {
   message.info(actionLabels.value.comingSoon, { duration: 3000 })
@@ -1397,6 +1602,14 @@ onBeforeUnmount(() => {
           </NTooltip>
           <NTooltip>
             <template #trigger>
+              <NButton quaternary circle :type="rightPanelTab === 'agents' && rightPanelVisible ? 'primary' : 'default'" :aria-label="actionLabels.agents" @click="openRightPanel('agents')">
+                <template #icon><NIcon :component="PersonOutline" /></template>
+              </NButton>
+            </template>
+            {{ actionLabels.agents }}
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
               <NButton quaternary circle :type="screenShareActive ? 'primary' : 'default'" :aria-label="actionLabels.screenShare" @click="toggleScreenShare">
                 <template #icon><NIcon :component="DesktopOutline" /></template>
               </NButton>
@@ -1557,10 +1770,10 @@ onBeforeUnmount(() => {
                     <template #icon><NIcon :component="PersonOutline" /></template>{{ currentAgentName || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click.capture="openRightPanel('skills')">
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click="openRightPanel('skills')">
                   <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click.capture="openRightPanel('tools')">
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
               </div>
@@ -1611,19 +1824,134 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <div class="right-panel-body">
-        <div v-if="rightPanelTab === 'skills'" class="panel-placeholder">
-          <NIcon :component="SparklesOutline" />
-          <p>{{ actionLabels.panelComingSoon }}</p>
+        <!-- 技能管理 -->
+        <div v-if="rightPanelTab === 'skills'" class="panel-section">
+          <NButton size="small" @click="openSkillEdit()"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newSkill }}</NButton>
+          <div v-if="!skillList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div v-for="skill in skillList" :key="skill.name" class="manage-card" :class="{ 'manage-card--disabled': !skill.enabled }">
+            <div class="manage-card-head">
+              <strong>{{ skill.name }}</strong>
+              <NSwitch size="small" :value="skill.enabled" @update:value="toggleSkill(skill.name)" />
+            </div>
+            <p v-if="skill.description" class="manage-card-desc">{{ skill.description }}</p>
+            <div class="manage-card-actions">
+              <NButton quaternary size="tiny" @click="openSkillEdit(skill)">{{ actionLabels.edit }}</NButton>
+              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteSkill(skill.name)">
+                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
+                {{ actionLabels.confirmDelete }}
+              </NPopconfirm>
+            </div>
+          </div>
         </div>
-        <div v-else-if="rightPanelTab === 'tools'" class="panel-placeholder">
-          <NIcon :component="ConstructOutline" />
-          <p>{{ actionLabels.panelComingSoon }}</p>
+        <!-- 工具（MCP）管理 -->
+        <div v-else-if="rightPanelTab === 'tools'" class="panel-section">
+          <NButton size="small" @click="toolModalVisible = true"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newTool }}</NButton>
+          <div v-if="!toolList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div v-for="tool in toolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
+            <div class="manage-card-head">
+              <strong>{{ tool.name }}</strong>
+              <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" />
+            </div>
+            <p v-if="tool.description" class="manage-card-desc">{{ tool.description }}</p>
+            <code class="manage-card-cmd">{{ tool.command }}</code>
+            <div class="manage-card-actions">
+              <NButton quaternary size="tiny" @click="testTool(tool.name)">{{ actionLabels.test }}</NButton>
+              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteTool(tool.name)">
+                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
+                {{ actionLabels.confirmDelete }}
+              </NPopconfirm>
+            </div>
+          </div>
         </div>
+        <!-- Agent 管理 -->
+        <div v-else-if="rightPanelTab === 'agents'" class="panel-section">
+          <NButton size="small" @click="openAgentEdit()"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newAgent }}</NButton>
+          <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': !agent.enabled }">
+            <div class="manage-card-head">
+              <strong>{{ agent.name }}</strong>
+              <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
+              <NSwitch size="small" :value="agent.enabled !== false" @update:value="setAgentEnabled(agent)" />
+            </div>
+            <p v-if="agent.description" class="manage-card-desc">{{ agent.description }}</p>
+            <div v-if="(agent.skills || []).length" class="manage-card-chips">
+              <span class="manage-chip-label">{{ actionLabels.linkedSkills }}</span>
+              <NTag v-for="s in agent.skills" :key="s" size="small" type="info">{{ s }}</NTag>
+            </div>
+            <div v-if="(agent.tools || []).length" class="manage-card-chips">
+              <span class="manage-chip-label">{{ actionLabels.linkedTools }}</span>
+              <NTag v-for="t in agent.tools" :key="t" size="small" type="success">{{ t }}</NTag>
+            </div>
+            <div class="manage-card-actions">
+              <NButton quaternary size="tiny" @click="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
+              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteAgent(agent.name)">
+                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
+                {{ actionLabels.confirmDelete }}
+              </NPopconfirm>
+            </div>
+          </div>
+        </div>
+        <!-- 设置（占位） -->
         <div v-else class="panel-placeholder">
           <p>{{ actionLabels.panelComingSoon }}</p>
         </div>
       </div>
     </aside>
+
+    <!-- 技能新建/编辑弹窗 -->
+    <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
+      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal" role="dialog">
+        <div class="manage-form">
+          <NInput v-if="!skillForm.name" v-model:value="skillForm.name" size="small" :placeholder="'name'" />
+          <NInput v-model:value="skillForm.description" size="small" :placeholder="'description'" />
+          <NInput v-model:value="skillForm.content" type="textarea" :autosize="{ minRows: 6, maxRows: 14 }" :placeholder="'SKILL.md content (markdown)'" class="manage-form-code" />
+        </div>
+        <template #footer>
+          <div class="manage-form-actions">
+            <NButton @click="skillModalVisible = false">{{ t('cancel') }}</NButton>
+            <NButton type="primary" @click="submitSkill">OK</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+
+    <!-- 工具新建/编辑弹窗 -->
+    <NModal :show="toolModalVisible" :mask-closable="false" @after-leave="toolModalVisible = false">
+      <NCard :title="toolForm.name ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal" role="dialog">
+        <div class="manage-form">
+          <NInput v-if="!toolForm.name" v-model:value="toolForm.name" size="small" :placeholder="'name'" />
+          <NInput v-model:value="toolForm.description" size="small" :placeholder="'description'" />
+          <NInput v-model:value="toolForm.command" size="small" :placeholder="'command (e.g. npx)'" />
+          <NInput v-model:value="toolForm.args" size="small" :placeholder="'args (one per line)'" />
+          <NInput v-model:value="toolForm.cwd" size="small" :placeholder="'cwd (optional)'" />
+          <NInput v-model:value="toolForm.env" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" :placeholder="'env (KEY=VALUE, one per line)'" class="manage-form-code" />
+        </div>
+        <template #footer>
+          <div class="manage-form-actions">
+            <NButton @click="toolModalVisible = false">{{ t('cancel') }}</NButton>
+            <NButton type="primary" @click="submitTool">OK</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+
+    <!-- Agent 新建/编辑弹窗 -->
+    <NModal :show="agentModalVisible" :mask-closable="false" @after-leave="agentModalVisible = false">
+      <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal" role="dialog">
+        <div class="manage-form">
+          <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="'name'" />
+          <NInput v-model:value="agentForm.description" size="small" :placeholder="'description'" />
+          <NSelect v-model:value="agentForm.skills" multiple size="small" :options="agentSkillOptions" :placeholder="actionLabels.linkedSkills" />
+          <NSelect v-model:value="agentForm.tools" multiple size="small" :options="agentToolOptions" :placeholder="actionLabels.linkedTools" />
+        </div>
+        <template #footer>
+          <div class="manage-form-actions">
+            <NButton @click="agentModalVisible = false">{{ t('cancel') }}</NButton>
+            <NButton type="primary" @click="submitAgent">OK</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
 
     <NModal :show="Boolean(permissionRequest)" :mask-closable="false">
       <NCard :title="t('permissionTitle')" :bordered="false" class="permission-card" role="dialog">
@@ -1705,7 +2033,25 @@ onBeforeUnmount(() => {
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .agent-option { padding:2px 0; } .agent-option-name { font-weight:600; } .agent-option-desc { margin-top:2px; color:#999; font-size:12px; line-height:1.4; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
-.right-panel { display:none; flex:0 0 300px; width:300px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; }
+.right-panel { display:none; flex:0 0 300px; width:300px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:10px; }
+.panel-section { display:flex; flex-direction:column; gap:10px; }
+.panel-section > .n-button { align-self:flex-start; }
+.manage-card { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--canvas); display:flex; flex-direction:column; gap:6px; }
+.manage-card--disabled { opacity:.55; }
+.manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.manage-card-head strong { font-size:13px; }
+.manage-card-desc { font-size:12px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; }
+.manage-card-cmd { display:block; font-size:11px; color:var(--subtle); background:var(--surface); border-radius:6px; padding:4px 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.manage-card-chips { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.manage-chip-label { font-size:11px; color:var(--subtle); margin-right:2px; }
+.manage-card-actions { display:flex; justify-content:flex-end; gap:2px; }
+.agent-current { font-size:10px; color:#2563eb; border:1px solid rgba(37,99,235,.4); border-radius:99px; padding:1px 7px; }
+.manage-modal { width:min(520px, calc(100vw - 32px)); }
+.manage-form { display:flex; flex-direction:column; gap:10px; }
+.manage-form-code :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:12px; line-height:1.6; }
+.manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
+.agent-option-name { font-size:13px; }
+.agent-option-desc { font-size:11px; color:var(--subtle); margin-top:2px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }

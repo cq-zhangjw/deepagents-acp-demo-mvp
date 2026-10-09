@@ -11,3 +11,8 @@ onnxruntime==1.24.4
 soundfile
 espeakng-runtime
 kokorog2p
+# Japanese G2P fallback (kana/kanji -> romaji, no mbrola dependency)
+pykakasi
+# MCP SDK (management panel probe: stdio connect + list tools)
+mcp
+
