@@ -139,7 +139,7 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 主窗口 `ChatPage.vue`：顶部通话图标（`CallOutline`）旁为"回复朗读"开关（默认关闭），再右侧为"共享屏幕"按钮（开启后高亮，发送消息时自动截屏作为图片附件，见 4.6）；消息操作栏保留"朗读"按钮（对任意纯文本消息调 `/tts`，再点停止）。
 - 播报模式环境变量：`TTS_MODE=file`（默认，非流式——等完整 WAV 后播放，全量合成最快）或 `stream`（流式优先，首包低延迟）；`TTS_STREAM_CHUNK_FRAMES=48`（流式每块音频帧数，CPU 机器建议 48+）。前端播报前先 `GET /api/chat_voice/config` 读取模式，`file` 直接走 `/tts`，`stream` 流式优先、失败回退 `/tts`。`.env` 与 `.env.bak` 已同步。
 - 依赖：`requirements.txt` 移除 `edge-tts`；Kokoro 运行依赖为 `espeakng-runtime`（espeak-ng DLL 绑定）、`kokorog2p`（音素→token 映射）、`numpy/onnxruntime/soundfile`（推理与编码）；`vite.config.ts` 开发代理增加 `/api`；`web/src/router/index.js` 增加 `/voice` 路由。
-- 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（长文本分段合成，单段 ~120 字、Kokoro 上下文 510 token，段间无缝拼接，不再有 ≤150 字限制）；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本；未知音色自动回退 `af_bella`。中文文本可经 espeak `cmn` 音素化合成（v1.0 英文音色以英文口音朗读中文拼音，效果有限；如需高质量中文建议后续引入 v1.1-zh 音色）。
+- 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（长文本分段合成，单段 ~120 字、Kokoro 上下文 510 token，段间无缝拼接，不再有 ≤150 字限制）；**音色解析**：请求 voice 缺失 / 未知（含旧 Audio8 名 zh/en）时，按文本语言（含假名→ja、含汉字→zh、否则 en）自动选择 `TTS_VOICE_ZH` / `TTS_VOICE_JA` / `TTS_VOICE_EN` 配置的默认音色（当前 v1.0 均为英文音色，zh/ja 用 cmn 音素硬读，效果有限；后续引入 v1.1-zh 仅需改 env 音色名）；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本。
 
 ### 4.6 共享屏幕（2.0）
 

@@ -36,6 +36,38 @@ _voice_list: list[str] | None = None
 _voice_style_cache: dict[str, np.ndarray] = {}
 _phonemes_to_ids = None
 
+# 各语言默认音色（env 可覆盖；当前 Kokoro v1.0 为英文音色，zh/ja 暂用英文音色读 CJK 音素）
+_DEFAULT_VOICES = {
+    "zh": os.getenv("TTS_VOICE_ZH", "af_bella"),
+    "ja": os.getenv("TTS_VOICE_JA", "af_bella"),
+    "en": os.getenv("TTS_VOICE_EN", "af_heart"),
+}
+# espeak-ng 音素化 voice（按语言；ja 缺 mbrola 库，暂用 cmn 读汉字，假名会回退）
+_ESPEAK_VOICE_FOR_LANG = {"zh": "cmn", "ja": "cmn", "en": "en-us"}
+
+
+def detect_language(text: str) -> str:
+    """轻量语言判别：含日文假名 → ja；含 CJK 汉字 → zh；否则 en。"""
+    if not text:
+        return "en"
+    if re.search(r"[\u3040-\u309f\u30a0-\u30ff\uff66-\uff9f]", text):
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    return "en"
+
+
+def resolve_voice(text: str, voice: str) -> str:
+    """将请求音色解析为实际音色名：
+    1) voice 为已存在的音色名 → 直接使用（尊重显式选择）；
+    2) voice 缺失 / 旧 Audio8 名（zh/ja/en 等）/ 未知 → 按文本语言取对应默认音色。
+    """
+    voice = (voice or "").strip()
+    if voice and voice_exists(voice):
+        return voice
+    lang = detect_language(text)
+    return _DEFAULT_VOICES.get(lang, "af_bella")
+
 
 def get_runtime() -> tuple[object, ort.InferenceSession]:
     """返回 (espeakng_runtime.EspeakRuntime, onnxruntime.InferenceSession) 单例。"""
@@ -63,9 +95,10 @@ def _load_phonemes_to_ids():
 
 
 def _phonemize_ids(text: str) -> list[int]:
-    """文本 → espeak 音素 → Kokoro token ids。"""
+    """文本 → espeak 音素 → Kokoro token ids（espeak voice 按文本语言选择）。"""
     rt, _ = get_runtime()
-    phonemes = rt.phonemize(text, voice="en-us")
+    lang = detect_language(text)
+    phonemes = rt.phonemize(text, voice=_ESPEAK_VOICE_FOR_LANG.get(lang, "en-us"))
     ids = _load_phonemes_to_ids()(phonemes)
     if not ids:
         raise ValueError(f"phonemization produced no tokens: {text!r}")

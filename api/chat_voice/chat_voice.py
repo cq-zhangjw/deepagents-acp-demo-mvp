@@ -1,7 +1,9 @@
-"""AI 语音合成 API（子路由，Audio8-TTS 版）。
+"""AI 语音合成 API（子路由，Kokoro-82M 版）。
 
 - 语音输入（STT）：浏览器 Web Speech Recognition（webkitSpeechRecognition），前端完成，识别文字填入主聊天输入框。
-- 语音输出（TTS）：本模块调用 Audio8 TTS（ONNX Runtime 纯 CPU，模型位于根目录 models/），内存合成 WAV，不落盘。
+- 语音输出（TTS）：本模块调用 Kokoro-82M TTS（ONNX Runtime 纯 CPU，模型位于根目录 models/），内存合成 WAV，不落盘。
+- 音色解析：请求 voice 缺失 / 未知（如旧 Audio8 名 zh/en）时，按文本语言（zh/ja/en）自动选择
+  `TTS_VOICE_ZH` / `TTS_VOICE_JA` / `TTS_VOICE_EN` 配置的默认音色。
 
 入口：app.py include_router（前缀 /api/chat_voice）
 """
@@ -14,7 +16,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .tts_api import iter_pcm_chunks, list_voices, split_text, synthesize_wav_bytes, voice_exists
+from .tts_api import iter_pcm_chunks, list_voices, resolve_voice, split_text, synthesize_wav_bytes
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat_voice", tags=["chat_voice"])
 
@@ -60,7 +62,7 @@ def _voice_list() -> list[dict]:
 
 class TTSRequest(BaseModel):
     text: str = Field(..., description="待朗读文本")
-    voice: str = Field(default="zh", description="TTS 音色名（Audio8 注册音色）")
+    voice: str = Field(default="", description="TTS 音色名；留空或未知时按文本语言自动选择默认音色")
 
 
 class TTSResponse(BaseModel):
@@ -87,13 +89,13 @@ def get_config():
 @router.post("/tts", response_model=TTSResponse)
 def tts(req: TTSRequest):
     """纯 TTS：将指定文本合成为 WAV base64（内存合成，不落盘、不调用 LLM）。"""
-    audio = _synthesize(req.text, req.voice or "zh")
+    audio = _synthesize(req.text, req.voice)
     return TTSResponse(text=req.text, audio=base64.b64encode(audio).decode())
 
 
 @router.post("/tts_stream")
 def tts_stream(req: TTSRequest):
-    """流式 TTS：边合成边返回 16-bit PCM（单声道 44.1kHz LE），降低首包延迟。
+    """流式 TTS：边合成边返回 16-bit PCM（单声道 24kHz LE），降低首包延迟。
 
     长文本按句子分段，逐段流式合成并 yield，前端收到连续的 PCM 字节流；
     失败时流提前结束。
@@ -102,14 +104,12 @@ def tts_stream(req: TTSRequest):
         if not req.text.strip():
             return
         try:
-            voice = req.voice or "zh"
-            if not voice_exists(voice):
-                voice = "zh"
+            voice = resolve_voice(req.text, req.voice)
             for seg in split_text(req.text):
                 for _seq, pcm in iter_pcm_chunks(seg, voice=voice):
                     yield pcm
         except Exception as exc:  # noqa: BLE001
-            logger.error("audio8 tts stream failed: %s", exc)
+            logger.error("kokoro tts stream failed: %s", exc)
 
     return StreamingResponse(generate(), media_type="application/octet-stream")
 
@@ -118,10 +118,9 @@ def _synthesize(text: str, voice: str) -> bytes:
     if not text:
         return b""
     try:
-        if not voice or not voice_exists(voice):
-            voice = "zh"
+        voice = resolve_voice(text, voice)
         wav_bytes, _sample_rate = synthesize_wav_bytes(text, voice=voice)
         return wav_bytes
     except Exception as exc:  # noqa: BLE001
-        logger.error("audio8 tts synthesis failed: %s", exc)
+        logger.error("kokoro tts synthesis failed: %s", exc)
         return b""
