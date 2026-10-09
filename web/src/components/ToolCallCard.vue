@@ -18,6 +18,29 @@ interface ToolCallEntry {
 const props = defineProps<{ tool: ToolCallEntry }>()
 const { t } = useI18n()
 
+// 内置工具名：title 与之相同则视为"只有工具名、无正文"
+const BUILTIN_TOOL_NAMES = new Set(['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'delete', 'task', 'execute'])
+
+// 徽标与正文统一在渲染层推断（源数据是 title）：
+// - "Read/Write/Edit `path`" → 徽标 Read/Write/Edit，正文为 path
+// - "Execute: cmd" 或整条命令（execute）→ 徽标 Run，正文为命令
+// - title 为内置工具名（glob/grep/ls...）→ 徽标该名，正文空
+// - 推断不出 → 用 name 兜底（历史数据 name 可能是整条 title，此时徽标 Run）
+// 这样新会话与历史会话（旧 name 格式）都能正确渲染
+const display = computed(() => {
+  const title = String(props.tool.title ?? '').trim()
+  const name = String(props.tool.name ?? '').trim()
+  const m = title.match(/^(Read|Write|Edit|Execute)\s*[:\s]\s*(.*)$/s)
+  let badge = ''
+  if (m) badge = m[1] === 'Execute' ? 'Run' : m[1]
+  else if (BUILTIN_TOOL_NAMES.has(title)) badge = title
+  if (!badge) badge = name || 'Run'
+  // 正文：去掉工具名前缀；若剩余仍是工具名则留空（避免 "glob glob"）
+  let body = m ? m[2].trim() : title
+  if (body && (body === badge || BUILTIN_TOOL_NAMES.has(body))) body = ''
+  return { badge, body }
+})
+
 function jsonValue(value: unknown) {
   if (typeof value === 'string') return value
   try { return JSON.stringify(value ?? {}, null, 2) } catch { return String(value ?? '') }
@@ -51,8 +74,8 @@ function statusText(status: string) {
     <NCollapseItem name="tool">
       <template #header>
         <div class="tool-heading">
-          <code class="tool-badge">{{ tool.name || 'Run' }}</code>
-          <span v-if="tool.title" class="tool-name" :title="tool.title">{{ tool.title }}</span>
+          <code class="tool-badge">{{ display.badge }}</code>
+          <span v-if="display.body" class="tool-name" :title="tool.title || display.body">{{ display.body }}</span>
           <NTag size="small" :type="tagType(tool.status)">{{ statusText(tool.status) }}</NTag>
         </div>
       </template>
