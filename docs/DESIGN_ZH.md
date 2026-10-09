@@ -127,17 +127,25 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 
 - 后端 `api/chat_voice/chat_voice.py` 以 `APIRouter(prefix="/api/chat_voice")` 挂载到 `app.py`（`include_router`），提供：
   - `GET /api/chat_voice/voices`：返回 Audio8 已注册音色（当前 zh / en，44100Hz）。
-  - `POST /api/chat_voice/tts`：请求 `{text, voice}`，调 `tts_api.synthesize_wav_bytes()` 用 Audio8 TTS（ONNX Runtime 纯 CPU，INT4 0.6B）在内存中合成 WAV，返回 `{text, audio(base64)}`；不落盘、不调用 LLM。
-  - `POST /api/chat_voice/tts_stream`：请求同 `/tts`，用 `iter_pcm_chunks()` 边合成边返回 16-bit PCM 字节流（单声道 44.1kHz LE），前端 Web Audio 排队播放，首包延迟显著低于整体合成；作为播报默认路径，失败时前端回退 `/tts`。
-- 本地推理模块 `api/chat_voice/tts_api.py`：封装 `arktts_runtime`（位于 `api/chat_voice/onnx_runtime/`），模型位于项目根目录 `models/Audio8-TTS-Preview-0.6B-ONNX-INT4`（可用环境变量 `ARKTTS_MODEL_DIR`/`ARKTTS_VOICES_DIR` 覆盖）；`get_runtime()` 单例缓存模型 session，`synthesize_wav_bytes()` 输出内存 WAV 字节。
+  - `GET /api/chat_voice/config`：返回播报模式配置 `{mode, chunk_frames, sample_rate}`（mode 由 `TTS_MODE` 决定：`stream` / `file`），前端据此选择播放路径。
+  - `POST /api/chat_voice/tts`：请求 `{text, voice}`，调 `tts_api.synthesize_wav_bytes()` 用 Audio8 TTS（ONNX Runtime 纯 CPU，INT4 0.6B）在内存中合成 WAV，返回 `{text, audio(base64)}`；不落盘、不调用 LLM。长文本按句子自动分段（`tts_api.split_text`），各段 PCM 无缝拼接后一次编码 WAV，不受 `max_new_tokens` 上限截断。
+  - `POST /api/chat_voice/tts_stream`：请求同 `/tts`，长文本同样按句分段，每段用 `iter_pcm_chunks()` 边合成边返回 16-bit PCM 字节流（单声道 44.1kHz LE），前端 Web Audio 排队播放，首包延迟低于整体合成；每块帧数由 `TTS_STREAM_CHUNK_FRAMES` 控制（默认 48，越大首包越慢、全量解码开销越小）。
+- 本地推理模块 `api/chat_voice/tts_api.py`：封装 `arktts_runtime`（位于 `api/chat_voice/onnx_runtime/`），模型位于项目根目录 `models/Audio8-TTS-Preview-0.6B-ONNX-INT4`（可用环境变量 `ARKTTS_MODEL_DIR`/`ARKTTS_VOICES_DIR` 覆盖）；`get_runtime()` 单例缓存模型 session，`split_text()` 按句子边界切分（单段 ~120 字，过短段合并），`synthesize_wav_bytes()` 分段合成并拼接输出内存 WAV 字节。
 - 独立窗口 `web/src/pages/VoiceCallPage.vue`（深色通话主题）：
   - 麦克风按钮切换浏览器 Web Speech API（`webkitSpeechRecognition`，continuous + interim，语言随 `localStorage.chat_primary_language` 的 zh/en/ja）——识别文字实时同步到主窗口输入框（`chatBridge.updateInput`）。
   - 识别停顿约 0.9s 自动发送（`chatBridge.sendMessage(text)`，无需手动点击），主窗口写入输入框并触发正常 ACP 会话（`submitPrompt`）；停止识别时未发送文本也会补发。
   - AI 回复完成后主窗口 `speakReplyIfEnabled(text)` 优先触发已注册的回调（通知独立窗口），否则按"回复朗读"开关在主窗口朗读；独立窗口收到回复后调用 `/tts` 合成并播放，播完自动恢复聆听。
   - 顶部：通话状态点（未连接/通话中）、音色下拉（数据来自 `/voices`，持久化 `localStorage.chat_voice_name`）、挂断、关闭；无 `opener` 时显示"请从主界面语音通话入口打开"提示。
-- 主窗口 `ChatPage.vue`：顶部通话图标（`CallOutline`）旁为"回复朗读"开关（默认关闭）；消息操作栏保留"朗读"按钮（对任意纯文本消息调 `/tts`，再点停止）。
+- 主窗口 `ChatPage.vue`：顶部通话图标（`CallOutline`）旁为"回复朗读"开关（默认关闭），再右侧为"共享屏幕"按钮（开启后高亮，发送消息时自动截屏作为图片附件，见 4.6）；消息操作栏保留"朗读"按钮（对任意纯文本消息调 `/tts`，再点停止）。
+- 播报模式环境变量：`TTS_MODE=file`（默认，非流式——等完整 WAV 后播放，全量合成最快）或 `stream`（流式优先，首包低延迟）；`TTS_STREAM_CHUNK_FRAMES=48`（流式每块音频帧数，CPU 机器建议 48+）。前端播报前先 `GET /api/chat_voice/config` 读取模式，`file` 直接走 `/tts`，`stream` 流式优先、失败回退 `/tts`。`.env` 与 `.env.bak` 已同步。
 - 依赖：`requirements.txt` 移除 `edge-tts`，Audio8 运行依赖见 `api/chat_voice/onnx_runtime/requirements.txt`（numpy/onnxruntime/soundfile/scipy/tokenizers）；`vite.config.ts` 开发代理增加 `/api`；`web/src/router/index.js` 增加 `/voice` 路由。
-- 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（约 5s/段，文本建议 ≤150 字，`max_new_tokens=512`）；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本；未知音色自动回退 `zh`。
+- 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（长文本分段合成，单段 ~120 字、`max_new_tokens=512`，段间无缝拼接，不再有 ≤150 字限制）；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本；未知音色自动回退 `zh`。
+
+### 4.6 共享屏幕（2.0）
+
+- 入口：主窗口顶部"回复朗读"开关右侧的共享屏幕按钮（`DesktopOutline`，`ChatPage.vue`），点击后弹出浏览器 `getDisplayMedia` 选择窗口（仅截取视频轨，帧率 5fps），开启后按钮高亮；再次点击或用户结束共享即关闭，页面卸载时自动停止并释放轨道。
+- 行为：开启状态下发送消息（`submitPrompt`）前调用 `captureScreenAttachment()`——用隐藏 `video` 元素静默播放屏幕流，canvas 截取当前帧转 PNG `File`，作为图片附件（base64 data）加入待发送列表，随消息走正常 ACP 会话；空文本时也允许发送（只要有屏幕截帧）。
+- 定位：截图只取发送那一刻的一帧，不推流、不录屏；每次发送独立截帧，不影响消息本身的附件上传流程。
 
 ## 4. 业务流程设计
 

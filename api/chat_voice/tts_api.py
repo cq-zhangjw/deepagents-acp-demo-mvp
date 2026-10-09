@@ -143,6 +143,48 @@ def synthesize(
     return str(output.resolve())
 
 
+def split_text(text: str, max_chars: int = 120) -> list[str]:
+    """按句子边界将长文本切分为多段，避免单段生成超出 max_new_tokens 上限。
+
+    Args:
+        text: 待切分文本。
+        max_chars: 单段最大字符数（中文/日文按字符计，英文按字符计）。
+
+    Returns:
+        list[str]: 非空分段列表。
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    # 句子边界：中英文标点 + 换行
+    import re
+    parts: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in "。！？；…\n.!?;":
+            if len(buf) >= max_chars * 0.4 or buf.count("。") + buf.count("！") + buf.count("？") >= 1:
+                if buf.strip():
+                    parts.append(buf.strip())
+                buf = ""
+        elif len(buf) >= max_chars:
+            parts.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        parts.append(buf.strip())
+    # 合并过短的分段（避免碎片化）
+    merged: list[str] = []
+    for part in parts:
+        if merged and len(merged[-1]) + len(part) <= max_chars:
+            merged[-1] += part
+        else:
+            merged.append(part)
+    return merged or [text]
+
+
 def synthesize_wav_bytes(
     text: str,
     voice: str,
@@ -155,6 +197,8 @@ def synthesize_wav_bytes(
     """合成语音并返回内存中的 WAV 字节（不落盘）。
 
     与 synthesize() 推理等价，但音频直接写入 BytesIO，不产生任何本地文件。
+    长文本按句子自动分段合成，PCM 无缝拼接后一次性编码 WAV，避免超出
+    max_new_tokens 上限导致的截断。
 
     Args:
         同 synthesize()（output 参数除外）。
@@ -165,18 +209,23 @@ def synthesize_wav_bytes(
     if not text.strip():
         raise ValueError("text must not be empty")
     runtime = get_runtime()
-    audio, _codes = runtime.synthesize(
-        text=text,
-        voice=voice,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        top_k=top_k,
-        seed=seed,
-    )
     sample_rate = int(runtime.manifest["sample_rate"])
+    segments = split_text(text)
+    pcm_parts: list[np.ndarray] = []
+    for seg in segments:
+        audio, _codes = runtime.synthesize(
+            text=seg,
+            voice=voice,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+        )
+        pcm_parts.append(audio)
+    full = np.concatenate(pcm_parts) if len(pcm_parts) > 1 else pcm_parts[0]
     buf = io.BytesIO()
-    sf.write(buf, audio, sample_rate, format="WAV")
+    sf.write(buf, full, sample_rate, format="WAV")
     return buf.getvalue(), sample_rate
 
 

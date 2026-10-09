@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { playTtsStream, stopTtsStream } from '../api/ttsStream'
+import { getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 import {
   AddOutline,
   ArrowDownOutline,
@@ -883,10 +883,14 @@ function stopSpeech() {
 }
 
 /** 合成并播放一段文本（返回是否成功）；用于消息朗读与 AI 回复播报。
- *  优先流式（/tts_stream，首包低延迟），失败回退非流式 base64。 */
+ *  按后端 TTS_MODE 分流：file 直接走非流式 base64；stream 流式优先（首包低延迟），失败回退非流式。 */
 async function speakText(text: string): Promise<boolean> {
   if (!text.trim()) return false
   stopSpeech()
+  const cfg = await getTtsConfig()
+  if (cfg.mode !== 'stream') {
+    return await playBase64Speech(text, selectedVoice.value)
+  }
   // 流式优先
   const handle = await playTtsStream(text, selectedVoice.value, () => {
     speechStreamStop = null
@@ -897,11 +901,15 @@ async function speakText(text: string): Promise<boolean> {
     return true
   }
   // 回退：非流式 base64（保留当前可用版本）
+  return await playBase64Speech(text, selectedVoice.value)
+}
+
+async function playBase64Speech(text: string, voice: string): Promise<boolean> {
   try {
     const resp = await fetch('/api/chat_voice/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, voice: selectedVoice.value })
+      body: JSON.stringify({ text, voice })
     })
     const data = await resp.json()
     if (!data.audio) return false
@@ -1357,6 +1365,14 @@ onBeforeUnmount(() => {
             </template>
             {{ actionLabels.speakReply }}
           </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NButton quaternary circle :type="screenShareActive ? 'primary' : 'default'" :aria-label="actionLabels.screenShare" @click="toggleScreenShare">
+                <template #icon><NIcon :component="DesktopOutline" /></template>
+              </NButton>
+            </template>
+            {{ screenShareActive ? actionLabels.screenShareActive : actionLabels.screenShare }}
+          </NTooltip>
           <NDropdown :options="[{ label: t('newConversation'), key: 'new' }]" @select="createConversation">
             <NButton quaternary circle :aria-label="t('moreActions')">
               <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
@@ -1505,14 +1521,6 @@ onBeforeUnmount(() => {
                     </NButton>
                   </template>
                   {{ t('upload') }}
-                </NTooltip>
-                <NTooltip>
-                  <template #trigger>
-                    <NButton quaternary circle size="small" :type="screenShareActive ? 'primary' : 'default'" :aria-label="actionLabels.screenShare" @click="toggleScreenShare">
-                      <template #icon><NIcon :component="DesktopOutline" /></template>
-                    </NButton>
-                  </template>
-                  {{ screenShareActive ? actionLabels.screenShareActive : actionLabels.screenShare }}
                 </NTooltip>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click.capture="openRightPanel('skills')">
                   <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.skills }}

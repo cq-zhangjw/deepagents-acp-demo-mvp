@@ -6,7 +6,7 @@ import {
   Mic, MicOff, Close, StopCircleOutline
 } from '@vicons/ionicons5'
 
-import { playTtsStream, stopTtsStream } from '../api/ttsStream'
+import { getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 
 const { t } = useI18n()
 
@@ -141,7 +141,12 @@ function stopPlayback() {
 
 async function speak(content: string) {
   stopPlayback()
-  // 流式优先（首包低延迟）
+  // 按后端 TTS_MODE 分流：file 直接走非流式；stream 流式优先（首包低延迟），失败回退非流式
+  const cfg = await getTtsConfig()
+  if (cfg.mode !== 'stream') {
+    await playBase64Reply(content)
+    return
+  }
   const handle = await playTtsStream(content, selectedVoice.value, () => {
     streamStop = null
     state.value = 'idle'
@@ -152,6 +157,10 @@ async function speak(content: string) {
     return
   }
   // 回退：非流式 base64（保留当前可用版本）
+  await playBase64Reply(content)
+}
+
+async function playBase64Reply(content: string) {
   try {
     const resp = await fetch('/api/chat_voice/tts', {
       method: 'POST',

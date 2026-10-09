@@ -7,6 +7,27 @@
 
 let activeCtx: AudioContext | null = null
 
+export interface TtsConfig {
+  mode: 'stream' | 'file'
+  chunk_frames: number
+  sample_rate: number
+}
+
+let cachedConfig: TtsConfig | null = null
+
+/** 读取后端播报模式配置（TTS_MODE / TTS_STREAM_CHUNK_FRAMES），带进程内缓存 */
+export async function getTtsConfig(): Promise<TtsConfig> {
+  if (cachedConfig) return cachedConfig
+  try {
+    const resp = await fetch('/api/chat_voice/config', { cache: 'no-store' })
+    if (!resp.ok) throw new Error('config fetch failed')
+    cachedConfig = (await resp.json()) as TtsConfig
+  } catch {
+    cachedConfig = { mode: 'file', chunk_frames: 48, sample_rate: 44100 }
+  }
+  return cachedConfig
+}
+
 export function stopTtsStream(): void {
   if (activeCtx) {
     const ctx = activeCtx
