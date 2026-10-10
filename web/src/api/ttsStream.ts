@@ -122,26 +122,87 @@ export async function playTtsStream(
     let nextTime = ctx.currentTime + 0.08
     let finished = false
 
+    // HTTP chunk 的边界是任意的，可能把一个 16-bit 样本从中间切断。
+    // carryByte 暂存跨块遗留的半个样本（奇数字节），resampleRemainder 暂存
+    // 重采样源的末样本，两者共同保证整条流作为连续 PCM 处理，消除嘶嘶声/爆音。
+    let carryByte = -1 // -1 表示无遗留字节
+    let resampleRemainder = new Float32Array(0)
+    const srcRate = cfg.sample_rate
+    const dstRate = ctx.sampleRate
+
+    // 将源采样流持续重采样到设备采样率，跨块保持连续（插值需要前一块的末样本）。
+    const resampleStreaming = (chunk: Float32Array, flush: boolean): Float32Array => {
+      if (srcRate === dstRate) return chunk
+      let merged: Float32Array
+      if (resampleRemainder.length) {
+        merged = new Float32Array(resampleRemainder.length + chunk.length)
+        merged.set(resampleRemainder)
+        merged.set(chunk, resampleRemainder.length)
+      } else {
+        merged = chunk
+      }
+      if (merged.length < 2) { resampleRemainder = merged; return new Float32Array(0) }
+      const step = srcRate / dstRate
+      // 非 flush 时保留末样本作下一块的插值左端点
+      const maxPos = flush ? merged.length - 1 : merged.length - 2
+      const outLen = Math.max(0, Math.floor(maxPos / step) + 1)
+      const out = new Float32Array(outLen)
+      for (let i = 0; i < outLen; i++) {
+        const pos = i * step
+        const i0 = Math.floor(pos)
+        const i1 = Math.min(i0 + 1, merged.length - 1)
+        const frac = pos - i0
+        out[i] = merged[i0] * (1 - frac) + merged[i1] * frac
+      }
+      resampleRemainder = flush ? new Float32Array(0) : merged.subarray(merged.length - 1)
+      return out
+    }
+
+    const schedule = (float: Float32Array) => {
+      if (!float.length) return
+      const buf = ctx.createBuffer(1, float.length, ctx.sampleRate)
+      buf.copyToChannel(float, 0)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      const startAt = Math.max(ctx.currentTime + 0.01, nextTime)
+      src.start(startAt)
+      // 无缝拼接：下一块紧接本块结束，不留间隙（避免细碎卡顿）
+      nextTime = startAt + buf.duration
+    }
+
     const pump = async () => {
       try {
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
           if (!value || !value.byteLength) continue
-          let float = new Float32Array(value.byteLength / 2)
-          const dv = new DataView(value.buffer, value.byteOffset, value.byteLength)
-          for (let i = 0; i < float.length; i++) float[i] = dv.getInt16(i * 2, true) / 32768
-          float = resampleFloat32(float, cfg.sample_rate, ctx.sampleRate)
-          if (!float.length) continue
-          const buf = ctx.createBuffer(1, float.length, ctx.sampleRate)
-          buf.copyToChannel(float, 0)
-          const src = ctx.createBufferSource()
-          src.buffer = buf
-          src.connect(ctx.destination)
-          const startAt = Math.max(ctx.currentTime + 0.01, nextTime)
-          src.start(startAt)
-          nextTime = startAt + buf.duration + 0.004
+
+          // 1) 拼接跨块遗留的半个样本，得到偶数字节的连续缓冲
+          let bytes: Uint8Array
+          if (carryByte >= 0) {
+            bytes = new Uint8Array(value.byteLength + 1)
+            bytes[0] = carryByte
+            bytes.set(value, 1)
+            carryByte = -1
+          } else {
+            bytes = value
+          }
+          if (bytes.byteLength & 1) carryByte = bytes[bytes.byteLength - 1]
+          const usableBytes = bytes.byteLength & ~1 // 向下取偶
+          if (usableBytes < 2) continue
+
+          // 2) 按 little-endian 解码为 Float32（起点字节对齐，避免错位白噪音）
+          const sampleCount = usableBytes / 2
+          const float = new Float32Array(sampleCount)
+          const dv = new DataView(bytes.buffer, bytes.byteOffset, usableBytes)
+          for (let i = 0; i < sampleCount; i++) float[i] = dv.getInt16(i * 2, true) / 32768
+
+          // 3) 跨块连续重采样后调度播放
+          schedule(resampleStreaming(float, false))
         }
+        // flush：输出重采样器残留的最后一个样本
+        schedule(resampleStreaming(new Float32Array(0), true))
       } catch { /* 流中断：播放提前结束 */ }
       finished = true
       const remainMs = Math.max(80, (nextTime - ctx.currentTime) * 1000 + 150)

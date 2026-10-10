@@ -2,10 +2,8 @@
   "default": {
     "description": "Default agent (current behavior)",
     "enabled": true,
-    "skills": [
-      "skill-creator",
-      "tool-creator"
-    ],
+    "skills": [],
+    "subagents": [],
     "tools": {
       "inner_tools": [
         "ls",
@@ -68,6 +66,25 @@
           ]
         }
       ]
+    }
+  },
+  "languageLearning": {
+    "description": "万能语言大师，精通各国语言，专注中日英互译与日语学习辅助。",
+    "enabled": true,
+    "skills": [],
+    "subagents": [],
+    "tools": {
+      "inner_tools": [
+        "ls",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "execute",
+        "task",
+        "read_file"
+      ],
+      "mcp_tools": []
     }
   }
 }

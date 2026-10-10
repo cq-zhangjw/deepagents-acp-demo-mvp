@@ -592,7 +592,6 @@ function selectAgent(key: string) {
 
 async function fetchManageData() {
   try {
-    const agent = currentAgentName.value || 'default'
     const [skills, agents, builtins] = await Promise.all([
       fetch(`/api/manage/skills?agent=${encodeURIComponent(agent)}`).then((r) => r.json()),
       fetch('/api/manage/agents').then((r) => r.json()),
@@ -607,7 +606,8 @@ async function fetchManageData() {
       currentAgentName.value = first?.name || ''
     }
     // tool enablement is queried per agent (agents.json tools.mcp_tools)
-    const tools = await fetch(`/api/manage/tools?agent=${encodeURIComponent(agent)}`).then((r) => r.json())
+    const agent = currentAgentName.value || 'default'
+    const tools = await fetch(`/api/manage/tools?agent=${agent}`).then((r) => r.json())
     toolList.value = Array.isArray(tools) ? tools : []
   } catch {
     // keep the list empty when the backend is unavailable
@@ -1321,15 +1321,16 @@ let speechAudio: HTMLAudioElement | null = null
 let speechStreamStop: (() => void) | null = null
 let cancelRequested = false
 const speakingMessageId = ref<string | null>(null)
-const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
+const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'auto')
 const speakReplyEnabled = ref(localStorage.getItem('chat_speak_reply') === '1')
 
 let cachedVoiceNames: string[] | null = null
 /** Return a voice name valid for the active engine; stale localStorage values
- *  (e.g. 'zh') fall back to '', letting the backend pick a default by language. */
+ *  (e.g. 'zh') fall back to '', letting the backend pick a default by language.
+ *  'auto' is always passed through so every engine reads mixed text per language. */
 async function resolveVoiceParam(): Promise<string> {
   const v = selectedVoice.value
-  if (!v) return ''
+  if (!v || v === 'auto') return v || ''
   if (cachedVoiceNames === null) {
     try {
       const list = await fetch('/api/chat_voice/voices').then((r) => r.json())
@@ -1359,6 +1360,7 @@ function stopSpeech() {
 
 /** Synthesize and play text (returns success); used for message read-aloud and
  *  AI reply broadcast. Routes by backend TTS_MODE: file -> non-stream base64,
+ *  stream -> streaming playback with non-stream fallback. */
 async function speakText(text: string): Promise<boolean> {
   text = cleanSpeechText(text)
   if (!text.trim()) return false
@@ -1415,18 +1417,14 @@ let replyListener: ((text: string) => void) | null = null
 /** After an AI reply: notify the voice window first, else read aloud in the main window per the toggle */
 function speakReplyIfEnabled(text: string) {
   if (!text.trim()) return
-  try {
-    if (replyListener) {
-      const cb = replyListener
-      replyListener = null
-      cb(text)
-      return
-    }
-    if (!speakReplyEnabled.value) return
-    void speakText(text)
-  } catch {
-    // TTS/bridge errors must never break the message status flow
+  if (replyListener) {
+    const cb = replyListener
+    replyListener = null
+    cb(text)
+    return
   }
+  if (!speakReplyEnabled.value) return
+  void speakText(text)
 }
 
 /** Exposed to the voice window via window.opener.chatBridge */
@@ -1720,8 +1718,7 @@ const quickAction = ref<'file' | 'skill' | null>(null)
 const quickItems = ref<any[]>([])
 const quickLoading = ref(false)
 // current directory for the @ file picker (relative to the project root, '' = root)
-const quickDir = ref('')
-// overlay loading: initial load (initialLoading) and conversation switch
+const quickDir = ref('')// overlay loading: initial load (initialLoading) and conversation switch
 // (conversationLoading, counter-based so rapid switches hide only after the last)
 const initialLoading = ref(true)
 const conversationLoading = ref(0)

@@ -27,8 +27,10 @@ from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
+from deepagents.middleware.subagents import SubAgent
+
 from utils.model_util import MODEL
-from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools
+from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
 from utils.skill_loader import get_agent_skills
 
 # Selected agent (passed by the gateway as AGENT_NAME env var; the frontend
@@ -58,13 +60,28 @@ DB_PATH = os.path.join(DB_ROOT, "agent_state.sqlite")
 
 
 
+def _load_agent_md(agent_name: str) -> str:
+    """Load .deepagents/agents/<agent_name>.agent.md and strip the YAML front matter."""
+    md_path = os.path.join(".deepagents", "agents", f"{agent_name}.agent.md")
+    if not os.path.exists(md_path):
+        return ""
+    with open(md_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    # Strip YAML front matter (--- ... ---)
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end != -1:
+            content = content[end + 3:].lstrip("\n")
+    return content.strip()
+
+
 def get_system_prompt() -> str:
-    """Return the system prompt for the agent."""
+    """Return the system prompt for the agent, appending agent md content when available."""
     if os.path.exists("./AGENTS.md"):
         with open("./AGENTS.md", "r", encoding="utf-8") as f:
-            return f.read()
+            base_prompt = f.read()
     else:
-        return (
+        base_prompt = (
             "You are an intelligent task agent.\n"
             "1. Break down the task, produce an execution plan, and run it step by step.\n"
             "2. When essential information is missing, proactively ask the user (request_input); do not fabricate.\n"
@@ -75,6 +92,10 @@ def get_system_prompt() -> str:
             "5. Always report back to the user when the whole task is finished.\n"
             "Always respond in the user's language."
         )
+    agent_md = _load_agent_md(AGENT_NAME)
+    if agent_md:
+        return f"{base_prompt}\n\n# Agent Descriptions\n{agent_md}"
+    return base_prompt
 
 SYSTEM_PROMPT = get_system_prompt()
 
@@ -190,11 +211,31 @@ def build_agent(
             "/conversation_history/": ephemeral_backend,
         },
     )
+    # Build subagents from agents.json "subagents" field
+    subagents: list[SubAgent] = []
+    for sa_cfg in get_agent_subagents_config(AGENT_NAME):
+        sa_name = sa_cfg.get("name")
+        if not sa_name:
+            continue
+        sa: SubAgent = {
+            "name": sa_name,
+            "description": sa_cfg.get("description", ""),
+        }
+        sa_tools = get_agent_mcp_tools(sa_name)
+        if sa_tools:
+            sa["tools"] = sa_tools
+        if sa_cfg.get("skills"):
+            sa["skills"] = sa_cfg["skills"]
+        if sa_cfg.get("system_prompt"):
+            sa["system_prompt"] = sa_cfg["system_prompt"]
+        subagents.append(sa)
+
     agent = create_deep_agent(
         model=MODEL,
         # MCP tools configured for the selected agent (agents.json -> mcp_tools);
         # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
         tools=get_agent_mcp_tools(AGENT_NAME),
+        subagents=subagents or None,
         # Skills enabled for the selected agent (agents.json -> skills; the
         # default agent starts with every installed skill).
         skills=get_agent_skills(AGENT_NAME),

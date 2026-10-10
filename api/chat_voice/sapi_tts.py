@@ -28,7 +28,7 @@ from typing import Iterator
 
 from dotenv import load_dotenv
 
-from .tts_common import detect_language, split_text
+from .tts_common import detect_language, split_language_segments, split_text
 
 load_dotenv()
 
@@ -48,6 +48,25 @@ _PREFERRED = {
 # description keywords used to pick a voice when no explicit name is given
 _LANG_KEYWORD = {"zh": "Chinese", "ja": "Japanese", "en": "English"}
 
+
+def _sapi_rate() -> int:
+    """Map SAPI_SPEAK_RATE multiplier to SAPI SpVoice.Rate (-10..10).
+
+    SAPI Rate is a coarse integer scale; a linear map (mult-1)*10 gives a good
+    feel (1.3x -> 3). Clamped to the valid range.
+    """
+    mult = os.getenv("SAPI_SPEAK_RATE", "").strip()
+    if not mult:
+        return 0
+    try:
+        return max(-10, min(10, round((float(mult) - 1.0) * 10)))
+    except ValueError:
+        logger.warning("invalid SAPI_SPEAK_RATE=%r; using normal rate", mult)
+        return 0
+
+
+_SPEAK_RATE = _sapi_rate()
+
 _voice_cache: list[dict] | None = None
 
 
@@ -58,6 +77,7 @@ def _sp_voice():
 
     pythoncom.CoInitialize()
     sp = win32com.client.Dispatch("SAPI.SpVoice")
+    sp.Rate = _SPEAK_RATE
     fmt = win32com.client.Dispatch("SAPI.SpAudioFormat")
     fmt.Type = _SAFT24KHZ16BITMONO
     stream = win32com.client.Dispatch("SAPI.SpMemoryStream")
@@ -67,11 +87,23 @@ def _sp_voice():
 
 
 def _token_descriptions() -> list[str]:
+    import pythoncom
     import win32com.client
 
-    sp = win32com.client.Dispatch("SAPI.SpVoice")
-    voices = sp.GetVoices()
-    return [voices.Item(i).GetDescription() for i in range(voices.Count)]
+    # Ensure COM is initialized on the current thread; the streaming generator
+    # runs in a fresh FastAPI worker thread where COM is not yet initialized
+    # ("CoInitialize has not been called" otherwise). CoInitialize is reference
+    # counted, so this balances its CoUninitialize safely.
+    pythoncom.CoInitialize()
+    try:
+        sp = win32com.client.Dispatch("SAPI.SpVoice")
+        voices = sp.GetVoices()
+        descs = [voices.Item(i).GetDescription() for i in range(voices.Count)]
+        # release COM references before CoUninitialize to avoid IUnknown-release warnings
+        del voices, sp
+        return descs
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def list_voices() -> list[dict]:
@@ -116,12 +148,16 @@ def _match_voice(lang: str, voice: str) -> str:
 def resolve_voice(text: str, voice: str) -> str:
     """Resolve a system voice by description.
 
-    Priority: explicit voice (description substring) > SAPI_VOICE_<LANG>
-    fragment > first installed voice matching the language keyword. An
-    unknown/legacy voice name (e.g. 'zh') never leaks into SAPI; it simply
-    falls through to the per-language pick.
+    'auto' (or empty) is kept as the sentinel 'auto' so the caller / iter_pcm_chunks
+    splits the text per language and reads each span with its own system voice.
+    Otherwise: explicit voice (description substring) > SAPI_VOICE_<LANG> fragment
+    > first installed voice matching the language keyword. An unknown/legacy voice
+    name (e.g. 'zh') never leaks into SAPI; it falls through to the per-language pick.
     """
-    return _match_voice(detect_language(text), (voice or "").strip())
+    v = (voice or "").strip()
+    if not v or v.lower() == "auto":
+        return "auto"
+    return _match_voice(detect_language(text), v)
 
 
 def _wav_from_pcm(pcm: bytes) -> bytes:
@@ -149,6 +185,34 @@ def _resample_pcm16(pcm: bytes, src_rate: int) -> bytes:
     return y.astype(np.int16).tobytes()
 
 
+def _normalize_pcm(data: bytes, rate: int, bits: int, channels: int) -> bytes:
+    """Normalize raw SAPI PCM to 24 kHz 16-bit mono.
+
+    SAPI frequently ignores the requested SAFT24kHz16BitMono format and emits
+    8-bit unsigned and/or stereo PCM; without converting bit depth and channels
+    the frontend (which assumes 16-bit mono) plays pure noise.
+    """
+    import numpy as np
+
+    if not data:
+        return data
+    if bits == 8:
+        # 8-bit PCM is unsigned (0..255, 128 = silence)
+        samples = (np.frombuffer(data, dtype=np.uint8).astype(np.int16) - 128) * 256
+    elif bits == 16:
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.int16)
+    else:
+        logger.warning("sapi output bits=%s unsupported; passing through", bits)
+        samples = np.frombuffer(data, dtype=np.int16)
+    if channels > 1:
+        usable = (samples.size // channels) * channels
+        samples = samples[:usable].reshape(-1, channels).mean(axis=1).astype(np.int16)
+    pcm = samples.astype(np.int16).tobytes()
+    if rate != SAMPLE_RATE:
+        pcm = _resample_pcm16(pcm, rate)
+    return pcm
+
+
 def _synthesize_segment(text: str, voice: str) -> bytes:
     """Synthesize one segment; returns WAV bytes at SAMPLE_RATE.
 
@@ -167,25 +231,23 @@ def _synthesize_segment(text: str, voice: str) -> bytes:
                 break
         sp.Speak(text)  # synchronous
         data = bytes(stream.GetData())
-        # read back the actual output format
+        # read back the actual output format (SAPI often downgrades the requested
+        # SAFT24kHz16BitMono to e.g. 8-bit stereo; must normalize or it is noise)
+        is_riff = data[:4] == b"RIFF"
         try:
-            fmt_info = stream.Format.WaveFormatEx
-            rate = int(fmt_info.nSamplesPerSec)
-            bits = int(fmt_info.wBitsPerSample)
-            channels = int(fmt_info.nChannels)
+            fmt_info = stream.Format.GetWaveFormatEx()
+            rate = int(fmt_info.SamplesPerSec)
+            bits = int(fmt_info.BitsPerSample)
+            channels = int(fmt_info.Channels)
+            del fmt_info
         except Exception:  # noqa: BLE001
             rate, bits, channels = SAMPLE_RATE, 16, _CHANNELS
+        # release COM references before CoUninitialize to avoid IUnknown-release warnings
+        del sp, stream
         # GetData returns raw PCM without a RIFF header; wrap it as WAV
-        if data[:4] == b"RIFF":
+        if is_riff:
             return data
-        if (rate, bits, channels) != (SAMPLE_RATE, 16, _CHANNELS):
-            if bits != 16:
-                logger.warning("sapi output bits=%s, converting via numpy", bits)
-                import numpy as np
-
-                arr = np.frombuffer(data, dtype=np.uint8).view(np.int16) if bits == 16 else np.frombuffer(data, dtype=np.int8)
-                data = arr.astype(np.int16).tobytes()
-            data = _resample_pcm16(data, rate)
+        data = _normalize_pcm(data, rate, bits, channels)
         return _wav_from_pcm(data)
     finally:
         pythoncom.CoUninitialize()
@@ -207,8 +269,20 @@ def synthesize_wav_bytes(
     """
     if not text.strip():
         raise ValueError("text must not be empty")
-    voice = resolve_voice(text, voice)
-    return _synthesize_segment(text, voice), SAMPLE_RATE
+    resolved = resolve_voice(text, voice)
+    if resolved == "auto":
+        # per-language segments concatenated into one WAV (mixed-voice reading)
+        import numpy as np
+
+        parts: list[np.ndarray] = []
+        for lang, seg_text in split_language_segments(text) or [("zh", text)]:
+            wav = _synthesize_segment(seg_text, _match_voice(lang, ""))
+            with io.BytesIO(wav) as b:
+                w = wave.open(b, "rb")
+                parts.append(np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16))
+        pcm = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
+        return _wav_from_pcm(pcm.tobytes()), SAMPLE_RATE
+    return _synthesize_segment(text, resolved), SAMPLE_RATE
 
 
 def iter_pcm_chunks(
@@ -221,10 +295,28 @@ def iter_pcm_chunks(
     top_k: int = 50,
     seed: int = 42,
 ) -> Iterator[tuple[int, bytes]]:
-    """Sentence-level streaming, same contract as the genie engine iter_pcm_chunks."""
+    """Segment-level streaming, same contract as the genie engine iter_pcm_chunks.
+
+    Empty/'auto' voice -> split the text per language (zh/ja/en) and read each
+    span with that language's system voice, so mixed text is not read entirely
+    in one language. A concrete voice -> sentence-split read by that voice.
+    """
+    v = (voice or "").strip().lower()
+    if v in ("", "auto"):
+        segs = split_language_segments(text)
+        logger.info("[sapi auto] split into %d segments:", len(segs))
+        for lang, seg_text in segs:
+            seg_voice = _match_voice(lang, "")
+            logger.info("  [%s] -> %s | %r", lang, seg_voice, seg_text)
+            wav = _synthesize_segment(seg_text, seg_voice)
+            with io.BytesIO(wav) as b:
+                w = wave.open(b, "rb")
+                pcm = w.readframes(w.getnframes())
+            yield 0, pcm
+        return
+    logger.info("[sapi voice=%s] not auto; sentence-split only", voice)
     for seg in split_text(text):
         wav = _synthesize_segment(seg, resolve_voice(seg, voice))
-        # parse the PCM out of the WAV container (header size may vary)
         with io.BytesIO(wav) as b:
             w = wave.open(b, "rb")
             pcm = w.readframes(w.getnframes())

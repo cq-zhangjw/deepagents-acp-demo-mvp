@@ -16,7 +16,7 @@ const state = ref<CallState>('idle')
 const replyText = ref('')      // AI 回复文本（字幕）
 const liveText = ref('')       // 实时识别中间结果
 const voices = ref<{ label: string; value: string }[]>([])
-const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
+const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'auto')
 const isListening = ref(false)
 
 // 通过 opener 访问主窗口的语音桥接（同步输入框 / 发送 / 接收回复）

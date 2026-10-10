@@ -33,7 +33,7 @@ import numpy as np
 import soundfile as sf
 from dotenv import load_dotenv
 
-from .tts_common import detect_language, split_text
+from .tts_common import detect_language, split_language_segments, split_text
 
 load_dotenv()  # ensure .env EDGE_TTS_* settings take effect
 
@@ -46,7 +46,19 @@ _DEFAULT_VOICES = {
     "ja": os.getenv("EDGE_TTS_VOICE_JA", "ja-JP-NanamiNeural"),
     "en": os.getenv("EDGE_TTS_VOICE_EN", "en-US-AriaNeural"),
 }
-_RATE = os.getenv("EDGE_TTS_RATE", "+0%")
+def _rate_from_env() -> str:
+    """Edge rate string; EDGE_TTS_SPEAK_RATE (multiplier) overrides EDGE_TTS_RATE."""
+    mult = os.getenv("EDGE_TTS_SPEAK_RATE", "").strip()
+    if mult:
+        try:
+            pct = round((float(mult) - 1.0) * 100)
+            return f"{pct:+d}%"
+        except ValueError:
+            logger.warning("invalid EDGE_TTS_SPEAK_RATE=%r; ignoring", mult)
+    return os.getenv("EDGE_TTS_RATE", "+0%")
+
+
+_RATE = _rate_from_env()
 _VOLUME = os.getenv("EDGE_TTS_VOLUME", "+0%")
 _PITCH = os.getenv("EDGE_TTS_PITCH", "+0Hz")
 _PROXY = os.getenv("EDGE_TTS_PROXY", "").strip() or None
@@ -54,22 +66,30 @@ _PROXY = os.getenv("EDGE_TTS_PROXY", "").strip() or None
 _voice_cache: list[dict] | None = None
 
 
+def _voice_for_lang(lang: str) -> str:
+    """Return the configured Edge default voice for a detected language code."""
+    return _DEFAULT_VOICES.get(lang, _DEFAULT_VOICES["en"])
+
+
 def resolve_voice(text: str, voice: str) -> str:
     """Resolve the requested voice.
 
-    Explicit voice wins only when it exists in the online catalogue; an
-    unknown/legacy name (e.g. 'zh') falls back to the language default for
-    the detected text language (prevents 'Invalid voice' on the Edge API).
+    'auto' (or empty) is kept as the sentinel 'auto' so the caller splits the
+    text per language and reads each part with its own default voice. An explicit
+    voice wins only when it exists in the online catalogue; an unknown/legacy name
+    (e.g. 'zh') falls back to the detected-language default (prevents 'Invalid
+    voice' on the Edge API).
     """
     voice = (voice or "").strip()
-    if voice:
-        try:
-            names = {item["name"] for item in list_voices()}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("resolve voice catalogue failed: %s", exc)
-            names = set()
-        if voice in names:
-            return voice
+    if not voice or voice.lower() == "auto":
+        return "auto"
+    try:
+        names = {item["name"] for item in list_voices()}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("resolve voice catalogue failed: %s", exc)
+        names = set()
+    if voice in names:
+        return voice
     return _DEFAULT_VOICES.get(detect_language(text), _DEFAULT_VOICES["en"])
 
 
@@ -82,12 +102,16 @@ def list_voices() -> list[dict]:
     global _voice_cache
     if _voice_cache is not None:
         return _voice_cache
+    # 'auto' leads the list so the frontend defaults to mixed-language reading
+    # (zh/ja/en split, each read by its own default voice); kept even if the
+    # online catalogue fetch fails, so the option is always selectable.
+    auto_item = {"name": "auto", "label": "Auto (mixed)", "locale": ""}
     try:
         raw = asyncio.run(edge_tts.list_voices())
     except Exception as exc:  # noqa: BLE001
         logger.error("edge-tts list_voices failed: %s", exc)
-        return []
-    items = [
+        return [auto_item]
+    items = [auto_item] + [
         {
             "name": v.get("ShortName", ""),
             "label": v.get("FriendlyName") or v.get("ShortName", ""),
@@ -164,11 +188,32 @@ def synthesize_wav_bytes(
     if not text.strip():
         raise ValueError("text must not be empty")
     voice = resolve_voice(text, voice)
-    mp3 = _synth_mp3(text, voice)
-    pcm = _decode_to_pcm16(mp3)
+    parts = [_decode_to_pcm16(_synth_mp3(t, v)) for v, t in _voiced_segments(text, voice)]
+    pcm = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
     buf = io.BytesIO()
     sf.write(buf, pcm, SAMPLE_RATE, format="WAV")
     return buf.getvalue(), SAMPLE_RATE
+
+
+def _voiced_segments(text: str, resolved_voice: str) -> list[tuple[str, str]]:
+    """Return [(voice, segment_text), ...] for synthesis.
+
+    'auto' -> split the text per language (zh/ja/en) and pick each language's
+    default Edge voice, so mixed text is read with the right voice per part.
+    A concrete voice -> sentence-split only, reading every sentence with it.
+    """
+    if resolved_voice == "auto":
+        out: list[tuple[str, str]] = []
+        segs = split_language_segments(text)
+        logger.info("[edge auto] split into %d segments:", len(segs))
+        for lang, seg_text in segs:
+            logger.info("  [%s] -> %s | %r", lang, _voice_for_lang(lang), seg_text)
+            out.append((_voice_for_lang(lang), seg_text))
+        if out:
+            return out
+        return [(_voice_for_lang(detect_language(text)), text)]
+    logger.info("[edge voice=%s] not auto; sentence-split only", resolved_voice)
+    return [(resolved_voice, seg) for seg in split_text(text)]
 
 
 def iter_pcm_chunks(
@@ -181,15 +226,16 @@ def iter_pcm_chunks(
     top_k: int = 50,
     seed: int = 42,
 ):
-    """Sentence-level streaming: split the text, synthesize each segment and
-    yield its 16-bit PCM bytes (same contract as the genie engine iter_pcm_chunks).
+    """Segment-level streaming: synthesize each segment and yield its 16-bit PCM
+    bytes (same contract as the genie engine iter_pcm_chunks).
 
-    Each sentence round-trips the online service, so the first packet lands
-    after the first sentence finishes; latency is comparable to genie.
+    With voice='auto' segments are language spans (zh/ja/en), each read by its
+    own default voice; otherwise segments are sentences read by the chosen voice.
+    Each segment round-trips the online service, so the first packet lands after
+    the first segment finishes.
     """
-    for seg in split_text(text):
-        voice_resolved = resolve_voice(seg, voice)
-        mp3 = _synth_mp3(seg, voice_resolved)
+    resolved = resolve_voice(text, voice)
+    for seg_voice, seg_text in _voiced_segments(text, resolved):
+        mp3 = _synth_mp3(seg_text, seg_voice)
         pcm = _decode_to_pcm16(mp3)
-        pcm_bytes = pcm.astype(np.int16).tobytes()
-        yield 0, pcm_bytes
+        yield 0, pcm.astype(np.int16).tobytes()

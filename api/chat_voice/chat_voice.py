@@ -43,13 +43,13 @@ _VOICE_LABELS = {}
 
 
 def _engine() -> str:
-    """Active TTS engine: genie (default) | edge_tts | sapi."""
-    engine = os.getenv("TTS_ENGINE", "genie").strip().lower()
+    """Active TTS engine; unset/empty TTS_ENGINE defaults to Windows SAPI."""
+    engine = os.getenv("TTS_ENGINE", "").strip().lower()
     if engine in ("edge", "edge_tts", "edge-tts"):
         return "edge_tts"
-    if engine in ("sapi", "windows", "windows_sapi"):
-        return "sapi"
-    return "genie"
+    if engine in ("genie", "genie_tts", "genie-tts"):
+        return "genie"
+    return "sapi"
 
 
 def _fallback_enabled() -> bool:
@@ -177,13 +177,14 @@ def tts_stream(req: TTSRequest):
     def _stream(mod_, out_sr=None):
         voice = mod_.resolve_voice(req.text, req.voice)
         src_sr = getattr(mod_, "SAMPLE_RATE", 24000)
-        splitter = getattr(mod_, "split_text", None)
-        segs = splitter(req.text) if splitter else [req.text]
-        for seg in segs:
-            for _seq, pcm in mod_.iter_pcm_chunks(seg, voice=voice):
-                if out_sr is not None and src_sr != out_sr:
-                    pcm = _resample_pcm16(pcm, src_sr, out_sr)
-                yield pcm
+        logger.info("[tts_stream] engine=%s req.voice=%r resolved=%r", engine, req.voice, voice)
+        # Pass the full text to the engine; iter_pcm_chunks owns segmentation
+        # (language split for 'auto', sentence split otherwise). Pre-splitting
+        # here with split_text would break mixed-language detection.
+        for _seq, pcm in mod_.iter_pcm_chunks(req.text, voice=voice):
+            if out_sr is not None and src_sr != out_sr:
+                pcm = _resample_pcm16(pcm, src_sr, out_sr)
+            yield pcm
 
     def generate():
         if not req.text.strip():

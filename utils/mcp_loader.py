@@ -203,6 +203,12 @@ def get_agent_mcp_tools(agent_name: str) -> list[BaseTool]:
     return tools
 
 
+def get_agent_subagents_config(agent_name: str) -> list[dict[str, Any]]:
+    """Return subagent config entries for the given agent from agents.json."""
+    config = load_agents_config().get(agent_name) or {}
+    return config.get("subagents") or []
+
+
 async def close_mcp_clients() -> None:
     """Close every shared MCP client (call once at shutdown)."""
     for holder in _servers.values():
