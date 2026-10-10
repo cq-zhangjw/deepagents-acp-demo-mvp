@@ -1457,10 +1457,18 @@ async function cancelTask() {
     if (tool.status === 'running' || tool.status === 'waiting_permission') tool.status = 'cancelled'
   })
   stopSpeech() // 停止生成时同时停掉朗读（含尚未结束的 TTS 合成请求播放）
+  // Fire-and-forget the cancel request, then close the socket immediately.
+  // Awaiting the ACP response would block here while the agent subprocess is
+  // busy generating (it cannot answer until the current step finishes), so the
+  // socket would never close and the bridge would never terminate the process.
+  // Closing the socket makes app.py's bridge kill the whole agent process tree.
   try {
-    await callAcp('session/cancel', { sessionId: conversation.agentSessionId ?? conversation.id })
+    const socket = ws.value
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: requestId.value++, method: 'session/cancel', params: { sessionId: conversation.agentSessionId ?? conversation.id } }))
+    }
   } catch {
-    // Some ACP servers omit session/cancel. Closing this dedicated connection terminates its Agent subprocess.
+    // Socket already closing; the bridge terminates the subprocess on WS close anyway.
   } finally {
     ws.value?.close()
     persistConversations()
