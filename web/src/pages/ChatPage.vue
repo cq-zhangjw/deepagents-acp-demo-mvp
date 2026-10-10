@@ -598,6 +598,7 @@ function selectAgent(key: string) {
 
 async function fetchManageData() {
   try {
+    const agent = currentAgentName.value || 'default'
     const [skills, agents, builtins] = await Promise.all([
       fetch(`/api/manage/skills?agent=${encodeURIComponent(agent)}`).then((r) => r.json()),
       fetch('/api/manage/agents').then((r) => r.json()),
@@ -612,8 +613,8 @@ async function fetchManageData() {
       currentAgentName.value = first?.name || ''
     }
     // tool enablement is queried per agent (agents.json tools.mcp_tools)
-    const agent = currentAgentName.value || 'default'
-    const tools = await fetch(`/api/manage/tools?agent=${agent}`).then((r) => r.json())
+    const toolsAgent = currentAgentName.value || 'default'
+    const tools = await fetch(`/api/manage/tools?agent=${toolsAgent}`).then((r) => r.json())
     toolList.value = Array.isArray(tools) ? tools : []
   } catch {
     // keep the list empty when the backend is unavailable

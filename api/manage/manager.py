@@ -26,6 +26,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from utils.mcp_loader import invalidate_agents_cache
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/manage", tags=["manage"])
 
@@ -39,6 +41,9 @@ AGENT_MD_SUFFIX = ".agent.md"
 
 # allows underscores too (MCP server dirs like calc_server are common)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Agent names are user-defined keys in agents.json and may be mixed-case
+# (e.g. "languageLearning"); they are matched case-sensitively.
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 # directory creation is guaranteed on first module import
 for _d in (DE_ROOT, SKILLS_DIR, MCP_DIR, AGENTS_DIR):
@@ -75,6 +80,15 @@ def _ensure_name(name: str) -> str:
     return name
 
 
+def _ensure_agent(name: str) -> str:
+    """Trim + validate an agent name, preserving case (agents.json keys are
+    user-defined and may be mixed-case, e.g. languageLearning)."""
+    name = (name or "").strip()
+    if not (name and _AGENT_NAME_RE.match(name)):
+        raise HTTPException(status_code=400, detail=f"invalid agent name: {name!r} (use [A-Za-z0-9_-], max 64)")
+    return name
+
+
 def _read_json(path: Path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -98,6 +112,9 @@ def _write_json_atomic(path: Path, data) -> None:
 
 def _write_agents(data: dict) -> None:
     _write_json_atomic(AGENTS_FILE, data)
+    # agents.json changed -> the assembly layer (skill_loader/mcp_loader) caches
+    # it per process; drop the cache so the next agent build picks up the change.
+    invalidate_agents_cache()
 
 
 def _read_agents() -> dict:
@@ -263,7 +280,7 @@ def _is_disabled(dir_path: Path) -> bool:
     return (dir_path / ".disabled").exists()
 
 
-def _skill_entry(skill_dir: Path) -> dict:
+def _skill_entry(skill_dir: Path, enabled: bool) -> dict:
     md_path = skill_dir / "SKILL.md"
     name = skill_dir.name
     description = ""
@@ -278,7 +295,7 @@ def _skill_entry(skill_dir: Path) -> dict:
     return {
         "name": name,
         "description": description,
-        "enabled": not _is_disabled(skill_dir),
+        "enabled": enabled,
         "path": str(skill_dir.relative_to(BASE_DIR)).replace("\\", "/"),
         "absolute_path": str(skill_dir.resolve()),
         "updated_at": _mtime(md_path),
@@ -336,14 +353,38 @@ def list_files(q: str = ""):
 
 # ---------- skills ----------
 
+def _skill_names_on_disk() -> list[str]:
+    """Directory names of installed skills (stable identity, sorted)."""
+    if not SKILLS_DIR.is_dir():
+        return []
+    return [d.name for d in sorted(SKILLS_DIR.iterdir())
+            if d.is_dir() and (d / "SKILL.md").exists()]
+
+
+def _agent_skills_config(agent: str) -> list[str] | None:
+    """The agent's skills array from agents.json (None = full installed set)."""
+    agents = _read_agents()
+    skills = (agents.get(agent) or {}).get("skills")
+    return skills if isinstance(skills, list) else None
+
+
 @router.get("/skills")
-def list_skills():
-    """Skill list: scan .deepagents/skills/*/SKILL.md."""
+def list_skills(agent: str = "default"):
+    """Skill list for one agent: enabled state comes from the agent's skills array.
+
+    null / missing skills mean the full installed set (default-agent behavior);
+    an explicit array (including []) is the exact enabled set. Toggling only
+    touches agents.json — the global .disabled marker is no longer used.
+    """
+    agent = _ensure_agent(agent)
+    all_names = _skill_names_on_disk()
+    enabled_set = _agent_skills_config(agent)
+    enabled_set = set(enabled_set) if enabled_set is not None else None
     items = []
-    if SKILLS_DIR.is_dir():
-        for d in sorted(SKILLS_DIR.iterdir()):
-            if d.is_dir() and (d / "SKILL.md").exists():
-                items.append(_skill_entry(d))
+    for name in all_names:
+        d = SKILLS_DIR / name
+        enabled = True if enabled_set is None else (name in enabled_set)
+        items.append(_skill_entry(d, enabled))
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
 
@@ -362,22 +403,31 @@ def get_skill(name: str):
 
 
 @router.post("/skills/{name}/toggle")
-def toggle_skill(name: str):
-    """Toggle a skill (create/delete the .disabled marker file)."""
+def toggle_skill(name: str, agent: str = "default"):
+    """Toggle a skill for one agent (array operation on the agent's skills).
+
+    null / missing skills mean the full installed set: toggling off starts
+    from the full set and writes an explicit array; toggling back on re-adds
+    the name. Only the agent's skills field in agents.json is touched.
+    """
     name = _ensure_name(name)
-    d = SKILLS_DIR / name
-    if not (d / "SKILL.md").exists():
+    agent = _ensure_agent(agent)
+    if not (SKILLS_DIR / name / "SKILL.md").exists():
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
-    flag = d / ".disabled"
-    if flag.exists():
-        flag.unlink()
-        enabled = True
-    else:
-        flag.touch()
+    agents = _read_agents()
+    defn = agents.setdefault(agent, {})
+    skills = defn.get("skills")
+    if not isinstance(skills, list):
+        skills = _skill_names_on_disk()
+    if name in skills:
+        skills = [s for s in skills if s != name]
         enabled = False
-        # disabling drops the skill from every agent's association list
-        _remove_agent_ref("skill", name)
-    return {"name": name, "enabled": enabled}
+    else:
+        skills = skills + [name]
+        enabled = True
+    defn["skills"] = skills
+    _write_agents(agents)
+    return {"name": name, "enabled": enabled, "agent": agent}
 
 
 @router.post("/skills")
@@ -397,7 +447,7 @@ def create_skill(payload: dict):
         # auto-generate frontmatter if the body has none
         content = f"---\nname: {name}\ndescription: {description}\n---\n\n{content}"
     (d / "SKILL.md").write_text(content, encoding="utf-8")
-    return _skill_entry(d)
+    return _skill_entry(d, True)
 
 
 @router.put("/skills/{name}")
@@ -412,7 +462,7 @@ def update_skill(name: str, payload: dict):
     if not content:
         raise HTTPException(status_code=400, detail="content must not be empty")
     md_path.write_text(content, encoding="utf-8")
-    return _skill_entry(d)
+    return _skill_entry(d, True)
 
 
 @router.delete("/skills/{name}")
@@ -514,7 +564,7 @@ def list_tools(agent: str = "default"):
 
     Enable state comes from the agent's tools.mcp_tools in agents.json.
     """
-    agent = _ensure_name(agent)
+    agent = _ensure_agent(agent)
     tools_def, _ = _agent_tools_def(agent)
     items = []
     if MCP_DIR.is_dir():
@@ -534,7 +584,7 @@ def toggle_tool(name: str, agent: str = "default"):
     field in agents.json is touched.
     """
     name = _ensure_name(name)
-    agent = _ensure_name(agent)
+    agent = _ensure_agent(agent)
     d = MCP_DIR / name
     if not d.is_dir() or not ((d / "manifest.json").exists() or (d / "server.json").exists()):
         raise HTTPException(status_code=404, detail=f"tool not found: {name}")
@@ -559,7 +609,7 @@ def toggle_tool_item(server: str, tool: str, agent: str = "default"):
     exists yet, enabling a tool creates the server entry with that tool.
     """
     server = _ensure_name(server)
-    agent = _ensure_name(agent)
+    agent = _ensure_agent(agent)
     if not tool:
         raise HTTPException(status_code=400, detail="tool name must not be empty")
     d = MCP_DIR / server
@@ -599,7 +649,7 @@ def toggle_inner_tool(agent: str, tool: str):
     inner_tools is always an array defaulting to the full builtin set; toggling
     simply adds/removes the tool name.
     """
-    agent = _ensure_name(agent)
+    agent = _ensure_agent(agent)
     if tool not in BUILTIN_TOOL_NAMES:
         raise HTTPException(status_code=404, detail=f"inner tool not found: {tool}")
     tools_def, agents = _agent_tools_def(agent)
@@ -777,13 +827,17 @@ def _agent_md_body(name: str) -> str:
 
 
 def _agent_entry(name: str, data: dict) -> dict:
+    skills = data.get("skills")
     return {
         "name": name,
         "description": (data.get("description") or ""),
         "enabled": data.get("enabled", True),
         "model": data.get("model"),
         "system_prompt": data.get("system_prompt"),
-        "skills": data.get("skills") or [],
+        # null skills = full installed set: expose the full list so the
+        # frontend edit form shows "all selected" instead of an empty list
+        # (which would be saved back as [] = all disabled).
+        "skills": skills if isinstance(skills, list) else _skill_names_on_disk(),
         "tools": _norm_agent_tools(data.get("tools")),
         "file": name + AGENT_MD_SUFFIX,
         "body": _agent_md_body(name),
@@ -811,7 +865,7 @@ def list_agents():
 
 @router.get("/agents/{name}")
 def get_agent(name: str):
-    name = _ensure_name(name)
+    name = _ensure_agent(name)
     agents = _read_agents()
     if _agent_md_path(name).exists() or name in agents:
         return _agent_entry(name, agents.get(name) or {})
@@ -832,7 +886,7 @@ async def _validate_agent(name: str, data: dict) -> dict:
 
 @router.get("/agents/{name}/validate")
 async def validate_agent(name: str):
-    name = _ensure_name(name)
+    name = _ensure_agent(name)
     agents = _read_agents()
     if _agent_md_path(name).exists() or name in agents:
         return await _validate_agent(name, agents.get(name) or {})
@@ -842,7 +896,7 @@ async def validate_agent(name: str):
 @router.post("/agents")
 async def create_agent(payload: dict):
     """Create an agent: write `<name>.agent.md` + association entry in `agents/agents.json`."""
-    name = _ensure_name(payload.get("name", ""))
+    name = _ensure_agent(payload.get("name", ""))
     body = (payload.get("body") or "").strip()
     async with _agents_lock:
         agents = _read_agents()
@@ -859,7 +913,7 @@ async def create_agent(payload: dict):
 @router.put("/agents/{name}")
 async def update_agent(name: str, payload: dict):
     """Edit an agent: overwrite `.agent.md` (if body given) and the agents.json entry."""
-    name = _ensure_name(name)
+    name = _ensure_agent(name)
     async with _agents_lock:
         agents = _read_agents()
         if not (_agent_md_path(name).exists() or name in agents):
@@ -878,7 +932,7 @@ async def update_agent(name: str, payload: dict):
 @router.delete("/agents/{name}")
 async def delete_agent(name: str):
     """Delete an agent: remove `*.agent.md` and the agents.json key."""
-    name = _ensure_name(name)
+    name = _ensure_agent(name)
     async with _agents_lock:
         agents = _read_agents()
         md = _agent_md_path(name)
@@ -904,9 +958,11 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
     sp = payload.get("system_prompt")
     if isinstance(sp, str) and sp.strip():
         def_data["system_prompt"] = sp.strip()
-    skills = [s for s in (payload.get("skills") or []) if isinstance(s, str) and _valid_name(s)
-              and not _is_disabled(SKILLS_DIR / s)]
-    if skills:
+    # skills: an explicit array (including []) is the exact enabled set;
+    # omitting the field keeps null semantics (full installed set).
+    if isinstance(payload.get("skills"), list):
+        skills = [s for s in payload["skills"] if isinstance(s, str) and _valid_name(s)
+                  and not _is_disabled(SKILLS_DIR / s)]
         def_data["skills"] = skills
     tools = _norm_agent_tools(payload.get("tools"))
     # the agent form sends a server-name list; keep the existing per-agent

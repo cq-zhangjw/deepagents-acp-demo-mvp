@@ -54,3 +54,6 @@ models/
 temp_py.txt
 temp_readme.txt
 .venv/
+
+# per-agent runtime skill enablement set (regenerated on each agent build)
+.deepagents/skills/.enabled/

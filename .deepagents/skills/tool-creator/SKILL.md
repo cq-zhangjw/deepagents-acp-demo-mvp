@@ -38,7 +38,7 @@ mcp = FastMCP("<服务显示名>")
 
 
 @mcp.tool()
-def <工具名>(<参数1>: <类型>, <参数2>: <类型>, ...) -> <返回值类型>:
+def <工具名>(<参数1>: <类型>, <参数2>: <类型>, ...) -> <返回值类型> | str:
     """
     <方法功能描述>
 
@@ -53,7 +53,7 @@ def <工具名>(<参数1>: <类型>, <参数2>: <类型>, ...) -> <返回值类�
     try:
         <实现逻辑>
     except:
-        raise Exception(traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
 
 
 if __name__ == "__main__":
@@ -65,7 +65,8 @@ if __name__ == "__main__":
 
 **代码规范（必须遵守）**：
 - **全局禁止 `print()` 语句**，print 输出会污染 stdio 通信导致工具不可用
-- 异常必须通过 `raise Exception(traceback.format_exc())` 抛出，不要静默忽略
+- 参数只能为基本类型。
+- 异常必须通过 `return f"Error: {traceback.format_exc()}"` 返回，不要静默忽略
 - 入口代码固定使用上述 `if __name__ == "__main__":` 模板，确保 stdio 编码正确
 
 ---

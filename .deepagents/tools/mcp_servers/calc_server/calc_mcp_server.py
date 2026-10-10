@@ -19,7 +19,7 @@ def calculate(expression: str) -> str:
         result = eval(expression)
         return f"{result}"
     except:
-        raise Exception(traceback.format_exc())
+        return f"Error: {traceback.format_exc()}"
 
 
 if __name__ == "__main__":

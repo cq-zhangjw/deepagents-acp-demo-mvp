@@ -51,6 +51,16 @@ def load_agents_config() -> dict[str, dict[str, Any]]:
     return _agents_cache
 
 
+def invalidate_agents_cache() -> None:
+    """Drop the cached agents.json so the next load_agents_config() re-reads it.
+
+    Called by the management API after any agents.json write (skill/tool/agent
+    toggles), otherwise the assembly layer keeps assembling stale enablement.
+    """
+    global _agents_cache
+    _agents_cache = None
+
+
 def _server_entry(server: str) -> Path:
     """Resolve the stdio entry script for an MCP server directory.
 
