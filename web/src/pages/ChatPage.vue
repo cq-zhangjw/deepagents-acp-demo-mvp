@@ -161,6 +161,7 @@ const filteredConversations = computed(() => {
 })
 const input = ref('')
 const attachments = ref<AttachmentRef[]>([])
+const previewImage = ref<string | null>(null)
 const isUploading = ref(false)
 const dragActive = ref(false)
 const permissionRequest = ref<PermissionRequest | null>(null)
@@ -300,18 +301,21 @@ async function syncHistory() {
 }
 
 function persistConversations(immediate = false) {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
   if (immediate) {
     void syncHistory()
     return
   }
+  // Skip persistence while streaming: the stream itself would fire a PUT every
+  // few hundred ms. The run's finally block persists once it settles.
+  if (isRunning.value) return
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
   persistTimer = setTimeout(() => {
     persistTimer = null
     void syncHistory()
-  }, 300)
+  }, 500)
 }
 
 async function loadHistory() {
@@ -1039,8 +1043,12 @@ function normalizeToolStatus(status?: string): ToolStatus {
 
 function handleSessionUpdate(update: any) {
   if (restoringHistory.value) return
+  if (cancelRequested) return
   const assistant = activeAssistantMessage()
   if (!assistant) return
+  // A cancelled run must ignore any late streaming events, otherwise the
+  // assistant status flips back to streaming and the stop button gets stuck.
+  if (assistant.status === 'cancelled') return
   const process = assistant.process
   switch (update.sessionUpdate) {
     case 'agent_message_chunk':
@@ -1650,19 +1658,28 @@ function scrollToBottom(smooth = false) {
 }
 
 function openAttachment(attachment: AttachmentRef) {
+  if (attachment.kind === 'image') {
+    // Pasted/dragged images are stored as inline data URLs; show them in an
+    // in-page overlay instead of window.open (which blocks data: URLs).
+    const url = attachment.previewUrl
+      ?? (attachment.data ? `data:${attachment.mimeType ?? 'image/png'};base64,${attachment.data}` : undefined)
+      ?? attachment.path
+      ?? attachment.uri
+    if (url) previewImage.value = url
+    return
+  }
+  // Uploaded files: resolve the virtual path against the current origin so the
+  // download anchor always points at a real, absolute URL.
   const url = attachment.path ?? attachment.uri ?? attachment.previewUrl
   if (!url) return
-  if (attachment.kind === 'image') {
-    window.open(url, '_blank', 'noopener')
-  } else {
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = attachment.name || ''
-    anchor.target = '_blank'
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-  }
+  const absolute = new URL(url, window.location.origin).href
+  const anchor = document.createElement('a')
+  anchor.href = absolute
+  anchor.download = attachment.name || ''
+  anchor.target = '_blank'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 // ---------- 快捷动作（@ 文件 / 技能） ----------
@@ -1995,7 +2012,7 @@ onBeforeUnmount(() => {
                   <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
                 </template>
                 <span v-if="isAssistantRunning(item)" class="msg-loader" aria-label="loading" />
-                <div v-if="(item.finalText || (item.status === 'failed' && item.segments.length > 0)) && !isRunning" class="message-actions">
+                <div v-if="!isRunning && item.status !== 'pending'" class="message-actions">
                   <NTooltip v-if="item.id === lastAssistantId">
                     <template #trigger>
                       <NButton quaternary circle size="tiny" :aria-label="actionLabels.retry" @click="retryAssistant(item)">
@@ -2128,6 +2145,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
+
+    <div v-if="previewImage" class="image-preview-overlay" @click="previewImage = null">
+      <img :src="previewImage" :alt="actionLabels.previewAttachment" @click.stop />
+    </div>
 
     <NDrawer v-model:show="sidebarVisible" placement="left" :width="280">
       <NDrawerContent :title="t('recentConversations')">
@@ -2507,5 +2528,22 @@ onBeforeUnmount(() => {
       calc(32 * var(--size)) 0 var(--color-1),
       calc(-32 * var(--size)) 0 var(--color-2);
   }
+}
+.image-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+.image-preview-overlay img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  cursor: default;
 }
 </style>
