@@ -1219,7 +1219,11 @@ async function sendAgentPrompt(
       speakReplyIfEnabled(assistantMessage.finalText ?? '')
     }
   } catch (error) {
-    if (assistantMessage.status !== 'cancelled') {
+    // Only downgrade to failed while still pending/streaming; a completion
+    // path that already set 'completed' must not be overwritten by a late error.
+    if (assistantMessage.status !== 'cancelled'
+      && assistantMessage.status !== 'completed'
+      && assistantMessage.status !== 'failed') {
       assistantMessage.status = 'failed'
       assistantMessage.process.completedAt = Date.now()
       const message = error instanceof Error ? error.message : t('taskFailed')
@@ -1411,14 +1415,18 @@ let replyListener: ((text: string) => void) | null = null
 /** After an AI reply: notify the voice window first, else read aloud in the main window per the toggle */
 function speakReplyIfEnabled(text: string) {
   if (!text.trim()) return
-  if (replyListener) {
-    const cb = replyListener
-    replyListener = null
-    cb(text)
-    return
+  try {
+    if (replyListener) {
+      const cb = replyListener
+      replyListener = null
+      cb(text)
+      return
+    }
+    if (!speakReplyEnabled.value) return
+    void speakText(text)
+  } catch {
+    // TTS/bridge errors must never break the message status flow
   }
-  if (!speakReplyEnabled.value) return
-  void speakText(text)
 }
 
 /** Exposed to the voice window via window.opener.chatBridge */
