@@ -286,36 +286,24 @@ function migrateConversations(saved: unknown): Conversation[] {
   }))
 }
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null
-
-async function syncHistory() {
+async function saveConversation(conversation: Conversation) {
   try {
-    await fetch('/api/history', {
+    await fetch(`/api/history/${encodeURIComponent(conversation.id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversations: conversations.value }),
+      body: JSON.stringify({ conversation }),
     })
   } catch {
-    // server unavailable: keep the in-memory state, next change retries
+    // server unavailable: keep the in-memory state, the next key event retries
   }
 }
 
-function persistConversations(immediate = false) {
-  if (immediate) {
-    void syncHistory()
-    return
+async function deleteConversationRemote(id: string) {
+  try {
+    await fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  } catch {
+    // server unavailable: nothing to do locally
   }
-  // Skip persistence while streaming: the stream itself would fire a PUT every
-  // few hundred ms. The run's finally block persists once it settles.
-  if (isRunning.value) return
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    void syncHistory()
-  }, 500)
 }
 
 async function loadHistory() {
@@ -346,7 +334,7 @@ async function loadHistory() {
       const legacy = JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]')
       if (Array.isArray(legacy) && legacy.length) {
         conversations.value = migrateConversations(legacy)
-        void syncHistory()
+        conversations.value.forEach((conversation) => void saveConversation(conversation))
       }
     } catch {
       // ignore malformed legacy data
@@ -384,7 +372,7 @@ function createConversation() {
   input.value = ''
   errorText.value = ''
   sidebarVisible.value = false
-  persistConversations()
+  void saveConversation(conversation)
   nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
 }
 
@@ -399,6 +387,32 @@ function selectConversation(id: string) {
   attachments.value = []
   sidebarVisible.value = false
   errorText.value = ''
+  // 正在运行的会话用本地内存态，避免被历史覆盖导致流式回滚
+  const local = conversations.value.find((conversation) => conversation.id === id)
+  const running = Boolean(local?.messages.some(
+    (item) => item.role === 'assistant'
+      && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
+  ))
+  if (!running) {
+    void (async () => {
+      try {
+        const res = await fetch(`/api/history/${encodeURIComponent(id)}`)
+        if (res.ok) {
+          const rows = migrateConversations([await res.json()])
+          if (rows.length) {
+            const index = conversations.value.findIndex((conversation) => conversation.id === id)
+            if (index >= 0) {
+              conversations.value[index] = rows[0]
+            } else {
+              conversations.value.unshift(rows[0])
+            }
+          }
+        }
+      } catch {
+        // server unavailable: keep the local copy
+      }
+    })()
+  }
   nextTick(scrollToBottom)
 }
 
@@ -407,7 +421,7 @@ function deleteConversation(id: string) {
   if (activeConversationId.value === id) {
     activeConversationId.value = conversations.value[0]?.id ?? ''
   }
-  persistConversations(true)
+  void deleteConversationRemote(id)
 }
 
 const renameMenu = ref<{ id: string; x: number; y: number } | null>(null)
@@ -432,7 +446,7 @@ function saveRename() {
   if (conversation && renameText.value.trim()) {
     conversation.title = renameText.value.trim()
     conversation.updatedAt = Date.now()
-    persistConversations()
+    void saveConversation(conversation)
   }
   renameTarget.value = null
 }
@@ -784,7 +798,7 @@ function deleteMessage(item: { id: string }) {
   const index = conversation.messages.findIndex((message) => message.id === item.id)
   if (index >= 0) conversation.messages.splice(index, 1)
   conversation.updatedAt = Date.now()
-  persistConversations()
+  void saveConversation(conversation)
 }
 
 const openMenuId = ref<string | null>(null)
@@ -830,7 +844,7 @@ function saveEditMessage() {
     }
   }
   conversation.updatedAt = Date.now()
-  persistConversations()
+  void saveConversation(conversation)
   editModalVisible.value = false
   editTargetId.value = null
 }
@@ -1154,7 +1168,7 @@ async function validateStoredSessions() {
     if (activeConversationId.value && invalid.includes(activeConversationId.value)) {
       activeConversationId.value = conversations.value[0]?.id ?? ''
     }
-    persistConversations()
+    invalid.forEach((id) => void deleteConversationRemote(id))
     // 全部会话失效（如 db 被删除）时自动新建一个空会话，保证输入区可用
     if (!conversations.value.length) createConversation()
   }
@@ -1209,7 +1223,7 @@ async function sendAgentPrompt(
     }
   } finally {
     conversation.updatedAt = Date.now()
-    persistConversations()
+    void saveConversation(conversation)
     nextTick(scrollToBottom)
   }
 }
@@ -1240,7 +1254,7 @@ async function submitPrompt() {
   moveConversationToTop(conversation)
   input.value = ''
   attachments.value = []
-  persistConversations()
+  void saveConversation(conversation)
   await nextTick(scrollToBottom)
   await sendAgentPrompt(conversation, text, resources, assistantMessage, isNewConversation)
 }
@@ -1263,7 +1277,7 @@ async function retryAssistant(assistant: AssistantMessage) {
   assistant.process = { startedAt: Date.now(), plan: [], analyses: [], toolCalls: [] }
   assistant.segments = []
   conversation.updatedAt = Date.now()
-  persistConversations()
+  void saveConversation(conversation)
   await nextTick(scrollToBottom)
   await sendAgentPrompt(conversation, source.text, source.attachments, assistant, !conversation.agentSessionId)
 }
@@ -1471,7 +1485,7 @@ async function cancelTask() {
     // Socket already closing; the bridge terminates the subprocess on WS close anyway.
   } finally {
     ws.value?.close()
-    persistConversations()
+    void saveConversation(conversation)
   }
 }
 
@@ -1774,7 +1788,6 @@ function submitOnEnter(event: KeyboardEvent) {
   }
 }
 
-watch(conversations, persistConversations, { deep: true })
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 onMounted(() => {
   void loadContextSize()
@@ -1785,7 +1798,7 @@ onMounted(() => {
     if (defaultEmpties.length > 1) {
       const keepId = defaultEmpties[0].id
       conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || conversation.title !== t('newSessionTitle'))
-      persistConversations(true)
+      defaultEmpties.slice(1).forEach((conversation) => void deleteConversationRemote(conversation.id))
     }
     void validateStoredSessions()
   })

@@ -1,24 +1,29 @@
 """History persistence backed by MooFile (local BSON files, no browser storage).
 
-Replaces the frontend localStorage conversation list: the SPA now reads and
-writes the whole conversation set through these endpoints, while MooFile keeps
-the data on disk under db/history (HISTORY_ROOT env, default ./db/history),
-fully local and portable across machines.
+The backend is the single source of truth for conversations. The SPA reads the
+list on startup, fetches a full conversation when entering it, and submits
+whole conversations at key lifecycle points (create / rename / edit / send /
+stream-settle / delete) through per-conversation endpoints.
 
 Storage layout: a single MooFile collection `conversations` under the root
 directory; each record is one conversation object keyed by its `id` field.
 
 Endpoints:
-  GET    /api/history   -> all conversations, newest first (updatedAt desc)
-  PUT    /api/history   -> full-sync replace of the conversation set
-  DELETE /api/history/{id} -> remove one conversation
+  GET    /api/history       -> conversation list, newest first (updatedAt desc)
+  GET    /api/history/{id}  -> one full conversation (404 if missing)
+  PUT    /api/history/{id}  -> upsert one conversation (create or replace)
+  DELETE /api/history/{id}  -> remove one conversation
+
+All writes are serialized with a process-wide lock so background writers (e.g.
+the scheduled-task runner) can append to a conversation safely.
 """
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from utils.moofile_util import MooFileUtil
@@ -27,6 +32,7 @@ router = APIRouter(prefix="/api/history", tags=["history"])
 
 _HISTORY_DB = "conversations"
 _INDEXES: list[str] = []  # small dataset; plain scan is fine
+_LOCK = threading.Lock()
 
 
 def _root_dir() -> Path:
@@ -51,41 +57,44 @@ def list_history() -> list[dict[str, Any]]:
     """Return every stored conversation, newest first."""
     util = _util()
     _ensure(util)
-    rows = util.query_data(_HISTORY_DB, {}, _INDEXES)
+    with _LOCK:
+        rows = util.query_data(_HISTORY_DB, {}, _INDEXES)
     rows.sort(key=lambda r: r.get("updatedAt") or 0, reverse=True)
     return rows
 
 
-class HistoryPut(BaseModel):
-    conversations: list[dict[str, Any]]
-
-
-@router.put("")
-def put_history(payload: HistoryPut) -> dict[str, Any]:
-    """Full-sync: upsert the provided conversations and drop any record that
-    is no longer in the list (mirrors the old localStorage replace semantics)."""
+@router.get("/{cid}")
+def get_history(cid: str) -> dict[str, Any]:
+    """Return one full conversation by id (404 when missing)."""
     util = _util()
     _ensure(util)
-    incoming = payload.conversations
-    incoming_ids = {c.get("id") for c in incoming if c.get("id")}
+    with _LOCK:
+        rows = util.query_data(_HISTORY_DB, {"id": cid}, _INDEXES)
+    if not rows:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return rows[0]
 
-    for conv in incoming:
-        cid = conv.get("id")
-        if not cid:
-            continue
+
+class HistoryPut(BaseModel):
+    conversation: dict[str, Any]
+
+
+@router.put("/{cid}")
+def put_history(cid: str, payload: HistoryPut) -> dict[str, Any]:
+    """Upsert one conversation: create it when missing, otherwise replace the
+    whole record. The caller submits the full conversation object it holds in
+    memory; no cross-record deletion happens here (that is DELETE's job)."""
+    conv = dict(payload.conversation)
+    conv["id"] = cid
+    util = _util()
+    _ensure(util)
+    with _LOCK:
         existing = util.query_data(_HISTORY_DB, {"id": cid}, _INDEXES)
         if existing:
             util.update_data(_HISTORY_DB, {"id": cid}, conv, _INDEXES)
         else:
             util.insert_data(_HISTORY_DB, [conv], _INDEXES)
-
-    # remove records that disappeared from the frontend list
-    for row in util.query_data(_HISTORY_DB, {}, _INDEXES):
-        rid = row.get("id")
-        if rid and rid not in incoming_ids:
-            util.delete_data(_HISTORY_DB, {"id": rid}, _INDEXES)
-
-    return {"ok": True, "count": len(incoming)}
+    return {"ok": True, "id": cid}
 
 
 @router.delete("/{cid}")
@@ -93,5 +102,6 @@ def delete_history(cid: str) -> dict[str, Any]:
     """Remove a single conversation by id."""
     util = _util()
     _ensure(util)
-    util.delete_data(_HISTORY_DB, {"id": cid}, _INDEXES)
+    with _LOCK:
+        util.delete_data(_HISTORY_DB, {"id": cid}, _INDEXES)
     return {"ok": True}
