@@ -376,6 +376,7 @@ function createId(prefix: string) {
 }
 
 function createConversation() {
+  resetAgentToDefault()
   const existingEmpty = conversations.value.find((conversation) => conversation.messages.length === 0)
   if (existingEmpty) {
     selectConversation(existingEmpty.id)
@@ -568,10 +569,39 @@ const filteredToolList = computed(() => {
 })
 const AGENT_STORAGE_KEY = 'currentAgentName'
 const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
+
+/** Display name: capitalize the first letter for the UI (storage keys stay untouched). */
+function displayAgentName(name: string) {
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : name
+}
+
+/** New conversations always start on the default agent. */
+function resetAgentToDefault() {
+  currentAgentName.value = 'default'
+  localStorage.setItem(AGENT_STORAGE_KEY, 'default')
+  // Drop the current ACP subprocess connection so the next send reconnects as default.
+  if (ws.value) {
+    ws.value.close()
+    ws.value = null
+  }
+  socketPromise.value = null
+  connected.value = false
+  initialized.value = false
+  initializedSessions.clear()
+  void fetchManageData()
+}
+
 const agentDropdownOptions = computed(() =>
   agentList.value
     .filter((agent) => agent.enabled !== false)
-    .map((agent) => ({ key: agent.name, label: agent.name }))
+    .map((agent) => ({
+      key: agent.name,
+      label: () =>
+        h('div', { class: 'agent-option-name' }, [
+          h(NIcon, { component: SparklesOutline, class: 'agent-option-icon' }),
+          h('span', displayAgentName(agent.name))
+        ])
+    }))
 )
 function selectAgent(key: string) {
   currentAgentName.value = key
@@ -590,29 +620,6 @@ function selectAgent(key: string) {
   connected.value = false
   initialized.value = false
   initializedSessions.clear()
-}
-
-/** Skill picker for the composer toolbar: select appends `/skill-name`. */
-const skillDropdownOptions = computed(() => {
-  const opts = skillList.value.map((s: any) => ({ key: s.name, label: s.name }))
-  return [
-    ...opts,
-    {
-      key: 'open-panel',
-      label: () =>
-        h('div', { class: 'skill-panel-entry' }, [
-          h(NIcon, { component: MenuOutline, class: 'agent-option-icon' }),
-          h('span', actionLabels.value.skillsPanel)
-        ])
-    }
-  ]
-})
-function selectSkillQuick(key: string) {
-  if (key === 'open-panel') {
-    openRightPanel('skills')
-    return
-  }
-  input.value = input.value + '`/' + key + '` '
 }
 
 async function fetchManageData() {
@@ -2236,14 +2243,12 @@ onBeforeUnmount(() => {
                 </NTooltip>
                 <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
                   <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
-                    <template #icon><NIcon :component="SparklesOutline" /></template>{{ currentAgentName || actionLabels.agent }}
+                    <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
-                <NDropdown :options="skillDropdownOptions" trigger="click" @select="selectSkillQuick">
-                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills">
-                    <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
-                  </NButton>
-                </NDropdown>
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
+                  <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
+                </NButton>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
@@ -2384,7 +2389,7 @@ onBeforeUnmount(() => {
           <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': !agent.enabled }">
             <div class="manage-card-head">
-              <strong>{{ agent.name }}</strong>
+              <strong>{{ displayAgentName(agent.name) }}</strong>
               <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
               <NSwitch size="small" :value="agent.enabled !== false" @update:value="setAgentEnabled(agent)" />
             </div>
@@ -2587,8 +2592,8 @@ onBeforeUnmount(() => {
 .manage-form { display:flex; flex-direction:column; gap:10px; }
 .manage-form-code :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:12px; line-height:1.6; }
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
+.agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
-.skill-panel-entry { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--subtle); margin-top:3px; border-top:1px solid var(--border); padding-top:6px; }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
