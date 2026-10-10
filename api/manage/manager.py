@@ -326,29 +326,46 @@ _SKIP_TOP = {".git", ".venv", "node_modules", "__pycache__", ".idea", ".vscode"}
 
 
 @router.get("/files")
-def list_files(q: str = ""):
-    """List top-level entries of the project root (for the @ file picker).
+def list_files(q: str = "", dir: str = ""):
+    """List entries of a directory under the project root (for the @ file picker).
 
-    Returns name / absolute path / type, filtered by name prefix (q, case-insensitive).
-    Only one level is listed; dot-prefixed files like .env are kept, but common
-    heavyweight/vendor dirs (git, venv, node_modules, __pycache__) are skipped.
+    Returns name / absolute path / type / rel (POSIX path relative to root),
+    filtered by name prefix (q, case-insensitive). `dir` is a relative path
+    under BASE_DIR ('' = root); it is validated to stay inside BASE_DIR so a
+    malicious value cannot escape via ..\\. Dot-prefixed files like .env are
+    kept, but common heavyweight/vendor dirs (git, venv, node_modules,
+    __pycache__) are skipped.
     """
     q = (q or "").strip().lower()
-    entries = []
+    rel_dir = (dir or "").strip().replace("\\", "/").strip("/")
     try:
-        for p in sorted(BASE_DIR.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+        target = BASE_DIR
+        if rel_dir:
+            parts = [p for p in rel_dir.split("/") if p and p not in (".", "..")]
+            target = BASE_DIR.joinpath(*parts).resolve()
+            # stay inside the project root (no path traversal)
+            if BASE_DIR.resolve() not in target.parents and target != BASE_DIR.resolve():
+                raise HTTPException(status_code=400, detail="invalid dir")
+        if not target.is_dir():
+            return []
+        entries = []
+        for p in sorted(target.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
             if p.name in _SKIP_TOP:
                 continue
             if q and not p.name.lower().startswith(q):
                 continue
+            rel = p.relative_to(BASE_DIR).as_posix() if p.is_relative_to(BASE_DIR) else p.name
             entries.append({
                 "name": p.name,
                 "path": str(p.resolve()),
+                "rel": rel,
                 "type": "dir" if p.is_dir() else "file",
             })
+        return entries
+    except HTTPException:
+        raise
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"failed to list files: {exc}") from exc
-    return entries
 
 
 # ---------- skills ----------

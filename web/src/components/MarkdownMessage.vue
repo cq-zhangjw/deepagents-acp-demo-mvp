@@ -7,11 +7,16 @@ import 'highlight.js/styles/github.css'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 
-const props = defineProps<{ content: string }>()
+const props = defineProps<{ content: string; variant?: 'assistant' | 'user' }>()
 const root = ref<HTMLElement | null>(null)
 const message = useMessage()
 const { t } = useI18n()
 let mermaidSequence = 0
+
+const rootClass = computed(() => ({
+  'markdown-message': true,
+  'markdown-message--user': props.variant === 'user'
+}))
 
 // 预加载 mermaid 并只初始化一次，避免每次渲染重新 import/initialize 的开销
 let mermaidInstance: any | null = null
@@ -164,7 +169,7 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 </script>
 
 <template>
-  <div ref="root" class="markdown-message" v-html="safeHtml"></div>
+  <div ref="root" :class="rootClass" v-html="safeHtml"></div>
 </template>
 
 <style scoped>
@@ -173,6 +178,8 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 .markdown-message :deep(h1),.markdown-message :deep(h2),.markdown-message :deep(h3) { margin: 20px 0 10px; line-height: 1.35; } .markdown-message :deep(h1) { font-size: 20px; } .markdown-message :deep(h2) { font-size: 17px; } .markdown-message :deep(h3) { font-size: 15px; }
 .markdown-message :deep(ul),.markdown-message :deep(ol) { padding-left: 22px; margin: 8px 0 12px; } .markdown-message :deep(table) { display:block; max-width:100%; overflow:auto; border-collapse:collapse; margin:12px 0; } .markdown-message :deep(th),.markdown-message :deep(td) { padding:7px 10px; border:1px solid #e4e8ee; text-align:left; } .markdown-message :deep(th) { background:#f1f4f8; }
 .markdown-message :deep(pre) { position:relative; margin:12px 0; padding:38px 12px 12px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(pre code) { padding:0; color:#1d2733; background:transparent; font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.55; }
+.markdown-message :deep(code:not(pre code)) { padding:2px 6px; color:#174cb9; background:#e9eef6; border:1px solid #dbe4f0; border-radius:5px; font-family:"Cascadia Code",Consolas,monospace; font-size:0.9em; }
+.markdown-message--user :deep(code:not(pre code)) { color:#1d4ed8; background:#fff; border-color:#b9c9e8; box-shadow:0 1px 2px rgba(29,39,51,.08); }
 .markdown-message :deep(.code-toolbar) { position:absolute; top:0; right:0; left:0; display:flex; justify-content:space-between; align-items:center; height:30px; padding:0 9px; color:#6b7785; background:#e9edf2; border-bottom:1px solid #dce2ea; font:11px "Cascadia Code",Consolas,monospace; } .markdown-message :deep(.code-toolbar button) { padding:2px 7px; color:#405166; background:#fff; border:1px solid #d3dae4; border-radius:4px; cursor:pointer; font:inherit; }
 .markdown-message :deep(.mermaid-block) { margin:12px 0; overflow:hidden; background:#fff; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(.mermaid-tabs) { display:flex; gap:2px; padding:6px 7px; background:#f1f4f8; border-bottom:1px solid #e4e8ee; } .markdown-message :deep(.mermaid-tabs button) { padding:4px 9px; color:#6b7785; background:transparent; border:0; border-radius:4px; cursor:pointer; font-size:12px; } .markdown-message :deep(.mermaid-tabs button.active) { color:#174cb9; background:#fff; box-shadow:0 1px 2px rgba(29,39,51,.08); } .markdown-message :deep(.mermaid-preview) { min-height:120px; padding:18px; overflow:auto; text-align:center; } .markdown-message :deep(.mermaid-preview svg) { max-width:100%; height:auto; } .markdown-message :deep(.mermaid-source) { position:relative; } .markdown-message :deep(.mermaid-source pre) { margin:0; border:0; border-radius:0; }
 </style>

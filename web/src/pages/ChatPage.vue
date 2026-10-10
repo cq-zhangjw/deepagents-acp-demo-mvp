@@ -218,6 +218,7 @@ const actionLabels = computed(() => ({
   screenShareActive: locale.value === 'zh' ? '共享屏幕已开启，发送消息时自动截屏' : locale.value === 'ja' ? '画面共有をオン、送信時に自動でスクリーンショット' : 'Screen share on, screenshots on send',
   agent: locale.value === 'zh' ? 'Agent' : locale.value === 'ja' ? 'エージェント' : 'Agent',
   selectAgent: locale.value === 'zh' ? '选择 Agent' : locale.value === 'ja' ? 'エージェントを選択' : 'Select agent',
+  skillsPanel: locale.value === 'zh' ? '打开技能面板' : locale.value === 'ja' ? 'スキルパネルを開く' : 'Open skills panel',
   agents: locale.value === 'zh' ? 'Agent 管理' : locale.value === 'ja' ? 'エージェント管理' : 'Agents',
   newSkill: locale.value === 'zh' ? '新建技能' : locale.value === 'ja' ? '新しいスキル' : 'New skill',
   newTool: locale.value === 'zh' ? '新建工具' : locale.value === 'ja' ? '新しいツール' : 'New tool',
@@ -570,20 +571,15 @@ const currentAgentName = ref(localStorage.getItem(AGENT_STORAGE_KEY) || '')
 const agentDropdownOptions = computed(() =>
   agentList.value
     .filter((agent) => agent.enabled !== false)
-    .map((agent) => ({
-      key: agent.name,
-      label: agent.name,
-      render: () =>
-        h('div', { class: 'agent-option' }, [
-          h('div', { class: 'agent-option-name' }, agent.name),
-          agent.description ? h('div', { class: 'agent-option-desc' }, agent.description) : null
-        ])
-    }))
+    .map((agent) => ({ key: agent.name, label: agent.name }))
 )
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
   fetchManageData() // tools panel state follows the current agent
+  // Append a backticked `@agent-name` reference to the composer so the message
+  // carries the target agent (same convention as @file / /skill quick actions).
+  input.value = input.value + '`@' + key + '` '
   // Each agent maps to a separate ACP subprocess: drop the current connection
   // so the next send reconnects with the new agent name in the WS URL.
   if (ws.value) {
@@ -594,6 +590,29 @@ function selectAgent(key: string) {
   connected.value = false
   initialized.value = false
   initializedSessions.clear()
+}
+
+/** Skill picker for the composer toolbar: select appends `/skill-name`. */
+const skillDropdownOptions = computed(() => {
+  const opts = skillList.value.map((s: any) => ({ key: s.name, label: s.name }))
+  return [
+    ...opts,
+    {
+      key: 'open-panel',
+      label: () =>
+        h('div', { class: 'skill-panel-entry' }, [
+          h(NIcon, { component: MenuOutline, class: 'agent-option-icon' }),
+          h('span', actionLabels.value.skillsPanel)
+        ])
+    }
+  ]
+})
+function selectSkillQuick(key: string) {
+  if (key === 'open-panel') {
+    openRightPanel('skills')
+    return
+  }
+  input.value = input.value + '`/' + key + '` '
 }
 
 async function fetchManageData() {
@@ -1728,8 +1747,8 @@ function openAttachment(attachment: AttachmentRef) {
   anchor.remove()
 }
 
-// ---------- quick actions (@ files / slash skills) ----------
-const quickAction = ref<'file' | 'skill' | null>(null)
+// ---------- quick actions (@ files / slash skills / hash tools) ----------
+const quickAction = ref<'file' | 'skill' | 'tool' | null>(null)
 const quickItems = ref<any[]>([])
 const quickLoading = ref(false)
 // current directory for the @ file picker (relative to the project root, '' = root)
@@ -1747,20 +1766,42 @@ function closeQuickAction() {
   quickDir.value = ''
 }
 
-async function loadQuickItems(action: 'file' | 'skill', q: string, dir = '') {
+async function loadQuickItems(action: 'file' | 'skill' | 'tool', q: string, dir = '') {
   quickLoading.value = true
   try {
     if (action === 'file') {
       const res = await fetch(`/api/manage/files?q=${encodeURIComponent(q)}&dir=${encodeURIComponent(dir)}`)
       const data = await res.json()
       quickItems.value = Array.isArray(data) ? data : []
-    } else {
+    } else if (action === 'skill') {
       const res = await fetch('/api/manage/skills')
       const data = await res.json()
       const list = Array.isArray(data) ? data : []
       quickItems.value = q
         ? list.filter((s: any) => s.name.toLowerCase().includes(q.toLowerCase()))
         : list
+    } else {
+      // tools = built-in tools + every MCP server's tools (mcp_<server>_<tool>)
+      const agent = currentAgentName.value || 'default'
+      const [builtins, mcp] = await Promise.all([
+        fetch('/api/manage/builtin-tools').then((r) => r.json()),
+        fetch(`/api/manage/tools?agent=${encodeURIComponent(agent)}`).then((r) => r.json())
+      ])
+      const items: any[] = []
+      for (const t of Array.isArray(builtins) ? builtins : []) {
+        items.push({ name: t.name, desc: t.description ? `builtin · ${t.description}` : 'builtin tool' })
+      }
+      for (const s of Array.isArray(mcp) ? mcp : []) {
+        for (const t of s.tools || []) {
+          items.push({
+            name: `mcp_${s.name}_${t.name}`,
+            desc: s.name + (t.description ? ` · ${t.description}` : '')
+          })
+        }
+      }
+      quickItems.value = q
+        ? items.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()) || (i.desc || '').toLowerCase().includes(q.toLowerCase()))
+        : items
     }
     quickIndex.value = 0
   } catch {
@@ -1792,11 +1833,14 @@ function selectQuickItem(item: any) {
       drillQuickDir(item.rel || item.name)
       return
     }
-    // @ + backticked absolute path + space
-    input.value = '@' + '`' + (item.path ?? item.absolute_path ?? item.name) + '`' + ' '
+    // backticked `@absolute-path` + space
+    input.value = '`' + '@' + (item.path ?? item.absolute_path ?? item.name) + '`' + ' '
   } else if (quickAction.value === 'skill') {
-    // / + backticked skill name + space
-    input.value = '/' + '`' + item.name + '`' + ' '
+    // backticked `/skill-name` + space
+    input.value = '`' + '/' + item.name + '`' + ' '
+  } else {
+    // backticked `#tool-name` + space
+    input.value = '`' + '#' + item.name + '`' + ' '
   }
   closeQuickAction()
 }
@@ -1804,8 +1848,8 @@ function selectQuickItem(item: any) {
 watch(input, (value) => {
   if (value.length >= 1) {
     const ch = value[0]
-    if (value.length === 1 && (ch === '@' || ch === '/')) {
-      quickAction.value = ch === '@' ? 'file' : 'skill'
+    if (value.length === 1 && (ch === '@' || ch === '/' || ch === '#')) {
+      quickAction.value = ch === '@' ? 'file' : ch === '/' ? 'skill' : 'tool'
       quickItems.value = []
       quickDir.value = ''
       quickLoading.value = true
@@ -1813,7 +1857,7 @@ watch(input, (value) => {
       quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, '', ''), 120)
       return
     }
-    if (quickAction.value && (ch === '@' || ch === '/')) {
+    if (quickAction.value && (ch === '@' || ch === '/' || ch === '#')) {
       const q = value.slice(1)
       clearTimeout(quickTimer)
       quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, q, quickDir.value), 120)
@@ -2020,7 +2064,7 @@ onBeforeUnmount(() => {
                 <span>{{ formatTime(item.createdAt) }}</span>
               </div>
               <div v-if="item.role === 'user'" class="message-bubble user-bubble">
-                <MarkdownMessage v-if="item.text" class="user-content" :content="item.text" />
+                <MarkdownMessage v-if="item.text" class="user-content" variant="user" :content="item.text" />
                 <div v-if="item.attachments.length" class="attachment-list">
                   <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }" role="button" :aria-label="attachment.kind === 'image' ? t('previewAttachment') : t('downloadAttachment')" @click="openAttachment(attachment)">
                     <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
@@ -2175,7 +2219,7 @@ onBeforeUnmount(() => {
                 :class="{ 'quick-action-item--active': index === quickIndex }"
                 @mousedown.prevent="selectQuickItem(item)"
               >
-                <NIcon :component="quickAction === 'file' ? (item.type === 'dir' ? FolderOutline : DocumentOutline) : SparklesOutline" />
+                <NIcon :component="quickAction === 'file' ? (item.type === 'dir' ? FolderOutline : DocumentOutline) : quickAction === 'skill' ? SparklesOutline : ConstructOutline" />
                 <span class="quick-action-name">{{ quickAction === 'file' ? item.name : item.name }}</span>
                 <span class="quick-action-desc">{{ quickAction === 'skill' ? item.description : item.path }}</span>
               </div>
@@ -2195,9 +2239,11 @@ onBeforeUnmount(() => {
                     <template #icon><NIcon :component="SparklesOutline" /></template>{{ currentAgentName || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" @click="openRightPanel('skills')">
-                  <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
-                </NButton>
+                <NDropdown :options="skillDropdownOptions" trigger="click" @select="selectSkillQuick">
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills">
+                    <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
+                  </NButton>
+                </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
@@ -2273,7 +2319,7 @@ onBeforeUnmount(() => {
               <strong class="manage-card-title">{{ skill.name }}</strong>
               <NSwitch size="small" :value="skill.enabled" @update:value="toggleSkill(skill.name)" />
             </div>
-            <p v-if="skill.description" class="manage-card-desc">{{ skill.description }}</p>
+            <p v-if="skill.description" class="manage-card-desc" :title="skill.description">{{ skill.description }}</p>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="openSkillEdit(skill)">{{ actionLabels.edit }}</NButton>
             </div>
@@ -2307,12 +2353,14 @@ onBeforeUnmount(() => {
             </div>
             <div v-for="tool in filteredToolList" :key="tool.name" class="manage-card" :class="{ 'manage-card--disabled': !tool.enabled }">
               <div class="manage-card-head manage-card-head--group" @click="toggleToolGroup(tool.name)">
-                <span class="tool-group-caret">{{ expandedToolGroups.includes(tool.name) ? '▾' : '▸' }}</span>
-                <span class="manage-card-title">{{ tool.name }}</span>
-                <span v-if="tool.tools?.length" class="tool-count">{{ tool.tools.length }}</span>
+                <span class="tool-group-left">
+                  <span class="tool-group-caret">{{ expandedToolGroups.includes(tool.name) ? '▾' : '▸' }}</span>
+                  <span class="manage-card-title">{{ tool.name }}</span>
+                  <span v-if="tool.tools?.length" class="tool-count">{{ tool.tools.length }}</span>
+                </span>
                 <NSwitch size="small" :value="tool.enabled" @update:value="toggleTool(tool.name)" @click.stop />
               </div>
-              <p v-if="tool.description" class="manage-card-desc">{{ tool.description }}</p>
+              <p v-if="tool.description" class="manage-card-desc" :title="tool.description">{{ tool.description }}</p>
               <code v-if="tool.command" class="manage-card-cmd">{{ tool.command }}</code>
               <div v-if="expandedToolGroups.includes(tool.name)" class="tool-item-list">
                 <div v-for="t in tool.tools || []" :key="t.name" class="tool-item" :class="{ 'tool-item--disabled': !t.enabled }">
@@ -2340,7 +2388,7 @@ onBeforeUnmount(() => {
               <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
               <NSwitch size="small" :value="agent.enabled !== false" @update:value="setAgentEnabled(agent)" />
             </div>
-            <p v-if="agent.description" class="manage-card-desc">{{ agent.description }}</p>
+            <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
             <div v-if="(agent.skills || []).length" class="manage-card-chips">
               <span class="manage-chip-label">{{ actionLabels.linkedSkills }}</span>
               <NTag v-for="s in agent.skills" :key="s" size="small" type="info">{{ s }}</NTag>
@@ -2505,7 +2553,6 @@ onBeforeUnmount(() => {
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
 .hidden-action { display: none; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
-.agent-option { padding:2px 0; } .agent-option-name { font-weight:600; } .agent-option-desc { margin-top:2px; color:#999; font-size:12px; line-height:1.4; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
 .right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
 .panel-search { position:sticky; top:0; z-index:2; background:var(--surface); padding-bottom:6px; }
@@ -2520,14 +2567,15 @@ onBeforeUnmount(() => {
 .manage-card--disabled { opacity:.55; }
 .manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .manage-card-title { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.manage-card-desc { font-size:12px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; }
+.manage-card-desc { font-size:12px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .manage-card-cmd { display:block; font-size:11px; color:var(--subtle); background:var(--surface); border-radius:6px; padding:4px 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .manage-card-chips { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
 .manage-chip-label { font-size:11px; color:var(--subtle); margin-right:2px; }
 .manage-card-actions { display:flex; justify-content:flex-end; gap:2px; }
 .manage-card-head--group { cursor:pointer; user-select:none; }
-.tool-group-caret { font-size:12px; color:var(--subtle); width:14px; text-align:center; }
-.tool-count { font-size:10px; color:var(--subtle); background:var(--surface); border-radius:99px; padding:0 6px; line-height:16px; }
+.tool-group-left { display:flex; align-items:center; gap:6px; min-width:0; }
+.tool-group-caret { font-size:12px; color:var(--subtle); width:14px; text-align:center; flex:0 0 auto; }
+.tool-count { font-size:10px; color:var(--subtle); background:var(--surface); border-radius:99px; padding:0 6px; line-height:16px; flex:0 0 auto; }
 .tool-item-list { display:flex; flex-direction:column; gap:6px; border-left:2px solid var(--border); margin:2px 0 2px 10px; padding:2px 0 2px 10px; }
 .tool-item { padding:6px 8px; border-radius:8px; background:var(--surface); display:flex; flex-direction:column; gap:4px; }
 .tool-item--disabled { opacity:.55; }
@@ -2539,8 +2587,8 @@ onBeforeUnmount(() => {
 .manage-form { display:flex; flex-direction:column; gap:10px; }
 .manage-form-code :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:12px; line-height:1.6; }
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
-.agent-option-name { font-size:13px; }
-.agent-option-desc { font-size:11px; color:var(--subtle); margin-top:2px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
+.skill-panel-entry { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--subtle); margin-top:3px; border-top:1px solid var(--border); padding-top:6px; }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
@@ -2554,13 +2602,13 @@ onBeforeUnmount(() => {
 .builtin-tool-chip--active { background:rgba(37,99,235,.14); border-color:rgba(37,99,235,.55); }
 .builtin-tool-chip--active code { color:#2563eb; font-weight:600; }
 .builtin-tool-chip:not(.builtin-tool-chip--active) { opacity:.62; }
-.skill-edit-split { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px; }
-.skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; }
+.skill-edit-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin-top:10px; }
+.skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; min-width:0; }
 .skill-edit-label { color:var(--subtle); font-size:12px; }
 .skill-edit-editor :deep(textarea) { font:12px/1.5 "Cascadia Code",Consolas,monospace !important; }
-.skill-edit-preview-body { flex:1; min-height:280px; max-height:420px; overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
+.skill-edit-preview-body { flex:1; min-height:280px; max-height:min(60vh, 560px); overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
 .skill-edit-preview-empty { color:var(--subtle); font-size:12px; }
-.manage-modal--wide { width:min(860px, calc(100vw - 32px)); }
+.manage-modal--wide { width:80vw; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
