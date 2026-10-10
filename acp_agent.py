@@ -29,6 +29,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from utils.model_util import MODEL
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools
+from utils.skill_loader import get_agent_skills
 
 # Selected agent (passed by the gateway as AGENT_NAME env var; the frontend
 # sends it through the /acp-ws?agent= query param). Its enabled MCP tools are
@@ -194,6 +195,9 @@ def build_agent(
         # MCP tools configured for the selected agent (agents.json -> mcp_tools);
         # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
         tools=get_agent_mcp_tools(AGENT_NAME),
+        # Skills enabled for the selected agent (agents.json -> skills; the
+        # default agent starts with every installed skill).
+        skills=get_agent_skills(AGENT_NAME),
         # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
         # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,

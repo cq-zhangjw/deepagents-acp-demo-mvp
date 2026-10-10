@@ -259,8 +259,26 @@ def _frontmatter(md: str) -> dict:
     return {}
 
 
-def _is_disabled(dir_path: Path) -> bool:
-    return (dir_path / ".disabled").exists()
+def _skill_names() -> list[str]:
+    """Directory names of installed skills (stable identity in agents.json)."""
+    names = []
+    if SKILLS_DIR.is_dir():
+        for d in sorted(SKILLS_DIR.iterdir()):
+            if d.is_dir() and (d / "SKILL.md").exists():
+                names.append(d.name)
+    return names
+
+
+def _norm_skills(value, all_names: list[str]) -> list[str]:
+    """Normalize AgentDef.skills: always a validated list of skill names.
+
+    None / missing / empty legacy values are migrated to the full installed set
+    ("all enabled" is expressed as the full array, mirroring inner_tools).
+    """
+    if not isinstance(value, list):
+        return list(all_names)
+    names = {v for v in value if isinstance(v, str) and v in all_names}
+    return [n for n in all_names if n in names] if names else list(all_names)
 
 
 def _skill_entry(skill_dir: Path) -> dict:
@@ -278,7 +296,8 @@ def _skill_entry(skill_dir: Path) -> dict:
     return {
         "name": name,
         "description": description,
-        "enabled": not _is_disabled(skill_dir),
+        # per-agent enablement is decided by agents.json (skills array), not markers
+        "enabled": True,
         "path": str(skill_dir.relative_to(BASE_DIR)).replace("\\", "/"),
         "absolute_path": str(skill_dir.resolve()),
         "updated_at": _mtime(md_path),
@@ -306,29 +325,58 @@ def _manifest_tools(server_dir: Path) -> list[dict]:
 
 # directories/files skipped by the @ file picker
 _SKIP_TOP = {".git", ".venv", "node_modules", "__pycache__", ".idea", ".vscode"}
+_MAX_PICKER_DEPTH = 4
+_MAX_PICKER_RESULTS = 200
+
+
+def _picker_entry(p: Path) -> dict:
+    return {
+        "name": p.name,
+        "path": str(p.resolve()),
+        "rel": str(p.relative_to(BASE_DIR)) if p != BASE_DIR else "",
+        "type": "dir" if p.is_dir() else "file",
+    }
 
 
 @router.get("/files")
-def list_files(q: str = ""):
-    """List top-level entries of the project root (for the @ file picker).
+def list_files(q: str = "", dir: str = ""):
+    """Entries for the @ file picker.
 
-    Returns name / absolute path / type, filtered by name prefix (q, case-insensitive).
-    Only one level is listed; dot-prefixed files like .env are kept, but common
-    heavyweight/vendor dirs (git, venv, node_modules, __pycache__) are skipped.
+    dir: relative path from the project root ('' = root); lists that directory's
+    entries one level deep so folders can be drilled into by clicking them.
+    q: when non-empty, recursively filters the whole tree (any depth, bounded)
+    by name/relative-path containing q (case-insensitive), so typing a nested
+    path fragment matches files inside subfolders too.
+    Returns name / absolute path / relative path / type; heavy vendor dirs are
+    skipped, dot-files like .env are kept.
     """
+    try:
+        base = (BASE_DIR / dir).resolve()
+        base.relative_to(BASE_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="dir outside project root")
     q = (q or "").strip().lower()
     entries = []
     try:
-        for p in sorted(BASE_DIR.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
-            if p.name in _SKIP_TOP:
-                continue
-            if q and not p.name.lower().startswith(q):
-                continue
-            entries.append({
-                "name": p.name,
-                "path": str(p.resolve()),
-                "type": "dir" if p.is_dir() else "file",
-            })
+        if not q:
+            for p in sorted(base.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+                if p.name in _SKIP_TOP:
+                    continue
+                entries.append(_picker_entry(p))
+            return entries
+        # recursive search: match file/dir name or its path below the base
+        def walk(d: Path, depth: int) -> None:
+            if depth > _MAX_PICKER_DEPTH or len(entries) >= _MAX_PICKER_RESULTS:
+                return
+            for p in sorted(d.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+                if p.name in _SKIP_TOP or (p.is_dir() and p.name.startswith(".")):
+                    continue
+                if q in p.name.lower() or q in str(p.relative_to(BASE_DIR)).lower():
+                    entries.append(_picker_entry(p))
+                if p.is_dir():
+                    walk(p, depth + 1)
+
+        walk(base, 0)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"failed to list files: {exc}") from exc
     return entries
@@ -337,13 +385,23 @@ def list_files(q: str = ""):
 # ---------- skills ----------
 
 @router.get("/skills")
-def list_skills():
-    """Skill list: scan .deepagents/skills/*/SKILL.md."""
+def list_skills(agent: str = "default"):
+    """Skill list for one agent: scan .deepagents/skills/*/SKILL.md.
+
+    A skill is enabled when its name is in the agent's skills array
+    (agents.json); the default agent starts with every skill (array missing /
+    empty == full set). No .disabled marker files are used for enablement.
+    """
+    agent = _ensure_name(agent)
     items = []
     if SKILLS_DIR.is_dir():
-        for d in sorted(SKILLS_DIR.iterdir()):
-            if d.is_dir() and (d / "SKILL.md").exists():
-                items.append(_skill_entry(d))
+        dirs = [d for d in sorted(SKILLS_DIR.iterdir()) if d.is_dir() and (d / "SKILL.md").exists()]
+        agents = _read_agents()
+        enabled_set = set(_norm_skills((agents.get(agent) or {}).get("skills"), _skill_names()))
+        for d in dirs:
+            entry = _skill_entry(d)
+            entry["enabled"] = entry["name"] in enabled_set
+            items.append(entry)
     items.sort(key=lambda x: (not x["enabled"], x["name"]))
     return items
 
@@ -362,22 +420,27 @@ def get_skill(name: str):
 
 
 @router.post("/skills/{name}/toggle")
-def toggle_skill(name: str):
-    """Toggle a skill (create/delete the .disabled marker file)."""
+def toggle_skill(name: str, agent: str = "default"):
+    """Toggle a skill for one agent: add/remove the name in agents.json skills
+    (array operation, mirroring inner_tools). The default agent starts with
+    every skill; the first toggle materializes the full list then flips the
+    item, so only the selected agent's skills field is touched."""
     name = _ensure_name(name)
-    d = SKILLS_DIR / name
-    if not (d / "SKILL.md").exists():
+    agent = _ensure_name(agent)
+    if not (SKILLS_DIR / name / "SKILL.md").exists():
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
-    flag = d / ".disabled"
-    if flag.exists():
-        flag.unlink()
-        enabled = True
-    else:
-        flag.touch()
+    agents = _read_agents()
+    defn = agents.setdefault(agent, {})
+    skills = _norm_skills(defn.get("skills"), _skill_names())
+    if name in skills:
+        skills = [x for x in skills if x != name]
         enabled = False
-        # disabling drops the skill from every agent's association list
-        _remove_agent_ref("skill", name)
-    return {"name": name, "enabled": enabled}
+    else:
+        skills = skills + [name]
+        enabled = True
+    defn["skills"] = skills
+    _write_agents(agents)
+    return {"name": name, "enabled": enabled, "agent": agent}
 
 
 @router.post("/skills")
@@ -750,7 +813,7 @@ def _remove_agent_ref(kind: str, name: str) -> None:
     changed = False
     for defn in agents.values():
         if kind == "skill":
-            items = defn.get("skills") or []
+            items = _norm_skills(defn.get("skills"), _skill_names())
             if name in items:
                 defn["skills"] = [x for x in items if x != name]
                 changed = True
@@ -904,9 +967,9 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
     sp = payload.get("system_prompt")
     if isinstance(sp, str) and sp.strip():
         def_data["system_prompt"] = sp.strip()
-    skills = [s for s in (payload.get("skills") or []) if isinstance(s, str) and _valid_name(s)
-              and not _is_disabled(SKILLS_DIR / s)]
-    if skills:
+    skills = _norm_skills(payload.get("skills"), _skill_names())
+    # omit the field when it equals the default (full installed skill set)
+    if set(skills) != set(_skill_names()):
         def_data["skills"] = skills
     tools = _norm_agent_tools(payload.get("tools"))
     # the agent form sends a server-name list; keep the existing per-agent

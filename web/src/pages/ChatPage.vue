@@ -592,8 +592,9 @@ function selectAgent(key: string) {
 
 async function fetchManageData() {
   try {
+    const agent = currentAgentName.value || 'default'
     const [skills, agents, builtins] = await Promise.all([
-      fetch('/api/manage/skills').then((r) => r.json()),
+      fetch(`/api/manage/skills?agent=${encodeURIComponent(agent)}`).then((r) => r.json()),
       fetch('/api/manage/agents').then((r) => r.json()),
       fetch('/api/manage/builtin-tools').then((r) => r.json())
     ])
@@ -606,8 +607,7 @@ async function fetchManageData() {
       currentAgentName.value = first?.name || ''
     }
     // tool enablement is queried per agent (agents.json tools.mcp_tools)
-    const agent = currentAgentName.value || 'default'
-    const tools = await fetch(`/api/manage/tools?agent=${agent}`).then((r) => r.json())
+    const tools = await fetch(`/api/manage/tools?agent=${encodeURIComponent(agent)}`).then((r) => r.json())
     toolList.value = Array.isArray(tools) ? tools : []
   } catch {
     // keep the list empty when the backend is unavailable
@@ -627,7 +627,7 @@ async function apiManage(path: string, method = 'GET', body?: unknown) {
 
 async function toggleSkill(name: string) {
   try {
-    await apiManage(`/api/manage/skills/${name}/toggle`, 'POST')
+    await apiManage(`/api/manage/skills/${name}/toggle?agent=${encodeURIComponent(currentAgentName.value || 'default')}`, 'POST')
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -1719,6 +1719,8 @@ function openAttachment(attachment: AttachmentRef) {
 const quickAction = ref<'file' | 'skill' | null>(null)
 const quickItems = ref<any[]>([])
 const quickLoading = ref(false)
+// current directory for the @ file picker (relative to the project root, '' = root)
+const quickDir = ref('')
 // overlay loading: initial load (initialLoading) and conversation switch
 // (conversationLoading, counter-based so rapid switches hide only after the last)
 const initialLoading = ref(true)
@@ -1730,13 +1732,14 @@ function closeQuickAction() {
   quickAction.value = null
   quickItems.value = []
   quickIndex.value = 0
+  quickDir.value = ''
 }
 
-async function loadQuickItems(action: 'file' | 'skill', q: string) {
+async function loadQuickItems(action: 'file' | 'skill', q: string, dir = '') {
   quickLoading.value = true
   try {
     if (action === 'file') {
-      const res = await fetch(`/api/manage/files?q=${encodeURIComponent(q)}`)
+      const res = await fetch(`/api/manage/files?q=${encodeURIComponent(q)}&dir=${encodeURIComponent(dir)}`)
       const data = await res.json()
       quickItems.value = Array.isArray(data) ? data : []
     } else {
@@ -1755,8 +1758,28 @@ async function loadQuickItems(action: 'file' | 'skill', q: string) {
   }
 }
 
+// drill into a folder (relative path from the project root)
+function drillQuickDir(rel: string) {
+  quickDir.value = rel
+  quickIndex.value = 0
+  void loadQuickItems('file', '', rel)
+}
+
+function parentQuickDir() {
+  const parts = quickDir.value.split(/[\\/]/).filter(Boolean)
+  parts.pop()
+  quickDir.value = parts.join('/')
+  quickIndex.value = 0
+  void loadQuickItems('file', '', quickDir.value)
+}
+
 function selectQuickItem(item: any) {
   if (quickAction.value === 'file') {
+    // a folder entry drills into it instead of being inserted
+    if (item.type === 'dir') {
+      drillQuickDir(item.rel || item.name)
+      return
+    }
     // @ + backticked absolute path + space
     input.value = '@' + '`' + (item.path ?? item.absolute_path ?? item.name) + '`' + ' '
   } else if (quickAction.value === 'skill') {
@@ -1772,15 +1795,16 @@ watch(input, (value) => {
     if (value.length === 1 && (ch === '@' || ch === '/')) {
       quickAction.value = ch === '@' ? 'file' : 'skill'
       quickItems.value = []
+      quickDir.value = ''
       quickLoading.value = true
       clearTimeout(quickTimer)
-      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, ''), 120)
+      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, '', ''), 120)
       return
     }
     if (quickAction.value && (ch === '@' || ch === '/')) {
       const q = value.slice(1)
       clearTimeout(quickTimer)
-      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, q), 120)
+      quickTimer = window.setTimeout(() => void loadQuickItems(quickAction.value!, q, quickDir.value), 120)
       return
     }
   }
@@ -2123,6 +2147,15 @@ onBeforeUnmount(() => {
             <div v-if="quickAction" class="quick-action-panel" @mousedown.prevent>
               <div v-if="quickLoading" class="quick-action-empty">{{ t('loading') }}</div>
               <div v-else-if="!quickItems.length" class="quick-action-empty">{{ t('noResults') }}</div>
+              <div
+                v-if="quickAction === 'file' && quickDir"
+                class="quick-action-item"
+                @mousedown.prevent="parentQuickDir()"
+              >
+                <NIcon :component="FolderOutline" />
+                <span class="quick-action-name">..</span>
+                <span class="quick-action-desc">{{ quickDir }}</span>
+              </div>
               <div
                 v-for="(item, index) in quickItems"
                 :key="item.path ?? item.name"

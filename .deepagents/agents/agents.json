@@ -2,7 +2,10 @@
   "default": {
     "description": "Default agent (current behavior)",
     "enabled": true,
-    "skills": [],
+    "skills": [
+      "skill-creator",
+      "tool-creator"
+    ],
     "tools": {
       "inner_tools": [
         "ls",
