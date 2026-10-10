@@ -1,4 +1,4 @@
-// English locale
+﻿// English locale
 export default {
   brandSubline: 'DeepAgents Workspace',
   language: 'Language',
@@ -26,6 +26,7 @@ export default {
   removeAttachment: 'Remove attachment',
   inputPlaceholder: 'Enter a task. Enter to send, Shift + Enter for a new line',
   loading: 'Loading...',
+  loadEarlier: 'Load earlier messages',
   noResults: 'No matches',
   builtinTools: 'Built-in tools',
   send: 'Send task',

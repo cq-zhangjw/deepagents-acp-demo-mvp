@@ -241,6 +241,24 @@ const currentConversation = computed(() =>
   conversations.value.find((conversation) => conversation.id === activeConversationId.value)
 )
 const currentMessages = computed(() => currentConversation.value?.messages ?? [])
+// 大数据量会话只渲染末尾窗口，避免整条消息列表的 DOM 过大导致卡顿；
+// 点击"加载更早的消息"逐步扩大窗口。
+const MESSAGE_WINDOW = 60
+const messageWindowSize = ref(MESSAGE_WINDOW)
+const visibleMessages = computed(() => {
+  const msgs = currentMessages.value
+  if (msgs.length <= messageWindowSize.value) return msgs
+  return msgs.slice(msgs.length - messageWindowSize.value)
+})
+const showLoadEarlier = computed(() => currentMessages.value.length > messageWindowSize.value)
+function loadEarlierMessages() {
+  const el = timeline.value
+  const prevTop = el?.scrollTop ?? 0
+  messageWindowSize.value += MESSAGE_WINDOW
+  nextTick(() => {
+    if (el) el.scrollTop = prevTop
+  })
+}
 const lastAssistantId = computed(() => {
   const msgs = currentMessages.value
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -384,6 +402,7 @@ function openVoiceCall() {
 
 function selectConversation(id: string) {
   activeConversationId.value = id
+  messageWindowSize.value = MESSAGE_WINDOW
   attachments.value = []
   sidebarVisible.value = false
   errorText.value = ''
@@ -394,6 +413,7 @@ function selectConversation(id: string) {
       && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
   ))
   if (!running) {
+    conversationLoading.value += 1
     void (async () => {
       try {
         const res = await fetch(`/api/history/${encodeURIComponent(id)}`)
@@ -410,6 +430,9 @@ function selectConversation(id: string) {
         }
       } catch {
         // server unavailable: keep the local copy
+      } finally {
+        conversationLoading.value = Math.max(0, conversationLoading.value - 1)
+        nextTick(scrollToBottom)
       }
     })()
   }
@@ -1719,6 +1742,10 @@ function openAttachment(attachment: AttachmentRef) {
 const quickAction = ref<'file' | 'skill' | null>(null)
 const quickItems = ref<any[]>([])
 const quickLoading = ref(false)
+// 覆盖 loading：页面初期加载（initialLoading）与切换会话（conversationLoading，
+// 计数器支持快速连续切换时直到最后一次完成才隐藏）
+const initialLoading = ref(true)
+const conversationLoading = ref(0)
 const quickIndex = ref(0)
 let quickTimer: number | undefined
 
@@ -1800,10 +1827,11 @@ function submitOnEnter(event: KeyboardEvent) {
 }
 
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
-onMounted(() => {
+onMounted(async () => {
   void loadContextSize()
   setupChatBridge()
-  void loadHistory().then(() => {
+  try {
+    await loadHistory()
     if (!conversations.value.length) createConversation()
     const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
     if (defaultEmpties.length > 1) {
@@ -1812,7 +1840,9 @@ onMounted(() => {
       defaultEmpties.slice(1).forEach((conversation) => void deleteConversationRemote(conversation.id))
     }
     void validateStoredSessions()
-  })
+  } finally {
+    initialLoading.value = false
+  }
   window.addEventListener('click', closeMessageMenu)
   window.addEventListener('click', closeRenameMenu)
 })
@@ -1966,7 +1996,8 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else class="message-column">
-          <article v-for="item in currentMessages" :key="item.id" class="message" :class="`message--${item.role}`">
+          <div v-if="showLoadEarlier" class="load-earlier" role="button" tabindex="0" @click="loadEarlierMessages">{{ t('loadEarlier') }}</div>
+          <article v-for="item in visibleMessages" :key="item.id" class="message" :class="`message--${item.role}`">
             <NAvatar round :size="30" :color="item.role === 'user' ? '#2563eb' : '#1d2733'">
               {{ item.role === 'user' ? '我' : 'AI' }}
             </NAvatar>
@@ -2180,6 +2211,13 @@ onBeforeUnmount(() => {
 
     <div v-if="previewImage" class="image-preview-overlay" @click="previewImage = null">
       <img :src="previewImage" :alt="actionLabels.previewAttachment" @click.stop />
+    </div>
+
+    <div v-if="initialLoading || conversationLoading > 0" class="chat-loading-overlay" aria-live="polite">
+      <div class="chat-loading-box">
+        <NSpin size="large" />
+        <span>{{ t('loading') }}</span>
+      </div>
     </div>
 
     <NDrawer v-model:show="sidebarVisible" placement="left" :width="280">
@@ -2577,5 +2615,47 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
   cursor: default;
+}
+.chat-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(247, 248, 250, 0.6);
+}
+.chat-loading-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 34px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 6px 30px rgba(29, 39, 51, 0.14);
+  border: 1px solid var(--border);
+  color: var(--subtle);
+  font-size: 13px;
+}
+.load-earlier {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 14px auto;
+  padding: 8px 18px;
+  width: fit-content;
+  border-radius: 20px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--subtle);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s, color 0.2s;
+}
+.load-earlier:hover {
+  background: var(--border);
+  color: var(--text);
 }
 </style>

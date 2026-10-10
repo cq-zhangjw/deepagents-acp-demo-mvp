@@ -1,4 +1,4 @@
-// Simplified Chinese locale
+﻿// Simplified Chinese locale
 export default {
   brandSubline: 'DeepAgents 工作台',
   language: '语言',
@@ -26,6 +26,7 @@ export default {
   removeAttachment: '移除附件',
   inputPlaceholder: '输入任务，Enter 发送，Shift + Enter 换行',
   loading: '加载中...',
+  loadEarlier: '加载更早的消息',
   noResults: '无匹配结果',
   builtinTools: '内置工具',
   send: '发送任务',

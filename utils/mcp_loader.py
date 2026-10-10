@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastmcp import Client
+from fastmcp.client.transports.stdio import PythonStdioTransport
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, create_model
 
@@ -32,6 +33,7 @@ MCP_SERVERS_DIR = BASE_DIR / ".deepagents" / "tools" / "mcp_servers"
 _servers: dict[str, "ServerHolder"] = {}
 _tools_cache: dict[str, list[BaseTool]] = {}
 _agents_cache: dict[str, dict[str, Any]] | None = None
+_CALL_TIMEOUT_SECONDS = float(os.getenv("MCP_CALL_TIMEOUT", "60"))
 
 
 def load_agents_config() -> dict[str, dict[str, Any]]:
@@ -82,7 +84,15 @@ class ServerHolder:
 
     async def ensure(self) -> Client:
         if self._client is None or not self._client.is_connected:
-            client = Client(self._entry, name=self.server)
+            # stdio subprocess env: inherit the parent environment but force
+            # UTF-8 so non-ASCII payloads never trip the pipe codec.
+            client = Client(
+                PythonStdioTransport(
+                    script_path=self._entry,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                ),
+                name=self.server,
+            )
             # fastmcp 4.x connects inside its async context manager; enter it
             # manually so the connection outlives a single call.
             await client.__aenter__()
@@ -91,7 +101,10 @@ class ServerHolder:
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         client = await self.ensure()
-        result = await client.call_tool(tool_name, arguments)
+        # Bound the server call: a hung MCP stdio subprocess must not leave the
+        # agent prompt pending forever (which would keep the frontend stop
+        # button active after the user sees no progress).
+        result = await client.call_tool(tool_name, arguments, timeout=_CALL_TIMEOUT_SECONDS)
         data = getattr(result, "data", None)
         if data is not None:
             return str(data)
@@ -150,16 +163,22 @@ def _build_args_model(name: str, input_schema: dict[str, Any]) -> type[BaseModel
 
 
 def make_tool(holder: ServerHolder, meta: dict[str, Any]) -> StructuredTool:
-    """Wrap one manifest tool definition as an async langchain tool."""
+    """Wrap one manifest tool definition as an async langchain tool.
+
+    The tool is named `mcp_<server>_<tool>` so MCP tools are visually distinct
+    from the built-in deepagents tools (read_file, glob, execute, ...). The
+    underlying server call still uses the original manifest tool name.
+    """
+    tool_name = f"mcp_{holder.server}_{meta['name']}"
 
     async def _run(**kwargs: Any) -> str:
         return await holder.call(meta["name"], kwargs)
 
     return StructuredTool.from_function(
         coroutine=_run,
-        name=meta["name"],
+        name=tool_name,
         description=meta.get("description") or f"Call {meta['name']} on the MCP server",
-        args_schema=_build_args_model(meta["name"], meta.get("inputSchema") or {}),
+        args_schema=_build_args_model(tool_name, meta.get("inputSchema") or {}),
     )
 
 

@@ -1,4 +1,4 @@
-// Japanese locale
+﻿// Japanese locale
 export default {
   brandSubline: 'DeepAgents ワークスペース',
   language: '言語',
@@ -26,6 +26,7 @@ export default {
   removeAttachment: '添付を削除',
   inputPlaceholder: 'タスクを入力。Enter で送信、Shift + Enter で改行',
   loading: '読み込み中...',
+  loadEarlier: '以前のメッセージを読み込む',
   noResults: '一致する結果がありません',
   builtinTools: '内蔵ツール',
   send: '送信',
