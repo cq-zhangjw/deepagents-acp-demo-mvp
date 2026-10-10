@@ -429,7 +429,13 @@ function selectConversation(id: string) {
           if (rows.length) {
             const index = conversations.value.findIndex((conversation) => conversation.id === id)
             if (index >= 0) {
-              conversations.value[index] = rows[0]
+              // Prefer the fresher copy: a local conversation whose last write
+              // is newer than the server row keeps its state (avoids the
+              // server overwriting a rename/edit that the PUT has not flushed).
+              const local = conversations.value[index]
+              if (!(rows[0].updatedAt && (local.updatedAt ?? 0) > rows[0].updatedAt)) {
+                conversations.value[index] = rows[0]
+              }
             } else {
               conversations.value.unshift(rows[0])
             }
@@ -1190,6 +1196,12 @@ async function sendAgentPrompt(
   // Reset the cancel flag on every prompt path (submit & retry), otherwise a
   // previous cancel would skip the completed status and leave the stop button stuck.
   cancelRequested = false
+  // The assistantMessage argument is the plain object created by submitPrompt.
+  // Writing to it directly bypasses Vue's reactive proxy (the array element is
+  // wrapped when pushed), so computed state such as isRunning would never
+  // invalidate and the stop button would stay stuck. Always update through the
+  // reactive proxy stored in the conversation array instead.
+  const reactiveAssistant = () => conversation.messages.find((message) => message.id === assistantMessage.id) ?? assistantMessage
   try {
     await connect()
     await initialize()
@@ -1212,24 +1224,26 @@ async function sendAgentPrompt(
       }))
     cancelRequested = false // reset the cancel flag for a new run
     await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content })
-    if (assistantMessage.status !== 'cancelled' && assistantMessage.status !== 'failed' && !cancelRequested) {
-      assistantMessage.status = 'completed'
-      assistantMessage.process.completedAt = Date.now()
-      if (!assistantMessage.finalText) appendTextSegment(assistantMessage, t('taskComplete'))
-      speakReplyIfEnabled(assistantMessage.finalText ?? '')
+    const assistant = reactiveAssistant()
+    if (assistant.status !== 'cancelled' && assistant.status !== 'failed' && !cancelRequested) {
+      assistant.status = 'completed'
+      assistant.process.completedAt = Date.now()
+      if (!assistant.finalText) appendTextSegment(assistant, t('taskComplete'))
+      speakReplyIfEnabled(assistant.finalText ?? '')
     }
   } catch (error) {
     // Only downgrade to failed while still pending/streaming; a completion
     // path that already set 'completed' must not be overwritten by a late error.
-    if (assistantMessage.status !== 'cancelled'
-      && assistantMessage.status !== 'completed'
-      && assistantMessage.status !== 'failed') {
-      assistantMessage.status = 'failed'
-      assistantMessage.process.completedAt = Date.now()
+    const assistant = reactiveAssistant()
+    if (assistant.status !== 'cancelled'
+      && assistant.status !== 'completed'
+      && assistant.status !== 'failed') {
+      assistant.status = 'failed'
+      assistant.process.completedAt = Date.now()
       const message = error instanceof Error ? error.message : t('taskFailed')
       errorText.value = message
       // Show the raw error message as assistant content instead of only a status label
-      appendTextSegment(assistantMessage, `\n\n${message}`)
+      appendTextSegment(assistant, `\n\n${message}`)
     }
   } finally {
     conversation.updatedAt = Date.now()
