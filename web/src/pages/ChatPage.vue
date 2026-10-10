@@ -548,6 +548,16 @@ function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
   fetchManageData() // 工具面板状态随 Agent 切换
+  // Each agent maps to a separate ACP subprocess: drop the current connection
+  // so the next send reconnects with the new agent name in the WS URL.
+  if (ws.value) {
+    ws.value.close()
+    ws.value = null
+  }
+  socketPromise.value = null
+  connected.value = false
+  initialized.value = false
+  initializedSessions.clear()
 }
 
 async function fetchManageData() {
@@ -856,7 +866,8 @@ function moveConversationToTop(conversation: Conversation) {
 function websocketUrl() {
   if (import.meta.env.VITE_ACP_WS_URL) return import.meta.env.VITE_ACP_WS_URL
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/acp-ws`
+  const agent = currentAgentName.value || 'default'
+  return `${protocol}//${window.location.host}/acp-ws?agent=${encodeURIComponent(agent)}`
 }
 
 function connect() {

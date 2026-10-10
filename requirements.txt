@@ -25,3 +25,6 @@ pydub
 
 # Local history persistence (MooFile BSON collections under db/history)
 moofile
+
+# MCP tool clients for agent tool loading (fastmcp stdio client)
+fastmcp

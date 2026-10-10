@@ -28,6 +28,12 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from utils.model_util import MODEL
+from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools
+
+# Selected agent (passed by the gateway as AGENT_NAME env var; the frontend
+# sends it through the /acp-ws?agent= query param). Its enabled MCP tools are
+# loaded from .deepagents/agents/agents.json and attached in build_agent().
+AGENT_NAME = os.getenv("AGENT_NAME", "default").strip() or "default"
 
 # conversation state persistence file: checkpoints are saved (sqlite),
 # survive process/gateway restarts; the frontend can load historical
@@ -185,8 +191,9 @@ def build_agent(
     )
     agent = create_deep_agent(
         model=MODEL,
-        # tools=mcp_loader._global_mcp_tools,  # use cached tools
-        tools=None,
+        # MCP tools configured for the selected agent (agents.json -> mcp_tools);
+        # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
+        tools=get_agent_mcp_tools(AGENT_NAME),
         # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
         # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,
@@ -215,7 +222,11 @@ async def main() -> None:
         agent=lambda ctx: build_agent(ctx, checkpointer),
         load_sessions=True,
     )
-    await run_agent(acp_agent)
+    try:
+        await run_agent(acp_agent)
+    finally:
+        await close_mcp_clients()
+        await conn.close()
 
 
 if __name__ == "__main__":

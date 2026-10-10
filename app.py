@@ -70,12 +70,18 @@ async def upload_file(file: UploadFile = File(...)):
 async def acp_bridge(websocket: WebSocket):
     """Each WebSocket connection corresponds to an independent ACP agent subprocess, forwarding messages bidirectionally."""
     await websocket.accept()
+    # The frontend selects an agent by name; it is forwarded through the WS query
+    # string and injected as AGENT_NAME so acp_agent.py assembles the right tools.
+    agent_name = websocket.query_params.get("agent", "default") or "default"
+    agent_env = os.environ.copy()
+    agent_env["AGENT_NAME"] = agent_name
     proc = await asyncio.create_subprocess_exec(
         *AGENT_CMD,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=str(BASE_DIR),
+        env=agent_env,
         # ACP JSON-RPC messages can include Base64 image blocks and exceed asyncio's 64 KiB default.
         limit=16 * 1024 * 1024,
     )
