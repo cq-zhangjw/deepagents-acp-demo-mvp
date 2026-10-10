@@ -225,7 +225,6 @@ const actionLabels = computed(() => ({
   edit: locale.value === 'zh' ? '编辑' : locale.value === 'ja' ? '編集' : 'Edit',
   delete: locale.value === 'zh' ? '删除' : locale.value === 'ja' ? '削除' : 'Delete',
   confirmDelete: locale.value === 'zh' ? '确定删除？此操作不可恢复' : locale.value === 'ja' ? '削除しますか？元に戻せません' : 'Delete? This cannot be undone',
-  test: locale.value === 'zh' ? '试连' : locale.value === 'ja' ? 'テスト' : 'Test',
   enabled: locale.value === 'zh' ? '已启用' : locale.value === 'ja' ? '有効' : 'Enabled',
   disabled: locale.value === 'zh' ? '已停用' : locale.value === 'ja' ? '無効' : 'Disabled',
   linkedSkills: locale.value === 'zh' ? '关联技能' : locale.value === 'ja' ? '連携スキル' : 'Linked skills',
@@ -241,8 +240,8 @@ const currentConversation = computed(() =>
   conversations.value.find((conversation) => conversation.id === activeConversationId.value)
 )
 const currentMessages = computed(() => currentConversation.value?.messages ?? [])
-// 大数据量会话只渲染末尾窗口，避免整条消息列表的 DOM 过大导致卡顿；
-// 点击"加载更早的消息"逐步扩大窗口。
+// Large conversations render only a tail window so the full message list DOM
+// stays small; the "load earlier" button widens the window step by step.
 const MESSAGE_WINDOW = 60
 const messageWindowSize = ref(MESSAGE_WINDOW)
 const visibleMessages = computed(() => {
@@ -266,13 +265,14 @@ const lastAssistantId = computed(() => {
   }
   return ''
 })
-// 运行状态只看 assistant 的 status：streaming 期间（含工具调用阶段）保持停止按钮，
-// 不再受 finalText 影响（finalText 在首个文本 chunk 后即非空，会误判"已停止"）
+// Running state only watches assistant status: during streaming (including the
+// tool-call phase) the stop button must stay visible; finalText is not a
+// reliable "done" signal because it becomes non-empty after the first chunk.
 const isRunning = computed(() => currentMessages.value.some(
   (item) => item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
 ))
-// 单条 AI 消息是否仍在运行（用于消息下方 loading 图标）
+// Whether a single assistant message is still running (drives the tail loader)
 function isAssistantRunning(item: AssistantMessage) {
   return item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
@@ -286,10 +286,16 @@ function migrateConversations(saved: unknown): Conversation[] {
     ...conversation,
     messages: (conversation.messages ?? []).map((item: ChatMessage) => {
       if (item.role !== 'assistant') return item
+      // History is never mid-run when restored: a stale streaming/pending
+      // status saved during an interrupted run would otherwise keep the stop
+      // button active forever after reload.
+      if (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission') {
+        item = { ...item, status: 'completed' }
+      }
       const hasNewSegments = Array.isArray(item.segments)
         && item.segments.some((segment) => segment.type === 'thought' || segment.type === 'tool' || segment.type === 'plan')
       if (hasNewSegments) return item
-      // 旧数据迁移：按 计划 → 分析 → 工具调用 → 最终文本 重建交错段
+      // Legacy migration: rebuild the interleaved segments from plan/analysis/tool-calls/final text
       const segments: AssistantSegment[] = []
       if (item.process?.plan?.length) segments.push({ id: createId('plan'), type: 'plan' })
       ;(item.process?.analyses ?? []).forEach((analysis) => {
@@ -394,7 +400,7 @@ function createConversation() {
   nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
 }
 
-/** 打开语音通话独立窗口（#/voice，hash 路由） */
+/** Open the standalone voice-call window (#/voice hash route) */
 function openVoiceCall() {
   const url = `${window.location.origin}${window.location.pathname}#/voice`
   window.open(url, 'voice-call', 'width=440,height=720,resizable=yes')
@@ -406,7 +412,8 @@ function selectConversation(id: string) {
   attachments.value = []
   sidebarVisible.value = false
   errorText.value = ''
-  // 正在运行的会话用本地内存态，避免被历史覆盖导致流式回滚
+  // Keep the in-memory state of a running conversation local so history cannot
+  // roll the stream back
   const local = conversations.value.find((conversation) => conversation.id === id)
   const running = Boolean(local?.messages.some(
     (item) => item.role === 'assistant'
@@ -517,14 +524,14 @@ function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'settings') {
   panelQuery.value = ''
 }
 
-// ---------- 管理面板（技能/工具/Agent） ----------
+// ---------- Manage panel (skills / tools / agents) ----------
 const panelQuery = ref('')
 const skillList = ref<any[]>([])
 const toolList = ref<any[]>([])
 const builtinTools = ref<any[]>([])
 const agentList = ref<any[]>([])
 
-/** 技能：按名称/描述过滤，启用优先（开启的排前面）。 */
+/** Skills: filter by name/description, enabled first. */
 const filteredSkills = computed(() => {
   const q = panelQuery.value.trim().toLowerCase()
   const list = skillList.value.filter((s) =>
@@ -535,14 +542,14 @@ const filteredSkills = computed(() => {
   return [...list].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0))
 })
 
-/** 内置工具：按名称过滤。 */
+/** Built-in tools: filter by name. */
 const filteredBuiltinTools = computed(() => {
   const q = panelQuery.value.trim().toLowerCase()
   if (!q) return builtinTools.value
   return builtinTools.value.filter((t) => (t.name || '').toLowerCase().includes(q))
 })
 
-/** MCP 服务：按服务名/描述/工具名过滤（后端已按启用状态排序）。 */
+/** MCP servers: filter by server/description/tool name (backend sorts enabled first). */
 const filteredToolList = computed(() => {
   const q = panelQuery.value.trim().toLowerCase()
   if (!q) return toolList.value
@@ -570,7 +577,7 @@ const agentDropdownOptions = computed(() =>
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
-  fetchManageData() // 工具面板状态随 Agent 切换
+  fetchManageData() // tools panel state follows the current agent
   // Each agent maps to a separate ACP subprocess: drop the current connection
   // so the next send reconnects with the new agent name in the WS URL.
   if (ws.value) {
@@ -593,17 +600,17 @@ async function fetchManageData() {
     skillList.value = Array.isArray(skills) ? skills : []
     agentList.value = Array.isArray(agents) ? agents : []
     builtinTools.value = Array.isArray(builtins) ? builtins : []
-    // 当前 Agent 失效时回退到第一个可用项
+    // fall back to the first available agent when the stored one is gone
     if (!agentList.value.some((a) => a.name === currentAgentName.value)) {
       const first = agentList.value.find((a) => a.enabled !== false)
       currentAgentName.value = first?.name || ''
     }
-    // 工具启用状态按当前 Agent 查询（per-agent tools.mcp_tools）
+    // tool enablement is queried per agent (agents.json tools.mcp_tools)
     const agent = currentAgentName.value || 'default'
     const tools = await fetch(`/api/manage/tools?agent=${agent}`).then((r) => r.json())
     toolList.value = Array.isArray(tools) ? tools : []
   } catch {
-    // 后端不可用时保持空列表，面板显示空态
+    // keep the list empty when the backend is unavailable
   }
 }
 
@@ -626,14 +633,6 @@ async function toggleSkill(name: string) {
     message.error(e.message)
   }
 }
-async function deleteSkill(name: string) {
-  try {
-    await apiManage(`/api/manage/skills/${name}`, 'DELETE')
-    await fetchManageData()
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
 async function toggleTool(name: string) {
   try {
     await apiManage(`/api/manage/tools/${name}/toggle?agent=${currentAgentName.value || 'default'}`, 'POST')
@@ -642,31 +641,14 @@ async function toggleTool(name: string) {
     message.error(e.message)
   }
 }
-async function testTool(name: string) {
-  try {
-    const r = await apiManage(`/api/manage/tools/${name}/test`, 'POST')
-    if (r.error) message.error(`${actionLabels.value.test}: ${r.error}`)
-    else message.success(`${r.tools.length} tools`)
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
-async function deleteTool(name: string) {
-  try {
-    await apiManage(`/api/manage/tools/${name}`, 'DELETE')
-    await fetchManageData()
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
-/** 展开/收起一个 MCP server 组（工具面板） */
+/** Expand/collapse an MCP server group in the tools panel */
 const expandedToolGroups = ref<string[]>([])
 function toggleToolGroup(name: string) {
   const idx = expandedToolGroups.value.indexOf(name)
   if (idx >= 0) expandedToolGroups.value.splice(idx, 1)
   else expandedToolGroups.value.push(name)
 }
-/** 单工具启停（当前 agent 的 mcp_tools 条目增删） */
+/** Toggle a single MCP tool (add/remove in the current agent's mcp_tools) */
 async function toggleToolItem(server: string, tool: string) {
   try {
     await apiManage(`/api/manage/tools/${server}/${tool}/toggle?agent=${currentAgentName.value || 'default'}`, 'POST')
@@ -675,33 +657,21 @@ async function toggleToolItem(server: string, tool: string) {
     message.error(e.message)
   }
 }
-/** 当前 agent 的工具配置（inner_tools + mcp_tools） */
+/** Current agent's tool config (inner_tools + mcp_tools) */
 const currentAgentTools = computed(() =>
   agentList.value.find((a) => a.name === currentAgentName.value)?.tools
 )
-/** 内置工具是否启用：inner_tools 为数组且包含该工具（默认全量数组=全启用） */
+/** Whether a built-in tool is enabled: inner_tools is an array containing it (default full array = all enabled) */
 function innerToolEnabled(name: string): boolean {
   const inner = currentAgentTools.value?.inner_tools
-  if (!Array.isArray(inner)) return true // 后端兜底：旧数据/null 视为全启用
+  if (!Array.isArray(inner)) return true // fallback: legacy/null data means all enabled
   return inner.includes(name)
 }
-/** 点击内置工具标签：切换当前 agent 的 inner_tools */
+/** Clicking a built-in tool chip toggles the current agent's inner_tools */
 async function toggleInnerTool(name: string) {
   if (!currentAgentName.value) return
   try {
     await apiManage(`/api/manage/agents/${currentAgentName.value}/inner-tools/${name}/toggle`, 'POST')
-    await fetchManageData()
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
-async function deleteAgent(name: string) {
-  try {
-    await apiManage(`/api/manage/agents/${name}`, 'DELETE')
-    if (currentAgentName.value === name) {
-      currentAgentName.value = ''
-      localStorage.removeItem(AGENT_STORAGE_KEY)
-    }
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -719,7 +689,7 @@ async function setAgentEnabled(agent: any) {
   }
 }
 
-// 新建技能弹窗
+// new skill modal
 const skillModalVisible = ref(false)
 const skillForm = ref({ name: '', description: '', content: '' })
 async function submitSkill() {
@@ -749,7 +719,7 @@ function openSkillEdit(item?: any) {
   skillModalVisible.value = true
 }
 
-// 新建工具弹窗
+// new tool modal
 const toolModalVisible = ref(false)
 const toolForm = ref({ name: '', description: '', command: '', args: '', cwd: '', env: '' })
 async function submitTool() {
@@ -780,7 +750,7 @@ async function submitTool() {
   }
 }
 
-// 新建 Agent 弹窗
+// new agent modal
 const agentModalVisible = ref(false)
 const agentForm = ref({ name: '', description: '', skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
@@ -809,7 +779,7 @@ function openAgentEdit(item?: any) {
         name: item.name,
         description: item.description || '',
         skills: item.skills || [],
-        // tools 新结构：提取已关联的 MCP server 目录名数组
+        // tools new structure: extract the linked MCP server directory names
         tools: (item.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
       }
     : { name: '', description: '', skills: [], tools: [] }
@@ -842,7 +812,7 @@ function closeMessageMenu() {
   openMenuId.value = null
 }
 
-// 消息编辑（仅编辑文本，不触发重新执行）
+// message editing (text only, does not re-run)
 const editModalVisible = ref(false)
 const editTargetId = ref<string | null>(null)
 const editText = ref('')
@@ -916,7 +886,7 @@ function connect() {
       ws.value = null
       pendingRequests.forEach(({ reject }) => reject(new Error(t('connectionClosed'))))
       pendingRequests.clear()
-      // 连接异常关闭时，将仍在运行中的助手消息置为失败，确保停止按钮恢复为发送
+      // mark running assistant messages failed on abnormal close so the stop button reverts to send
       const active = activeAssistantMessage()
       if (
         active
@@ -1056,8 +1026,8 @@ function textFromContent(content: any): string {
   return ''
 }
 
-// ACP tool_call 事件只有 title（如 "Read `path`" / "Execute: cmd" / "glob"），
-// 没有 toolName。从 title/kind 推断徽标名（内置工具短名），推断不出用 ''（前端占位 Run）。
+// ACP tool_call events only carry a title (e.g. "Read `path`" / "Execute: cmd" / "glob"),
+// with no toolName. Infer the badge name (built-in short name) from title/kind; '' means the Run placeholder.
 const BUILTIN_TOOL_NAMES = new Set(['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'ls', 'delete', 'task', 'execute'])
 function inferToolName(update: any): string {
   const title = String(update.title ?? '').trim()
@@ -1071,7 +1041,7 @@ function inferToolName(update: any): string {
   if (kind === 'execute') return 'Run'
   return ''
 }
-// 徽标名后的正文：去掉 "Read/Write/Edit/Execute:" 前缀；剩余内容与徽标同名则留空
+// body after the badge: strip "Read/Write/Edit/Execute:" prefixes; empty when identical to the badge
 function toolDisplayTitle(update: any): string {
   const title = String(update.title ?? '').trim()
   const badge = inferToolName(update)
@@ -1096,7 +1066,9 @@ function handleSessionUpdate(update: any) {
   if (!assistant) return
   // A cancelled run must ignore any late streaming events, otherwise the
   // assistant status flips back to streaming and the stop button gets stuck.
-  if (assistant.status === 'cancelled') return
+  // Same guard applies once the message is completed/failed: no late event may
+  // resurrect the running state (stop button) after the run is over.
+  if (assistant.status === 'cancelled' || assistant.status === 'completed' || assistant.status === 'failed') return
   const process = assistant.process
   switch (update.sessionUpdate) {
     case 'agent_message_chunk':
@@ -1122,7 +1094,7 @@ function handleSessionUpdate(update: any) {
     case 'tool_call':
     case 'tool_call_start': {
       const id = update.toolCallId ?? createId('tool')
-      assistant.status = 'streaming' // 工具调用阶段保持运行中，避免停止按钮误恢复
+      assistant.status = 'streaming' // keep running during tool calls so the stop button stays
       if (!process.toolCalls.some((tool) => tool.id === id)) {
         process.toolCalls.push({
           id,
@@ -1171,16 +1143,16 @@ async function ensureAgentSession(conversation: Conversation, isNewConversation:
   initializedSessions.add(conversation.id)
 }
 
-// localStorage 只是会话展示态，Agent 上下文的权威来源是 SQLite checkpoint。
-// 页面加载后以后端为准逐个校验历史会话：checkpoint 缺失（如 db 被删除）时，
-// 清理对应本地会话，避免删除 db 后刷新仍显示历史记录。
+// localStorage only mirrors the display state; the authoritative agent context
+// lives in the SQLite checkpoint. On load, validate every history session
+// against the backend and drop local ones whose checkpoint is missing.
 async function validateStoredSessions() {
   if (!conversations.value.length) return
   try {
     await connect()
     await initialize()
   } catch {
-    // 后端未连接时不误删本地会话，保留至下次验证
+    // keep local sessions when the backend is offline; retry on next validation
     return
   }
   const invalid: string[] = []
@@ -1203,7 +1175,7 @@ async function validateStoredSessions() {
       activeConversationId.value = conversations.value[0]?.id ?? ''
     }
     invalid.forEach((id) => void deleteConversationRemote(id))
-    // 全部会话失效（如 db 被删除）时自动新建一个空会话，保证输入区可用
+    // create a fresh empty session when all are invalid so the input stays usable
     if (!conversations.value.length) createConversation()
   }
 }
@@ -1238,7 +1210,7 @@ async function sendAgentPrompt(
         data: resource.data,
         mimeType: resource.mimeType ?? 'image/png'
       }))
-    cancelRequested = false // 新一轮生成开始，重置取消标记
+    cancelRequested = false // reset the cancel flag for a new run
     await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content })
     if (assistantMessage.status !== 'cancelled' && assistantMessage.status !== 'failed' && !cancelRequested) {
       assistantMessage.status = 'completed'
@@ -1252,7 +1224,7 @@ async function sendAgentPrompt(
       assistantMessage.process.completedAt = Date.now()
       const message = error instanceof Error ? error.message : t('taskFailed')
       errorText.value = message
-      // 错误信息原样作为 AI 消息内容展示，避免仅显示“失败”状态
+      // Show the raw error message as assistant content instead of only a status label
       appendTextSegment(assistantMessage, `\n\n${message}`)
     }
   } finally {
@@ -1266,7 +1238,7 @@ async function submitPrompt() {
   const conversation = currentConversation.value
   const text = input.value.trim()
   if (!conversation || (!text && !attachments.value.length && !screenShareActive.value) || isRunning.value || isUploading.value) return
-  // 共享屏幕开启时：发送前截取当前屏幕作为附件
+  // capture the screen as an attachment before sending when share-screen is on
   if (screenShareActive.value) await captureScreenAttachment()
 
   const isNewConversation = conversation.messages.length === 0
@@ -1340,7 +1312,7 @@ function copyUserText(item: { text?: string }, asMarkdown: boolean) {
   void copyText(value)
 }
 
-// ---------- 语音合成（TTS）与语音桥接 ----------
+// ---------- TTS synthesis and voice bridging ----------
 let speechAudio: HTMLAudioElement | null = null
 let speechStreamStop: (() => void) | null = null
 let cancelRequested = false
@@ -1349,8 +1321,8 @@ const selectedVoice = ref(localStorage.getItem('chat_voice_name') || 'zh')
 const speakReplyEnabled = ref(localStorage.getItem('chat_speak_reply') === '1')
 
 let cachedVoiceNames: string[] | null = null
-/** 返回对当前引擎有效的音色名；localStorage 遗留的无效值（如 'zh'）回退为空字符串，
- *  由后端按文本语言自动选择默认音色，避免每次朗读先失败再回退。 */
+/** Return a voice name valid for the active engine; stale localStorage values
+ *  (e.g. 'zh') fall back to '', letting the backend pick a default by language. */
 async function resolveVoiceParam(): Promise<string> {
   const v = selectedVoice.value
   if (!v) return ''
@@ -1369,7 +1341,7 @@ function messagePlainText(item: { role: string; text?: string; finalText?: strin
   return item.role === 'user' ? (item.text ?? '') : (item.finalText ?? '')
 }
 
-/** 停止当前播放（流式或非流式） */
+/** Stop the current playback (streaming or not) */
 function stopSpeech() {
   if (speechStreamStop) {
     speechStreamStop()
@@ -1381,8 +1353,8 @@ function stopSpeech() {
   }
 }
 
-/** 合成并播放一段文本（返回是否成功）；用于消息朗读与 AI 回复播报。
- *  按后端 TTS_MODE 分流：file 直接走非流式 base64；stream 流式优先（首包低延迟），失败回退非流式。 */
+/** Synthesize and play text (returns success); used for message read-aloud and
+ *  AI reply broadcast. Routes by backend TTS_MODE: file -> non-stream base64,
 async function speakText(text: string): Promise<boolean> {
   text = cleanSpeechText(text)
   if (!text.trim()) return false
@@ -1392,7 +1364,7 @@ async function speakText(text: string): Promise<boolean> {
   if (cfg.mode !== 'stream') {
     return await playBase64Speech(text, voice)
   }
-  // 流式优先
+  // streaming first
   const handle = await playTtsStream(text, voice, () => {
     speechStreamStop = null
     speakingMessageId.value = null
@@ -1401,7 +1373,7 @@ async function speakText(text: string): Promise<boolean> {
     speechStreamStop = handle.stop
     return true
   }
-  // 回退：非流式 base64（保留当前可用版本）
+  // fallback: non-stream base64 (kept working version)
   return await playBase64Speech(text, voice)
 }
 
@@ -1433,10 +1405,10 @@ async function playBase64Speech(text: string, voice: string): Promise<boolean> {
   }
 }
 
-// ---------- 语音通话窗口桥接（独立窗口 #/voice 通过 opener 调用） ----------
+// ---------- voice-call window bridge (the #/voice window calls via opener) ----------
 let replyListener: ((text: string) => void) | null = null
 
-/** AI 回复完成后：优先通知独立通话窗口播报，否则按播报开关在主窗口朗读 */
+/** After an AI reply: notify the voice window first, else read aloud in the main window per the toggle */
 function speakReplyIfEnabled(text: string) {
   if (!text.trim()) return
   if (replyListener) {
@@ -1449,21 +1421,21 @@ function speakReplyIfEnabled(text: string) {
   void speakText(text)
 }
 
-/** 暴露给独立语音通话窗口（window.opener.chatBridge） */
+/** Exposed to the voice window via window.opener.chatBridge */
 function setupChatBridge() {
   const bridge = {
-    /** 独立通话窗口：把语音识别的文字实时同步到主窗口输入框 */
+    /** Voice window: live-sync recognized speech into the main input */
     updateInput: (text: string) => {
       input.value = text
     },
-    /** 独立通话窗口：把最终文字交给主会话发送（自动触发正常 ACP 流程） */
+    /** Voice window: send the final text through the main session (normal ACP flow) */
     sendMessage: (text: string) => {
       const value = text.trim()
       if (!value || isRunning.value) return
       input.value = value
       void submitPrompt()
     },
-    /** 独立通话窗口：注册 AI 回复完成回调（每次发送前注册，完成后触发一次） */
+    /** Voice window: register an AI-reply-done callback (once per send) */
     onReply: (cb: (text: string) => void) => {
       replyListener = cb
     }
@@ -1487,7 +1459,7 @@ async function speakMessage(item: { id: string; role: string; text?: string; fin
   }
 }
 
-// ---------- 语音输入（STT → 文本框） ----------
+// ---------- voice input (STT -> text box) ----------
 function toggleSpeakReply() {
   speakReplyEnabled.value = !speakReplyEnabled.value
   localStorage.setItem('chat_speak_reply', speakReplyEnabled.value ? '1' : '0')
@@ -1498,13 +1470,13 @@ async function cancelTask() {
   const assistant = activeAssistantMessage()
   if (!conversation || !assistant) return
   cancelRequested = true
-  // 立即置为 cancelled：防止 prompt Promise 先于 session/cancel 返回时误判为完成并朗读残缺文本
+  // set cancelled immediately so a prompt Promise resolving before session/cancel cannot mark done and read a partial reply
   assistant.status = 'cancelled'
   assistant.process.completedAt = Date.now()
   assistant.process.toolCalls.forEach((tool) => {
     if (tool.status === 'running' || tool.status === 'waiting_permission') tool.status = 'cancelled'
   })
-  stopSpeech() // 停止生成时同时停掉朗读（含尚未结束的 TTS 合成请求播放）
+  stopSpeech() // also stop any read-aloud (including in-flight TTS playback)
   // Fire-and-forget the cancel request, then close the socket immediately.
   // Awaiting the ACP response would block here while the agent subprocess is
   // busy generating (it cannot answer until the current step finishes), so the
@@ -1595,7 +1567,7 @@ function removeAttachment(index: number) {
   attachments.value.splice(index, 1)
 }
 
-// ---------- 共享屏幕（开启后发送消息自动截屏作为附件） ----------
+// ---------- share screen (auto-capture as attachment on send) ----------
 const screenShareActive = ref(false)
 let screenStream: MediaStream | null = null
 let screenVideo: HTMLVideoElement | null = null
@@ -1617,7 +1589,7 @@ async function toggleScreenShare() {
     screenShareActive.value = true
     stream.getVideoTracks()[0]?.addEventListener('ended', () => stopScreenShare())
   } catch {
-    // 用户取消选择屏幕，保持关闭
+    // user cancelled the picker; keep it off
   }
 }
 
@@ -1630,7 +1602,7 @@ function stopScreenShare() {
   screenShareActive.value = false
 }
 
-/** 截取当前屏幕一帧，作为图片附件加入待发送列表 */
+/** Capture one frame of the screen and queue it as an image attachment */
 async function captureScreenAttachment() {
   if (!screenShareActive.value || !screenVideo) return
   try {
@@ -1650,16 +1622,12 @@ async function captureScreenAttachment() {
       previewUrl
     })
   } catch {
-    // 截帧失败时忽略
+    // ignore capture failures
   }
 }
 
 function statusText(status: TaskStatus | ToolStatus) {
   return t(`status.${status}`)
-}
-
-function isAssistantActive(status: TaskStatus) {
-  return status === 'pending' || status === 'streaming' || status === 'waiting_permission'
 }
 
 function formatTime(timestamp: number) {
@@ -1674,7 +1642,8 @@ function duration(process: ExecutionProcess) {
 }
 
 const showScrollBottom = ref(false)
-// 用户滚动暂停自动跟随：流式输出期间鼠标/触摸滚动时暂停，2s 无操作或点击“滚动到底部”后恢复
+// user scroll pauses auto-follow: mouse/touch scroll during streaming pauses it;
+// follow resumes after 2s idle or on the scroll-to-bottom button
 const scrollPausedByUser = ref(false)
 let scrollPauseTimer: number | null = null
 function pauseAutoScrollByUser() {
@@ -1704,7 +1673,7 @@ function scrollToBottom(smooth = false) {
   if (smooth) {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   } else {
-    // 流式跟随滚动使用瞬时定位，避免 smooth 动画与内容增量叠加造成抖动
+    // use instant positioning for stream follow-scroll to avoid jitter from smooth animation + incremental content
     const prev = el.style.scrollBehavior
     el.style.scrollBehavior = 'auto'
     el.scrollTop = el.scrollHeight
@@ -1738,12 +1707,12 @@ function openAttachment(attachment: AttachmentRef) {
   anchor.remove()
 }
 
-// ---------- 快捷动作（@ 文件 / 技能） ----------
+// ---------- quick actions (@ files / slash skills) ----------
 const quickAction = ref<'file' | 'skill' | null>(null)
 const quickItems = ref<any[]>([])
 const quickLoading = ref(false)
-// 覆盖 loading：页面初期加载（initialLoading）与切换会话（conversationLoading，
-// 计数器支持快速连续切换时直到最后一次完成才隐藏）
+// overlay loading: initial load (initialLoading) and conversation switch
+// (conversationLoading, counter-based so rapid switches hide only after the last)
 const initialLoading = ref(true)
 const conversationLoading = ref(0)
 const quickIndex = ref(0)
@@ -1780,10 +1749,10 @@ async function loadQuickItems(action: 'file' | 'skill', q: string) {
 
 function selectQuickItem(item: any) {
   if (quickAction.value === 'file') {
-    // @ + 反引号绝对路径 + 空格
+    // @ + backticked absolute path + space
     input.value = '@' + '`' + (item.path ?? item.absolute_path ?? item.name) + '`' + ' '
   } else if (quickAction.value === 'skill') {
-    // / + 反引号技能名 + 空格
+    // / + backticked skill name + space
     input.value = '/' + '`' + item.name + '`' + ' '
   }
   closeQuickAction()
@@ -2065,10 +2034,6 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <template v-else>
-                <div v-if="!item.segments.length && isAssistantActive(item.status)" class="assistant-pending">
-                  <NSpin size="small" />
-                  <span>{{ item.status === 'waiting_permission' ? t('waitingPermission') : t('processing') }}</span>
-                </div>
                 <template v-for="segment in item.segments" :key="segment.id">
                   <MarkdownMessage v-if="segment.type === 'text' || segment.type === 'thought'" class="assistant-content" :content="segment.text" />
                   <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
@@ -2258,10 +2223,6 @@ onBeforeUnmount(() => {
             <p v-if="skill.description" class="manage-card-desc">{{ skill.description }}</p>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="openSkillEdit(skill)">{{ actionLabels.edit }}</NButton>
-              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteSkill(skill.name)">
-                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
-                {{ actionLabels.confirmDelete }}
-              </NPopconfirm>
             </div>
           </div>
         </div>
@@ -2310,13 +2271,6 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-if="!(tool.tools || []).length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
               </div>
-              <div class="manage-card-actions">
-                <NButton quaternary size="tiny" @click="testTool(tool.name)">{{ actionLabels.test }}</NButton>
-                <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteTool(tool.name)">
-                  <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
-                  {{ actionLabels.confirmDelete }}
-                </NPopconfirm>
-              </div>
             </div>
           </template>
           <div v-if="!filteredToolList.length && !filteredBuiltinTools.length" class="panel-placeholder">
@@ -2344,10 +2298,6 @@ onBeforeUnmount(() => {
             </div>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
-              <NPopconfirm :positive-text="'OK'" :negative-text="'Cancel'" @positive-click="deleteAgent(agent.name)">
-                <template #trigger><NButton quaternary size="tiny" type="error">{{ actionLabels.delete }}</NButton></template>
-                {{ actionLabels.confirmDelete }}
-              </NPopconfirm>
             </div>
           </div>
         </div>
@@ -2494,13 +2444,12 @@ onBeforeUnmount(() => {
 .workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .language-icon { color:var(--subtle); font-size:17px; } .locale-select { width:102px; }
 .timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
-.assistant-content { margin-bottom:12px; } .assistant-pending { display:flex; gap:9px; align-items:center; min-height:32px; color:var(--subtle); font-size:14px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
+.assistant-content { margin-bottom:12px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
 .attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; cursor:pointer; } .attachment-chip .attachment-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip button { flex-shrink:0; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
 .composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { position:relative; display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
-/* TEMP-HIDE：编辑/删除消息入口暂隐藏（display:none），代码保留，后期 MooFile 方案升级时恢复 */
 .hidden-action { display: none; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .agent-option { padding:2px 0; } .agent-option-name { font-weight:600; } .agent-option-desc { margin-top:2px; color:#999; font-size:12px; line-height:1.4; }
@@ -2562,7 +2511,7 @@ onBeforeUnmount(() => {
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
-/* AI 运行中消息下方的动态 loading 图标（三点依次闪烁） */
+/* animated loading dots under a running assistant message */
 .msg-loader {
   --color-1: #9aa3b2;
   --color-2: #9aa3b233;

@@ -1,4 +1,4 @@
-﻿// English locale
+// English locale
 export default {
   brandSubline: 'DeepAgents Workspace',
   language: 'Language',
@@ -14,8 +14,6 @@ export default {
   startTaskHint: 'Describe a goal or attach an image or file for the Agent.',
   you: 'You',
   assistant: 'DeepAgents',
-  processing: 'Processing task',
-  waitingPermission: 'Waiting for your approval',
   viewProcess: 'View execution process',
   steps: 'steps',
   seconds: 'seconds',

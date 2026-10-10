@@ -1,4 +1,4 @@
-﻿// Simplified Chinese locale
+// Simplified Chinese locale
 export default {
   brandSubline: 'DeepAgents 工作台',
   language: '语言',
@@ -14,8 +14,6 @@ export default {
   startTaskHint: '描述目标，或附加图片与文件，让 Agent 帮你分步完成。',
   you: '你',
   assistant: 'DeepAgents',
-  processing: '正在处理任务',
-  waitingPermission: '等待你的权限确认',
   viewProcess: '查看执行过程',
   steps: '步',
   seconds: '秒',

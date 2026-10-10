@@ -1,4 +1,4 @@
-﻿// Japanese locale
+// Japanese locale
 export default {
   brandSubline: 'DeepAgents ワークスペース',
   language: '言語',
@@ -14,8 +14,6 @@ export default {
   startTaskHint: '目的を入力するか、画像やファイルを添付してください。',
   you: 'あなた',
   assistant: 'DeepAgents',
-  processing: 'タスクを処理中',
-  waitingPermission: '権限の確認待ち',
   viewProcess: '実行プロセスを表示',
   steps: 'ステップ',
   seconds: '秒',
