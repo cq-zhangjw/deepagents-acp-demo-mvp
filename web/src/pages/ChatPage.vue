@@ -1159,6 +1159,9 @@ async function sendAgentPrompt(
   assistantMessage: AssistantMessage,
   isNewConversation: boolean
 ) {
+  // Reset the cancel flag on every prompt path (submit & retry), otherwise a
+  // previous cancel would skip the completed status and leave the stop button stuck.
+  cancelRequested = false
   try {
     await connect()
     await initialize()
@@ -1992,7 +1995,6 @@ onBeforeUnmount(() => {
                   <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
                 </template>
                 <span v-if="isAssistantRunning(item)" class="msg-loader" aria-label="loading" />
-                <span v-if="item.status === 'cancelled'" class="message-status">{{ statusText(item.status) }}</span>
                 <div v-if="(item.finalText || (item.status === 'failed' && item.segments.length > 0)) && !isRunning" class="message-actions">
                   <NTooltip v-if="item.id === lastAssistantId">
                     <template #trigger>
