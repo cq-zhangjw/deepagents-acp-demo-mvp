@@ -50,7 +50,7 @@ flowchart LR
 
 ## 3. 详细设计
 
-### 4.1 FastAPI 网关：`app.py`
+### 3.1 FastAPI 网关：`app.py`
 
 网关提供以下端点和职责：
 
@@ -59,11 +59,15 @@ flowchart LR
 | `/upload` | HTTP `POST` | 接收非图片 multipart 文件，使用文件名基名写入 `UPLOAD_ROOT` 指定目录（默认 `uploads/`），返回虚拟路径、名称和 MIME 类型。 |
 | `/acp-ws` | WebSocket | 创建 Agent 子进程，并在 WebSocket 与 stdio 之间透传 ACP JSON-RPC。 |
 | `/uploads` | HTTP 静态资源 | 供浏览器下载或预览已上传文件。 |
+| `/api/manage` | HTTP REST | 技能 / 工具（MCP）/ Agent / 内置工具 / 文件快速选择等管理子路由（见 3.2 装配机制与 `DESIGN_2.0_MANAGER.md`）。 |
+| `/api/history` | HTTP REST | 会话历史的后端权威存储（MooFile `db/history`）：`GET` 列表、`GET/PUT/DELETE /{cid}`。 |
+| `/api/chat_voice` | HTTP REST | 语音合成子路由（voices / config / tts / tts_stream，见 3.5）。 |
+| `/api/config` | HTTP GET | 下发前端运行配置（如 `CONTENT_SIZE` 上下文总量）。 |
 | `/` | HTTP 静态资源 | 托管 `web/dist` 构建产物与 SPA 回退入口。 |
 
 每个 Agent 子进程以项目根目录为工作目录启动。子进程 stdout/stderr 流上限为 `16 MiB`，用于承载 Base64 图片造成的较长 ACP JSON-RPC 行；stderr 写入网关运行日志而不混入 ACP stdout。连接关闭或任一转发方向结束时，网关会取消另一侧转发任务，并终止 Agent 进程。在 Windows 上使用 `taskkill /T /F` 清理进程树，避免 Python 启动器遗留子进程。
 
-### 4.2 ACP Agent：`acp_agent.py`
+### 3.2 ACP Agent：`acp_agent.py`
 
 Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、会话更新事件和中断到 ACP 权限请求的转换由 `deepagents-acp` 完成。
 
@@ -77,11 +81,11 @@ Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、�
 
 - 默认后端为 `PowerShellBackend`（Windows）/ `LocalShellBackend`（其他平台），根目录取 ACP 会话的 `cwd`，并以 `virtual_mode=True`、`inherit_env=True` 运行。文件工具中的 `/uploads/example.txt` 映射到项目根下的 `uploads/example.txt`；Shell 仍以根目录为工作目录执行。
 - `/memories/` 和 `/conversation_history/` 路由到内存态 `StateBackend`，不写入本地文件系统。
-- 当前未注入 MCP 工具，`tools=None`。
+- **工具与技能装配（agents.json 驱动）**：`build_agent` 通过 `utils/mcp_loader.py`（`get_agent_mcp_tools` / `get_agent_subagents_config`）与 `utils/skill_loader.py`（`get_agent_skills`）按当前 Agent 从 `.deepagents/agents/agents.json` 装配：`tools.inner_tools` 决定启用哪些内置工具，`tools.mcp_tools` 注入所选 MCP 服务器工具（stdio 启动，工具名格式 `mcp_<server>_<tool>`，MCP 子进程以 UTF-8 重定向启动），`skills` 决定注入哪些技能（per-agent 启用集目录 `.deepagents/skills/.enabled/<agent>/` 物化 SKILL.md 硬链接）。`subagents` 递归装配子 Agent。
 - `delete` 配置到 `interrupt_on`，删除前必须由客户端对权限请求作答；`execute` 为 `False`（shell 命令按命令类型默认放行），`write_file`/`edit_file` 未启用审批。
 - 图片作为 ACP `image` 内容块直接传给模型，Agent 应直接分析，不调用文件读取工具；其他附件使用 `/uploads/...` 虚拟路径并由文件工具读取。
 
-### 4.3 模型初始化：`utils/model_util.py`
+### 3.3 模型初始化：`utils/model_util.py`
 
 模块在导入时加载 `.env`，再通过 LangChain `init_chat_model` 创建全局 `MODEL`。模型服务需兼容 OpenAI 风格接口，支持通过以下环境变量配置：
 
@@ -102,7 +106,7 @@ Agent 通过 `run_agent` 以 stdio ACP 服务模式运行，协议编解码、�
 | `CONTENT_SIZE` | 上下文窗口大小（tokens），用于前端上下文用量百分比显示（经 `/api/config` 下发） | 未设置（前端不显示用量）；`.env` 示例 `32768` |
 | `UPLOAD_ROOT` | 文件上传存储根目录（相对项目根或绝对路径） | `uploads` |
 
-### 4.4 Vue 客户端：`web/`
+### 3.4 Vue 客户端：`web/`
 
 Vue 客户端直接实现 ACP v2 JSON-RPC：
 
@@ -119,9 +123,11 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 整体为三列布局：左侧会话栏可在品牌行通过收缩按钮收起（顶部栏出现展开按钮）；右侧功能面板是聊天窗口内嵌的静态右栏（300px，非浮层抽屉），默认隐藏、不占空间，无标签页，点击输入区“技能”或“工具”按钮显示，面板标题与内容根据触发功能确定（技能/工具/设置面板），右上角带关闭图标，打开时挤压中间对话区，内容区当前为占位说明。
 - 界面字体随语言切换（中/日/英各自字体栈），naive-ui 组件与页面正文同步生效。
 - 页面加载后以后端 checkpoint 为准校验历史会话（`session/load`），失效会话（如 `db` 被删除）自动清理并新建空会话。
+- 输入框快速动作（quick action）：空文本框首个字符触发——`@` 列出项目根目录文件（后端 `/api/manage/files?q=&dir=` 支持逐层进入子目录，选中或发送均使用绝对路径，穿越校验防目录逃逸）、`/` 列出全部技能、`#` 列出全部可用工具（内置工具 + `mcp_<server>_<tool>`）；选择后以反引号整体包裹插入（`` `@<路径>` `` / `` `/技能名` `` / `` `#工具名` ``，末尾追加空格）；Markdown 中反引号包裹的 inline code 有独立高亮（用户气泡内为白底深蓝字，AI 气泡内为浅蓝底）。
+- Agent 选择：工具栏 Agent 按钮下拉列出可用 Agent（名前带图标、首字母大写显示），选中后在输入框追加 `` `@Agent名` `` 并断开当前 ACP 连接以便下次发送按新 Agent 重连；新建会话自动重置为 `default` Agent。技能按钮点击直接打开右侧技能面板（不再使用下拉）。
 - 图片在浏览器中转为 Base64，作为 ACP `image` 块发送；普通文件上传后以 `/uploads/...` 文本上下文发送。
 
-### 4.5 语音通话：独立窗口 `#/voice` + 桥接主会话（2.0）
+### 3.5 语音通话：独立窗口 `#/voice` + 桥接主会话（2.0）
 
 语音通话保留独立通话窗口（顶部图标 `window.open` 打开 `#/voice`，脱离聊天界面），但不单独封装 LLM 对话接口——只提供纯 TTS 合成，对话复用主聊天流程：
 
@@ -144,7 +150,7 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 - 依赖：`requirements.txt` 移除 `edge-tts`；genie 运行依赖为 `genie-tts`（pip 包，G2P/数据在 `models/xnnehanglab-geniedata`，`GENIE_DATA_DIR` 指向）、`numpy/soundfile`（推理与编码）；`vite.config.ts` 开发代理增加 `/api`；`web/src/router/index.js` 增加 `/voice` 路由。
 - 说明：STT 依赖浏览器语音识别服务（需麦克风授权）；TTS 为本地 CPU 推理（genie-tts 混合合成，zh/en/jp 三个角色模型 + 自动拆句，整段合成无长度截断问题）；**音色解析**：genie 预设固定 `zh`/`en`/`jp`/`auto` 四档（auto 混合输出，未知/空 voice 回落 auto）；edge/sapi 引擎按文本语言（含假名→ja、含汉字→zh、否则 en）自动选择对应 env 默认音色；TTS 失败时接口返回空 `audio`，独立窗口/主窗口降级为仅展示文本。
 
-### 4.6 共享屏幕（2.0）
+### 3.6 共享屏幕（2.0）
 
 - 入口：主窗口顶部"回复朗读"开关右侧的共享屏幕按钮（`DesktopOutline`，`ChatPage.vue`），点击后弹出浏览器 `getDisplayMedia` 选择窗口（仅截取视频轨，帧率 5fps），开启后按钮高亮；再次点击或用户结束共享即关闭，页面卸载时自动停止并释放轨道。
 - 行为：开启状态下发送消息（`submitPrompt`）前调用 `captureScreenAttachment()`——用隐藏 `video` 元素静默播放屏幕流，canvas 截取当前帧转 PNG `File`，作为图片附件（base64 data）加入待发送列表，随消息走正常 ACP 会话；空文本时也允许发送（只要有屏幕截帧）。
@@ -152,7 +158,7 @@ Vue 客户端直接实现 ACP v2 JSON-RPC：
 
 ## 4. 业务流程设计
 
-### 5.1 初始化、建会话与任务执行
+### 4.1 初始化、建会话与任务执行
 
 ```mermaid
 sequenceDiagram
@@ -177,7 +183,7 @@ sequenceDiagram
 
 网关在上述时序中的职责是无状态透传；客户端与 Agent 才是 ACP 协议参与方。`session/prompt` 的内容为块列表：任务说明使用 `text` 块，图片使用包含 Base64 `data` 和 `mimeType` 的 `image` 块，其他附件的虚拟路径写入 `text` 块。
 
-### 5.2 文件上传与资源引用
+### 4.2 文件上传与资源引用
 
 ```mermaid
 sequenceDiagram
@@ -195,7 +201,7 @@ sequenceDiagram
 
 上传接口会丢弃客户端提供路径中的目录部分，以减轻路径遍历风险；同名文件仍会覆盖已有文件。图片不经 `/upload`：前端保留 Data URL 供本地预览，并将不含前缀的 Base64 数据直接传给 Agent。
 
-### 5.3 权限审批
+### 4.3 权限审批
 
 ```mermaid
 sequenceDiagram
@@ -211,21 +217,21 @@ sequenceDiagram
 
 当前权限边界仅覆盖 `delete`（`execute: False` 使 shell 命令默认放行）。读取、写入或编辑文件是否触发审批取决于工具配置；当前代码未对其启用 `interrupt_on`。
 
-### 5.4 历史会话加载
+### 4.4 历史会话加载
 
-客户端可通过 `session/load` 将已登记的 `sessionId` 与 `cwd` 发送给新建的 Agent 进程。`AgentServerACP` 从 SQLite checkpoint 恢复并重放历史更新，客户端复用普通 `session/update` 渲染逻辑展示历史，之后可继续向同一 `sessionId` 提交任务。
+客户端通过会话栏选择历史会话：前端强制 `GET /api/history/{cid}` 从 MooFile `db/history` 拉取展示态消息（不做本地推送、不再依赖 localStorage），同时经 `session/load` 将已登记的 `sessionId` 与 `cwd` 发送给新建的 Agent 进程；`AgentServerACP` 从 SQLite checkpoint 恢复并重放历史更新，客户端复用普通 `session/update` 渲染逻辑展示历史，之后可继续向同一 `sessionId` 提交任务。
 
 ## 5. 数据设计
 
 | 数据 | 存储位置 | 生命周期 | 说明 |
 | --- | --- | --- | --- |
 | 上传文件 | `UPLOAD_ROOT`（`.env` 配置，默认 `uploads/`） | 无自动清理 | 普通附件可由 Agent 通过 `/uploads/<filename>` 虚拟路径读取，也可由浏览器静态访问；该目录已在 `.gitignore` 中忽略。 |
-| Agent checkpoint | `db/agent_state.sqlite` | 持久化 | 支持跨 Agent 进程恢复会话。 |
-| 会话展示状态 | 浏览器 `localStorage` | 浏览器本地 | 保存会话 ID、标题、消息、附件预览与执行过程；不是 Agent 上下文的权威来源。 |
+| Agent checkpoint | `db/agent_state.sqlite` | 持久化 | 支持跨 Agent 进程恢复 ACP 会话上下文（`session/load`）。 |
+| 会话历史（展示态） | `db/history`（MooFile 集合，`utils/moofile_util.py`） | 持久化 | **后端权威存储**：`/api/history` 负责增删改查；前端只读历史（进会话强制 `GET`），不再推送或依赖 `localStorage`，数据库路径由 `.env` 的 `DB_ROOT` 控制（默认 `./db`），便于本地迁移。 |
 | 会话运行态 | Agent 子进程内存 | WebSocket 连接期间 | 连接断开时对应进程被终止。 |
 | 模型配置 | 环境变量 / `.env` | 进程启动时 | 模型模块导入时读取并构造全局实例。 |
 
-会话恢复依赖两个条件：浏览器仍持有正确的 `sessionId`，且服务端 SQLite 状态文件仍可用。仅有浏览器本地索引并不能恢复已经不存在的 checkpoint。
+会话恢复依赖后端 `db/history` 中的会话记录与 `db/agent_state.sqlite` 中的 ACP checkpoint；浏览器本地索引仅用于快速定位会话，不再作为权威数据源。
 
 ## 6. 安全设计
 
@@ -269,7 +275,7 @@ sequenceDiagram
 
 ### 8.2 状态恢复
 
-客户端将已使用的会话 ID 保存在浏览器 localStorage。用户选择历史会话后，客户端建立 ACP 连接并发送 `session/load`；Agent 从 SQLite 读取对应 checkpoint、重放历史更新，再接受后续 `session/prompt`。
+会话展示态以后端 MooFile `db/history` 为权威存储：客户端进入会话强制 `GET /api/history/{cid}` 拉取（前端不推送历史、不写 localStorage），AI 响应期间仅追加显示流式文字；Agent 上下文恢复仍依赖 SQLite checkpoint（`db/agent_state.sqlite`），两者通过 `sessionId` 关联。
 
 ### 8.3 日志与故障呈现
 

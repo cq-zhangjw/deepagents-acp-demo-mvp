@@ -1,6 +1,7 @@
 # DeepAgents 2.0 · 技能 / 工具（MCP）/ Agent 管理面板设计
 
 > 状态：已实施（2026-10-09，含后续调整：面板移除“新建技能/新建工具”表单，改为内置 skill-creator / tool-creator 技能由 AI 对话生成；Agent 迁入 `.deepagents/agents/` 目录（`*.agent.md` + `agents.json`）；工具面板顶部展示内置工具一览；技能编辑弹窗改为左右布局（左编辑右预览）；输入框 `@`/`/` 快捷动作已实现；工具面板按 MCP server 分组折叠展示、组内工具可单独启停；工具目录迁移至 `.deepagents/tools/mcp_servers/`；**工具启停改为 per-agent 记录于 agents.json 的 `tools` 字段（inner_tools + mcp_tools），内置工具 chips 可点击启停，根目录 tools.json 方案废弃**）
+> 状态追加（2026-10-11，v2.0 定型）：① 技能/工具面板**移除删除与试连功能**（后期统一做 skills/tools 管理页面，单个 Agent 面板只保留启停与编辑）；② Agent 不做模型覆盖表单（模型/提示词统一由 agents.json 管控，`acp_agent` 装配逻辑由用户后续调整）；③ 当前 Agent 通过**工具栏 Agent 下拉**选择（非面板“设为当前”按钮），下拉选项带图标、Agent 名首字母大写显示，选中后输入框追加 `` `@Agent名` ``，新建会话自动重置为 `default`；④ `acp_agent.py` 的 `build_agent` 已按 agents.json 实现 MCP 工具（`tools.mcp_tools`，工具名 `mcp_<server>_<tool>`）与技能装配（per-agent 启用集目录 `.enabled/<agent>/`）——本章 6.4/7 中与此冲突的描述以追加状态为准。
 > 适用范围：`E:\my_projects\deepagents_acp`（Windows / FastAPI 网关 + ACP 子进程 + Vue3 前端）
 > 关联：DESIGN_ZH.md（系统总设计）、UI_DESIGN.md（界面设计）
 
@@ -8,7 +9,7 @@
 
 ## 1. 背景与目标
 
-当前 `acp_agent.py` 每次会话以固定配置装配 Agent：
+改造前基线（v2.0 实施前）：`acp_agent.py` 每次会话以固定配置装配 Agent：
 
 - 模型：`utils/model_util.py` 从 `.env` 全局读取（`ENDPOINT/MODEL_NAME/TEMPERATURE...`）
 - 工具：`create_deep_agent(tools=None)` —— 无任何外部工具，仅有内置文件/Shell 后端
@@ -274,27 +275,26 @@ Agent 拥有专属目录 `.deepagents/agents/`：
 
 ### 6.2 技能 tab
 
-- 列表卡片：技能名、描述（截断）、启停开关（`NSwitch`）、“编辑”“删除”（`NPopconfirm` 二次确认）。
-- 顶部“新建技能”按钮 → 弹窗表单：名称（只读于编辑态）、描述、正文（`NInput type=textarea` 或 monospace 编辑，保留 markdown 原始文本）。
+- 列表卡片：技能名、描述（截断 2 行、hover 显示全文）、启停开关（`NSwitch`）、“编辑”按钮（弹窗左右布局：左编辑 markdown 原文、右实时预览，弹窗宽度 80vw）。
+- **无删除 / 无新建按钮**（v2.0 拍板：单个 Agent 面板只保留启停与编辑，新建技能由内置 skill-creator 技能通过对话生成，统一管理页后期补充）。
 - 停用技能：卡片置灰 + 开关关闭；列表顶部排序“启用在前”。
-- 空状态：引导文案 + 新建按钮。
+- 空状态：引导文案（提示可通过对话让 AI 生成）。
 
 ### 6.3 工具（MCP）tab
 
-- 列表卡片：server 名、描述、command 摘要（monospace）、启停开关、试连按钮（`NButton` 显示工具数或错误）、编辑、删除。
-- 新建/编辑表单：name / description / command / args（`NInput` 换行分隔）/ cwd / env（`key=value` 多行）。
-- 保存后自动试连：成功显示 `NAlert`（成功 + 工具数），失败显示错误信息（红色）。
+- 顶部：内置工具一览（chips 可点击启停，启用时高亮，启停仅更新 agents.json 对应 agent 的 `tools.inner_tools` 数组）。
+- MCP 服务组：按 server 分组折叠展示（组头：折叠箭头 + 服务名 + 工具数量紧凑排列，右侧开关整体启停），组内工具列表每项可单独启停（工具名格式 `mcp_<server>_<tool>`）。
+- **无试连 / 无删除 / 无新建按钮**（v2.0 拍板：单个 Agent 面板只保留启停，新建工具由内置 tool-creator 技能通过对话生成，统一管理页后期补充）。
 - `env` 含明文值时警告提示（`${VAR}` 形式不警告）。
 
 ### 6.4 Agent tab
 
-- 列表卡片：Agent 名、描述、关联技能/工具 chips（`NTag`）、启停开关、编辑、删除。
-- **“设为当前”按钮**（Radio/高亮）：当前 Agent 存 `localStorage.current_agent`，发送消息时随请求携带；高亮“正在使用”。
+- 列表卡片：Agent 名（首字母大写显示）、描述、关联技能/工具 chips（`NTag`）、启停开关、编辑按钮。
+- **当前 Agent**：通过工具栏 Agent 下拉选择（存 `localStorage.currentAgentName`），发送消息随 ACP 连接携带（`/acp-ws?agent=<name>`）；下拉选项带图标、选中后输入框追加 `` `@Agent名` ``，新建会话自动重置为 `default`。
 - 新建/编辑表单：
   - 基础：name（新建可填，编辑只读）、description
-  - 模型：provider / model_name / base_url / api_key（password 输入）/ temperature / max_tokens（留空 = 使用 .env 全局）
-  - 提示词：system_prompt 多行（留空 = 默认）
-  - 关联：技能多选（`NSelect multiple`，来自 /api/manage/skills）、工具多选（来自 /api/manage/tools）
+  - 关联：技能多选（来自 `/api/manage/skills`）、工具多选（来自 `/api/manage/tools`）
+  - **模型/提示词不在面板配置**（v2.0 拍板：统一由 `.deepagents/agents/agents.json` 管控，`acp_agent` 装配逻辑由用户后续调整）
 - 删除当前使用中的 Agent：UI 阻止（提示先切换）。
 
 ### 6.5 i18n
@@ -307,15 +307,15 @@ zh/ja/en 三语（`web/src/locales/*.ts` 新增 `manager` section）：skills/to
 
 | 文件 | 改动 |
 |---|---|
-| `.deepagents/skills\|tools/mcp_servers/` 骨架 + `.deepagents/agents.json` | 新建目录骨架 + agents.json 含 1 个示例（default Agent） |
-| `api/manage/manager.py` | 新增：4. 的 API 全部实现 + 路径安全校验 + 文件读写 |
-| `app.py` | 仅挂载 `/api/manage` 子路由（**不涉及 ACP 子进程参数改动**） |
-| `requirements.txt` | 追加 `mcp`（英文注释；仅用于 tools 试连校验） |
-| `web/src/pages/ChatPage.vue` | right-panel 内容实装（skills/tools/agents/settings 按入口渲染）+ Agent 入口图标 + 当前 Agent 状态 |
-| `web/src/api/*` | 新增 manager API 封装 |
+| `.deepagents/skills\|tools/mcp_servers/` 骨架 + `.deepagents/agents/agents.json` | 目录骨架 + agents.json 含示例（default Agent）；Agent 定义支持 `*.agent.md`（装配时物化启用集目录 `.enabled/<agent>/`） |
+| `api/manage/manager.py` | 4. 的 API 全部实现 + 路径安全校验 + 文件读写 + `list_files(q, dir)` 子目录 |
+| `app.py` | 挂载 `/api/manage` 子路由（不涉及 ACP 子进程参数改动） |
+| `requirements.txt` | 追加 `mcp`（英文注释；用于 MCP 服务器 stdio 装配） |
+| `web/src/pages/ChatPage.vue` | right-panel 内容实装（skills/tools/agents/settings 按入口渲染）+ Agent 工具栏下拉 + 输入框 `@`/`/`/`#` 快速动作 |
+| `web/src/api/*` | manager API 封装 |
 | `web/src/locales/*.ts` | manager section 三语 |
 | `docs/DESIGN_ZH.md` / `README.md` | 同步：目录结构、/api/manage、面板功能 |
-| `acp_agent.py` / `utils/model_util.py` / `utils/mcp_loader.py` | **不改动**（装配逻辑由用户后续自行调整） |
+| `acp_agent.py` / `utils/mcp_loader.py` / `utils/skill_loader.py` | **已实现**：`build_agent` 从 agents.json 装配 `tools.mcp_tools`（MCP 工具，stdio 子进程，UTF-8 重定向）与 `skills`（per-agent 启用集），`subagents` 递归装配 |
 
 ---
 
@@ -323,7 +323,7 @@ zh/ja/en 三语（`web/src/locales/*.ts` 新增 `manager` section）：skills/to
 
 1. **MCP command RCE**：面板允许任意命令定义 → 仅本地自用；UI 明示“仅运行可信命令”；`.deepagents` 提交到 git 时配置随仓库传播，使用者自查。
 2. **删除不可逆**：前端二次确认 + 后端白名单 + 失败 409。
-3. **试连失败提示**：MCP 配置保存/试连失败（命令不存在、端口不通等）→ 面板明确提示错误信息；Agent 关联了已停用/不存在的技能或工具 → `/validate` 预检报告，不静默忽略。
+3. **装配失败提示**：MCP 配置不可用（命令不存在、stdio 启动失败、端口不通等）→ 会话内工具调用报错并在前端呈现错误消息（红色错误块 + 消息正文原样展示错误）；Agent 关联了已停用/不存在的技能或工具 → `/validate` 预检报告，不静默忽略。
 4. **并发写**：技能/工具为目录级写（无全局冲突）；**agents.json 为单文件，所有 Agent 增删改共用**——采用进程内写锁（asyncio.Lock / threading.Lock）+ 写前备份 `.bak` + 原子替换（tempfile+replace）；读取侧容忍短暂不一致（下次启动生效）。
 5. **模型连通性**：agent.json 配了无效模型 → 会话内模型调用报错（与现状一致，前端显示错误消息）。
 6. **范围约束**：不引入数据库、不迁移 moofile 会话（2.0 需求 5 另文设计）。

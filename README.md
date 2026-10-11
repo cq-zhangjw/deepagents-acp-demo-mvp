@@ -7,7 +7,9 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 - **Streaming chat**: AI replies stream in real time — text, thought, execution plan and tool-call cards are rendered incrementally; Markdown, code highlight, Mermaid diagrams and sanitized inline HTML are all supported.
 - **Tool calls**: each tool card shows parameters / return value in collapsible `json` tabs; permission requests (`session/request_permission`) can be approved, rejected or always-approved.
 - **Message actions**: copy (plain text or Markdown), retry (last AI message only), edit (Markdown source editing without re-running), delete via the `...` menu.
-- **Conversations**: recent-conversation sidebar with search/filter, rename via context menu, delete with confirmation, and timestamps in `YYYY/MM/DD hh:mm:ss`.
+- **Conversations**: recent-conversation sidebar with search/filter, rename via context menu, delete with confirmation, and timestamps in `YYYY/MM/DD hh:mm:ss`. History is persisted **backend-authoritatively** in a local MooFile store (`db/history` via `/api/history`); the frontend only reads history (forced `GET` on entering a session) and no longer pushes it or relies on `localStorage`.
+- **Skills / tools (MCP) / agents management** (2.0): the right-hand panel manages skills, tools (MCP servers + built-in tools) and agents with per-agent enable/disable written to `.deepagents/agents/agents.json` (`skills[]`, `tools.inner_tools`, `tools.mcp_tools`); enabled MCP tools and skills are assembled into the agent by `acp_agent.py build_agent`. The toolbar agent dropdown picks the current agent (icon + capitalized name, appends `` `@Agent` ``), and a new conversation always resets to `default`.
+- **Quick actions**: typing `@`, `/` or `#` as the first character of an empty composer triggers file / skill / tool pickers (backend `/api/manage/files?dir=` supports drilling into subdirectories); a selection is inserted backtick-wrapped as `` `@<path>` `` / `` `/skill` `` / `` `#tool` `` with a trailing space. Backticked inline code is highlighted (white chip in user bubbles, light-blue chip in AI bubbles).
 - **Attachments**: upload or paste images/files, inline preview, download on click; context usage (used / `CONTENT_SIZE`) shown as percentage with hover detail.
 - **Error handling**: ACP error details are returned to the frontend, displayed as the AI message content plus a red error block; the stop button always recovers to send after failures or disconnects.
 - **Multi-language**: UI supports Simplified Chinese / Japanese / English (i18n locale files under `web/src/locales/`).
@@ -22,6 +24,7 @@ flowchart LR
     UI[Chat UI<br/>Streaming messages / Tool cards / Permission requests]
     Upload[Image / file upload]
     WSClient[WebSocket client<br/>ACP v2 JSON-RPC]
+    Manager[Right panel<br/>skills / tools / agents<br/>@ · / · # quick actions]
   end
 
   subgraph Gateway["FastAPI Gateway app.py"]
@@ -29,10 +32,12 @@ flowchart LR
     WSProxy["/acp-ws WebSocket ⇄ stdio bidirectional forwarding"]
     Static["/ static hosting of web/dist"]
     VoiceAPI["/api/chat_voice/voices + /tts + /tts_stream<br/>genie-tts local ONNX (zh/en/jp/auto, 32 kHz)"]
+    ManageAPI["/api/manage skills/tools/agents/files"]
+    HistoryAPI["/api/history session history (authoritative)"]
   end
 
   subgraph Agent["ACP Agent subprocess"]
-    ACP["acp_agent.py<br/>DeepAgents ACP service"]
+    ACP["acp_agent.py<br/>DeepAgents ACP service<br/>assembles MCP tools + skills from agents.json"]
     Model["OpenAI-compatible model service"]
   end
 
@@ -42,8 +47,10 @@ flowchart LR
   WSClient <-->|JSON-RPC 2.0| WSProxy
   WSProxy <-->|stdio forwarding| ACP
   ACP -->|HTTP| Model
+  Manager <-->|REST| ManageAPI
+  HistoryAPI -->|read/write| MooDB[("db/history — MooFile store")]
   Static --> Browser
-  Agent -->|checkpoint| DB[("SQLite db/")]
+  Agent -->|checkpoint| DB[("SQLite db/agent_state.sqlite")]
 ```
 
 - **ACP layer**: Uses `deepagents-acp` and `agent-client-protocol` to automatically handle protocol messages such as `session/update` and `session/request_permission`, without requiring manual JSON-RPC handling.
@@ -54,21 +61,31 @@ flowchart LR
 
 ```text
 ./
-├─ app.py                # FastAPI gateway (/upload + /acp-ws, serves web/dist at /)
+├─ app.py                # FastAPI gateway (/upload + /acp-ws + /api/manage + /api/history + /api/chat_voice + /api/config, serves web/dist at /)
 ├─ api/
-│  └─ chat_voice/        # Voice synthesis sub-router (/api/chat_voice/voices + /tts)
-├─ acp_agent.py          # DeepAgents ACP agent (stdio service)
+│  ├─ chat_voice/        # Voice synthesis sub-router (voices / config / tts / tts_stream; genie-tts / edge_tts / sapi)
+│  ├─ history.py         # Session history sub-router (GET/PUT/DELETE against db/history MooFile store)
+│  └─ manage/manager.py  # Skills / tools (MCP) / agents / built-in tools / file-picker sub-router (/api/manage)
+├─ acp_agent.py          # DeepAgents ACP agent (stdio service, assembles MCP tools + skills from agents.json)
 ├─ utils/
-│  └─ model_util.py     # Model initialization configuration (OpenAI-compatible API)
+│  ├─ model_util.py      # Model initialization configuration (OpenAI-compatible API)
+│  ├─ moofile_util.py    # MooFile wrapper (plain collections + vector collections, used by db/history)
+│  ├─ mcp_loader.py      # agents.json → MCP tool assembly + client lifecycle
+│  └─ skill_loader.py    # agents.json → per-agent skill enable-set (.deepagents/skills/.enabled/<agent>)
+├─ .deepagents/          # Local agent-config home (git-tracked)
+│  ├─ agents/            # agents.json (per-agent skills / tools.inner_tools / tools.mcp_tools / subagents) + *.agent.md
+│  ├─ skills/            # skill sources + .enabled/<agent>/ materialized enable-set
+│  └─ tools/mcp_servers/ # MCP server directories, each with its own manifest.json
 ├─ web/                  # Vue 3 + TypeScript ACP client (Vite build → web/dist)
 │  ├─ src/              # pages: ChatPage / VoiceCallPage; components: ExecutionProcess / ToolCallCard / MarkdownMessage
 │  └─ dist/             # build output, served by app.py at the root path
 ├─ static/
 │  └─ index.html        # Legacy demo page (no longer the active frontend)
-├─ docs/                # Design documents (DESIGN_ZH.md, UI_DESIGN.md)
+├─ docs/                # Design documents (DESIGN_ZH.md, DESIGN_2.0_MANAGER.md, UI_DESIGN.md, schedule_task.md, control_update.md)
 ├─ uploads/              # Uploaded file storage directory (created automatically)
-├─ db/                   # SQLite checkpoint directory (created automatically)
-├─ .env                  # Application configuration (HOST/PORT/model endpoint)
+├─ db/                   # SQLite checkpoint (agent_state.sqlite) + MooFile history (db/history), created automatically
+├─ start.ps1 / stop.ps1  # Start / stop helper scripts (stop kills the process tree)
+├─ .env                  # Application configuration (HOST/PORT/model endpoint/TTS/DB_ROOT/UPLOAD_ROOT/CONTENT_SIZE)
 ├─ requirements.txt
 ├─ LICENSE
 ├─ README.md
@@ -87,7 +104,8 @@ The actual entry point of this project is `app.py`, not the old `gateway.py` sho
   - `name`: filename
   - `mimeType`: MIME type
 - `@app.websocket("/acp-ws")` creates an independent `acp_agent.py` subprocess for each WebSocket connection and forwards traffic in both directions.
-- `acp_agent.py` uses `create_deep_agent(...)` and `interrupt_on` to trigger permission approval.
+- `acp_agent.py` uses `create_deep_agent(...)` and `interrupt_on` to trigger permission approval; its `build_agent` reads `.deepagents/agents/agents.json` for the current agent and assembles enabled skills and MCP tools (`mcp_<server>_<tool>`) plus recursive `subagents`.
+- `/api/manage` (skills / tools / agents / built-in tools / file picker), `/api/history` (authoritative session history in `db/history` MooFile store) and `/api/chat_voice` (TTS) are mounted as sub-routers.
 
 ## Quick start
 
@@ -187,12 +205,13 @@ The frontend supports multi-turn conversation reuse and history restoration:
 
 - First submission: creates a new session automatically
 - Subsequent submissions: reuse the current `sessionId` and the agent retains prior memory
-- Clicking "New Session": starts a fresh session and discards old memory
-- Refreshing the page or reconnecting the WebSocket: the UI restores conversations from `localStorage` and calls `session/load` to replay the agent history from the SQLite checkpoint
+- Clicking "New Session": starts a fresh session and discards old memory (and resets the agent to `default`)
+- Refreshing the page or entering a session: the UI fetches the display history from the backend via `GET /api/history/{cid}` (authoritative MooFile store `db/history`) and calls `session/load` to replay the agent context from the SQLite checkpoint
 
 Core principle:
 - Each WebSocket connection starts a dedicated `acp_agent.py` subprocess
 - `AgentServerACP` persists LangGraph checkpoints to `db/agent_state.sqlite` by `sessionId` (`load_sessions=True`)
+- The frontend no longer pushes history or writes `localStorage`; display state lives in `db/history` and the ACP context lives in the SQLite checkpoint, linked by `sessionId`
 - Repeated `session/prompt` calls on the same connection enable multi-turn interaction; `session/load` restores history across reconnects
 
 ## Permission approval mechanism
