@@ -60,3 +60,7 @@ temp_readme.txt
 
 # Tool result cache (runtime artifacts, never commit)
 large_tool_results/
+
+# Remotion test artifacts (context compaction test target)
+rag-video/
+

@@ -357,6 +357,192 @@
               "execution": null
             }
           ]
+        },
+        {
+          "server": "web_assistant_server",
+          "serverInfo": {
+            "name": "Web Assistant Server",
+            "title": null,
+            "version": "1.0.0",
+            "websiteUrl": null,
+            "icons": null
+          },
+          "tools": [
+            {
+              "name": "http_request",
+              "title": null,
+              "description": "Send an arbitrary HTTP request and return the status, key headers and (truncated) body.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "method": {
+                    "type": "string",
+                    "description": "HTTP method: GET / POST / PUT / PATCH / DELETE / HEAD"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "target URL (http/https only)"
+                  },
+                  "headers": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "optional extra headers as a dict, e.g. {\"Accept-Language\": \"zh-CN\"}"
+                  },
+                  "body": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "optional request body string (for POST/PUT/PATCH)"
+                  },
+                  "timeout": {
+                    "default": 15.0,
+                    "type": "number",
+                    "description": "request timeout in seconds"
+                  },
+                  "max_bytes": {
+                    "default": 100000,
+                    "type": "integer",
+                    "description": "max response body bytes to return (<=0 means unlimited)"
+                  }
+                },
+                "required": [
+                  "method",
+                  "url"
+                ]
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "fetch_webpage",
+              "title": null,
+              "description": "Fetch a URL via GET and return the raw HTML source (truncated).",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "target URL (http/https only)"
+                  },
+                  "max_bytes": {
+                    "default": 20000,
+                    "type": "integer",
+                    "description": "max returned bytes of the raw HTML source (<=0 unlimited)"
+                  },
+                  "timeout": {
+                    "default": 15.0,
+                    "type": "number",
+                    "description": "request timeout in seconds"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "baidu_search",
+              "title": null,
+              "description": "Search Baidu for a keyword and return the top-N results.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "keyword": {
+                    "type": "string",
+                    "description": "the search keyword / query string"
+                  },
+                  "num": {
+                    "default": 5,
+                    "type": "integer",
+                    "description": "how many results to return (1-20)"
+                  },
+                  "timeout": {
+                    "default": 15.0,
+                    "type": "number",
+                    "description": "request timeout in seconds"
+                  },
+                  "cookies": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "optional Cookie header string copied from a browser session,\ne.g. \"BAIDUID=xxx; BDUSS=yyy\". Baidu blocks cookie-less datacenter\nrequests with a captcha page; passing browser cookies bypasses it."
+                  }
+                },
+                "required": [
+                  "keyword"
+                ]
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "extract_links",
+              "title": null,
+              "description": "Fetch a page and extract all hyperlinks (<a href>).",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "target URL (http/https only)"
+                  },
+                  "max_bytes": {
+                    "default": 20000,
+                    "type": "integer",
+                    "description": "max fetched bytes of the page source (<=0 unlimited)"
+                  },
+                  "timeout": {
+                    "default": 15.0,
+                    "type": "number",
+                    "description": "request timeout in seconds"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            }
+          ]
         }
       ]
     },

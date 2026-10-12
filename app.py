@@ -20,6 +20,7 @@ from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from api.chat_voice.chat_voice import router as chat_voice_router
+from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
@@ -49,6 +50,8 @@ app.include_router(history_router)
 app.include_router(knowledge_router)
 # management panel sub-router: /api/manage/skills, /api/manage/tools, /api/manage/agents
 app.include_router(manage_router)
+# context compaction sub-router: /api/context/compact
+app.include_router(context_router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 

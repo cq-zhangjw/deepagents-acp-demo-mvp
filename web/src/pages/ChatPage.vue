@@ -214,6 +214,10 @@ const actionLabels = computed(() => ({
   builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
+  compactContext: locale.value === 'zh' ? '压缩上下文' : locale.value === 'ja' ? 'コンテキストを圧縮' : 'Compact context',
+  compacting: locale.value === 'zh' ? '压缩中...' : locale.value === 'ja' ? '圧縮中...' : 'Compacting...',
+  compactDone: locale.value === 'zh' ? '上下文已压缩' : locale.value === 'ja' ? 'コンテキストを圧縮しました' : 'Context compacted',
+  compactFailed: locale.value === 'zh' ? '压缩失败' : locale.value === 'ja' ? '圧縮失敗' : 'Compaction failed',
   comingSoon: locale.value === 'zh' ? '该功能即将支持' : locale.value === 'ja' ? 'この機能はまもなく対応予定です' : 'Coming soon',
   renameConversation: locale.value === 'zh' ? '重命名' : locale.value === 'ja' ? '名前を変更' : 'Rename',
   renameTitle: locale.value === 'zh' ? '重命名会话' : locale.value === 'ja' ? 'セッション名を変更' : 'Rename conversation',
@@ -502,9 +506,15 @@ function saveRename() {
   renameTarget.value = null
 }
 
+// After a manual compaction the backend reports the real post-compaction
+// usage; show that instead of the (unchanged) local message estimate until
+// the next user message resets it.
+const contextOverride = ref<{ tokens: number; pct: number; total: number } | null>(null)
+
 const contextUsage = computed(() => {
   const conversation = currentConversation.value
   if (!conversation || !conversation.messages.length || !contextSize.value) return null
+  if (contextOverride.value) return contextOverride.value
   let chars = 0
   for (const item of conversation.messages) {
     if (item.role === 'user') {
@@ -518,6 +528,42 @@ const contextUsage = computed(() => {
   const pct = Math.min(100, Math.round((tokens / contextSize.value) * 100))
   return { pct, tokens, total: contextSize.value }
 })
+
+const compactingContext = ref(false)
+async function compactContext() {
+  const conversation = currentConversation.value
+  if (!conversation || compactingContext.value || isRunning.value) return
+  compactingContext.value = true
+  try {
+    const res = await fetch('/api/context/compact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: conversation.agentSessionId ?? conversation.id,
+        agent: currentAgentName.value || 'default',
+      }),
+    })
+    const data = await res.json()
+    if (data.ok) {
+      contextOverride.value = {
+        tokens: Number(data.after_tokens) || 0,
+        pct: Number(data.pct_after) ?? 0,
+        total: contextSize.value,
+      }
+      if (data.summary) {
+        ;message.success(`${actionLabels.value.compactDone}（${data.pct_before}% → ${data.pct_after}%）`)
+      } else {
+        ;message.success(actionLabels.value.compactDone)
+      }
+    } else {
+      ;message.error(`${actionLabels.value.compactFailed}: ${data.error ?? ''}`)
+    }
+  } catch (e) {
+    ;message.error(`${actionLabels.value.compactFailed}: ${String(e)}`)
+  } finally {
+    compactingContext.value = false
+  }
+}
 
 const contextSize = ref(0)
 async function loadContextSize() {
@@ -1382,6 +1428,7 @@ async function submitPrompt() {
 
   const isNewConversation = conversation.messages.length === 0
   errorText.value = ''
+  contextOverride.value = null // a new prompt resets to the local estimate
   const resources = [...attachments.value]
   const userMessage: UserMessage = { id: createId('user'), role: 'user', text, attachments: resources, createdAt: Date.now() }
   const assistantMessage: AssistantMessage = {
@@ -2351,7 +2398,17 @@ onBeforeUnmount(() => {
                 </NButton>
               </div>
               <div class="composer-toolbar-right">
-                <span v-if="contextUsage" class="composer-context" :title="`${contextUsage.tokens} / ${contextUsage.total} tokens`">{{ actionLabels.context }} {{ contextUsage.pct }}%</span>
+                <NTooltip v-if="contextUsage">
+                  <template #trigger>
+                    <span class="composer-context" :title="`${contextUsage.tokens} / ${contextUsage.total} tokens`">{{ actionLabels.context }} {{ contextUsage.pct }}%</span>
+                  </template>
+                  <div class="context-tooltip">
+                    <span style="font-size:12px;">{{ contextUsage.tokens }} / {{ contextUsage.total }} tokens</span>
+                    <NButton size="tiny" type="primary" secondary :disabled="isRunning || compactingContext" :loading="compactingContext" @click="compactContext">
+                      {{ compactingContext ? actionLabels.compacting : actionLabels.compactContext }}
+                    </NButton>
+                  </div>
+                </NTooltip>
                 <NTooltip v-if="isRunning">
                   <template #trigger>
                     <NButton circle type="error" size="small" :aria-label="t('cancel')" @click="cancelTask">
@@ -2687,7 +2744,7 @@ onBeforeUnmount(() => {
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
 .attachment-list,.pending-attachments { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; } .attachment-chip { display:inline-flex; gap:5px; align-items:center; max-width:220px; padding:4px 8px; overflow:hidden; color:#34527e; background:#fff; border:1px solid #cbd8ed; border-radius:6px; font-size:12px; cursor:pointer; } .attachment-chip .attachment-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .attachment-chip button { flex-shrink:0; } .attachment-chip--image { max-width:260px; } .attachment-preview { width:34px; height:34px; flex:0 0 34px; object-fit:cover; border:1px solid #d8e1ef; border-radius:4px; } .attachment-chip button { padding:0; color:inherit; background:none; border:0; cursor:pointer; font-size:15px; }
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
-.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { position:relative; display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
+.composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { position:relative; display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .context-tooltip { display:flex; flex-direction:column; gap:6px; align-items:flex-start; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
 .hidden-action { display: none; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }

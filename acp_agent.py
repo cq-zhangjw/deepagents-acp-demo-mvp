@@ -14,6 +14,7 @@ Note: The default model is openai:gpt-4o, so OPENAI_API_KEY must be set.
 """
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -29,9 +30,13 @@ from langgraph.graph.state import CompiledStateGraph
 
 from deepagents.middleware.subagents import SubAgent
 
+from utils.context_compactor import compact_messages, estimate_tokens, should_compact
 from utils.model_util import MODEL
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
 from utils.skill_loader import get_agent_skills
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("acp_agent")
 
 # Selected agent (passed by the gateway as AGENT_NAME env var; the frontend
 # sends it through the /acp-ws?agent= query param). Its enabled MCP tools are
@@ -257,11 +262,41 @@ def build_agent(
     return agent
 
 
+class CompactingAgentServer(AgentServerACP):
+    """AgentServerACP with automatic context compaction before every prompt.
+
+    When the checkpointed session messages (plus a conservative overhead)
+    reach CONTENT_SIZE * CONTEXT_COMPACT_RATIO, the earliest messages are
+    summarized and removed from the checkpoint, then the prompt proceeds with
+    the compacted history. Compaction failures never break the prompt.
+    """
+
+    async def prompt(self, prompt, session_id, message_id=None, **kwargs):
+        try:
+            agent = self._checkpointed_agent(session_id)
+            config = self._session_config(session_id)
+            state = await agent.aget_state(config)
+            values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
+            messages = list((values or {}).get("messages", []) or [])
+            if messages and should_compact(messages):
+                logger.info(
+                    "[compact] session=%s tokens=%s overhead=%s -> compacting",
+                    session_id,
+                    estimate_tokens(messages),
+                    os.getenv("CONTEXT_COMPACT_OVERHEAD") or 6000,
+                )
+                result = await compact_messages(agent, config, messages)
+                logger.info("[compact] session=%s result=%s", session_id, result)
+        except Exception:  # noqa: BLE001 - compaction must never break the prompt
+            logger.exception("[compact] failed; continuing without compaction")
+        return await super().prompt(prompt, session_id=session_id, message_id=message_id, **kwargs)
+
+
 async def main() -> None:
     """Start the stdio ACP service; deepagents_acp handles ACP protocol encoding/decoding and event publishing."""
     conn = await aiosqlite.connect(DB_PATH)
     checkpointer = AsyncSqliteSaver(conn)
-    acp_agent = AgentServerACP(
+    acp_agent = CompactingAgentServer(
         # every session reuses the same persistent checkpointer; load_sessions=True makes
         # initialize advertise loadSession:true and implements session/load (replays history update events).
         agent=lambda ctx: build_agent(ctx, checkpointer),
