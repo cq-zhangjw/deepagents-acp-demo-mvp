@@ -380,5 +380,129 @@
       "mcp_tools": []
     },
     "skills": []
+  },
+  "qa_worker": {
+    "description": "保守组问答 Agent，用户带着问题到来时，从向量知识库检索相似案件，参考案例并整理成正式回答。",
+    "enabled": true,
+    "subagents": [],
+    "tools": {
+      "inner_tools": [
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "delete",
+        "task",
+        "execute"
+      ],
+      "mcp_tools": [
+        {
+          "server": "knowledge_server",
+          "serverInfo": {
+            "name": "MooFile Knowledge Server",
+            "title": null,
+            "version": "1.0.0",
+            "websiteUrl": null,
+            "icons": null
+          },
+          "tools": [
+            {
+              "name": "retrieve_knowledge",
+              "title": null,
+              "description": "Semantic search over a vector knowledge base (RAG retrieval).\n\nThe query is embedded with the knowledge base's configured model and the\nmost similar chunks are returned. Omitting top_k / threshold makes the\nbackend fall back to the knowledge base's vectorConfig defaults.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "db_id": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "db_id",
+                  "query"
+                ],
+                "type": "object"
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "list_knowledge_bases",
+              "title": null,
+              "description": "List all non-trashed knowledge bases.\n\nReturns:\n    A list of knowledge base summaries with id, name, type and counts.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "get_db_id_by_name",
+              "title": null,
+              "description": "Resolve the db_id of a knowledge base from its exact name.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "db_name": {
+                    "type": "string",
+                    "description": "The exact knowledge base name (case-insensitive match)."
+                  }
+                },
+                "required": [
+                  "db_name"
+                ],
+                "type": "object"
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            },
+            {
+              "name": "list_documents",
+              "title": null,
+              "description": "List all documents of a knowledge base.",
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "db_id": {
+                    "type": "string",
+                    "description": "The knowledge base id."
+                  }
+                },
+                "required": [
+                  "db_id"
+                ],
+                "type": "object"
+              },
+              "outputSchema": null,
+              "icons": null,
+              "annotations": null,
+              "_meta": null,
+              "execution": null
+            }
+          ]
+        }
+      ]
+    },
+    "skills": [
+      "skill-creator",
+      "tool-creator",
+      "agent-creator"
+    ]
   }
 }

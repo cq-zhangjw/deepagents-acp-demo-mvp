@@ -1254,6 +1254,15 @@ async function ensureAgentSession(conversation: Conversation, isNewConversation:
     restoringHistory.value = true
     try {
       await callAcp('session/load', { sessionId: agentSessionId, cwd: '.', mcpServers: [] })
+    } catch (error) {
+      // Checkpoint missing (e.g. a conversation migrated from localStorage
+      // before ACP sessions existed, or the checkpoint was pruned): rebuild a
+      // fresh ACP session instead of failing. The conversation's messages are
+      // kept in the history store; only the model-side context starts empty.
+      console.warn('[history] ACP session missing, recreating checkpoint:', conversation.id, error)
+      const response = await callAcp('session/new', { sessionId: conversation.id, cwd: '.', mcpServers: [] })
+      if (!response?.sessionId) throw error
+      conversation.agentSessionId = response.sessionId
     } finally {
       restoringHistory.value = false
     }
@@ -1262,8 +1271,13 @@ async function ensureAgentSession(conversation: Conversation, isNewConversation:
 }
 
 // localStorage only mirrors the display state; the authoritative agent context
-// lives in the SQLite checkpoint. On load, validate every history session
-// against the backend and drop local ones whose checkpoint is missing.
+// lives in the SQLite checkpoint. On load we *verify* every history session
+// against the backend, but verification failure MUST NEVER delete a
+// conversation: session/load can fail on transient backend issues (socket,
+// checkpoint lock, server hiccup) while the stored data is perfectly valid,
+// and auto-deleting user history on such a failure is irreversible data loss.
+// Unverifiable sessions are kept and re-checked on the next load;
+// ensureAgentSession lazily recreates a missing ACP checkpoint on send.
 async function validateStoredSessions() {
   if (!conversations.value.length) return
   try {
@@ -1273,7 +1287,6 @@ async function validateStoredSessions() {
     // keep local sessions when the backend is offline; retry on next validation
     return
   }
-  const invalid: string[] = []
   for (const conversation of conversations.value) {
     if (!conversation.messages.length) continue
     const agentSessionId = conversation.agentSessionId ?? conversation.id
@@ -1281,20 +1294,11 @@ async function validateStoredSessions() {
     try {
       await callAcp('session/load', { sessionId: agentSessionId, cwd: '.', mcpServers: [] })
       initializedSessions.add(conversation.id)
-    } catch {
-      invalid.push(conversation.id)
+    } catch (error) {
+      console.warn('[history] unverifiable session kept (lazy-recreated on send):', conversation.id, error)
     } finally {
       restoringHistory.value = false
     }
-  }
-  if (invalid.length) {
-    conversations.value = conversations.value.filter((conversation) => !invalid.includes(conversation.id))
-    if (activeConversationId.value && invalid.includes(activeConversationId.value)) {
-      activeConversationId.value = conversations.value[0]?.id ?? ''
-    }
-    invalid.forEach((id) => void deleteConversationRemote(id))
-    // create a fresh empty session when all are invalid so the input stays usable
-    if (!conversations.value.length) createConversation()
   }
 }
 

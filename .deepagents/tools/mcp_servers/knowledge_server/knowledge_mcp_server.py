@@ -22,7 +22,7 @@ http://<host>:<port>/mcp.
 
 Configuration (environment variables):
 - MOOFILE_API_BASE   base URL of the MooFile backend, default http://127.0.0.1:8888
-- MOOFILE_API_TIMEOUT  request timeout in seconds, default 10
+- MOOFILE_API_TIMEOUT  request timeout in seconds, default 120
 - MOOFILE_MCP_HOST    host to bind the MCP server, default 127.0.0.1
 - MOOFILE_MCP_PORT    port to bind the MCP server, default 8010
 - MOOFILE_MCP_TRANSPORT  MCP transport: "streamable-http" (default) or "stdio"
@@ -42,7 +42,7 @@ import requests
 from fastmcp import FastMCP
 
 API_BASE = os.environ.get("MOOFILE_API_BASE", "http://127.0.0.1:8888")
-API_TIMEOUT = float(os.environ.get("MOOFILE_API_TIMEOUT", "10"))
+API_TIMEOUT = float(os.environ.get("MOOFILE_API_TIMEOUT", "120"))
 
 MCP_HOST = os.environ.get("MOOFILE_MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MOOFILE_MCP_PORT", "8010"))

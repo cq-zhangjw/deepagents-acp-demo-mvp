@@ -57,3 +57,6 @@ temp_readme.txt
 
 # per-agent runtime skill enablement set (regenerated on each agent build)
 .deepagents/skills/.enabled/
+
+# Tool result cache (runtime artifacts, never commit)
+large_tool_results/

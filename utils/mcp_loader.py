@@ -228,26 +228,36 @@ def _service_reachable(server: str) -> bool:
 
 
 def get_agent_mcp_tools(agent_name: str) -> list[BaseTool]:
-    """Return the enabled MCP tools configured for the given agent."""
+    """Return the enabled MCP tools configured for the given agent.
+
+    When a server was skipped (e.g. knowledge_server while the external
+    backend is offline) the partial result is NOT cached, so the next
+    assembly re-probes and picks the tools up as soon as the service comes
+    back - without needing a process restart.
+    """
     if agent_name in _tools_cache:
         return _tools_cache[agent_name]
     config = load_agents_config().get(agent_name) or {}
     entries = (config.get("tools") or {}).get("mcp_tools") or []
     tools: list[BaseTool] = []
+    skipped = False
     for entry in entries:
         server = entry.get("server")
         if not server:
             continue
         if not _service_reachable(server):
             logger.info("MCP server '%s' skipped: external service offline", server)
+            skipped = True
             continue
         try:
             holder = _holder(server)
         except Exception:  # noqa: BLE001 - a broken server entry must not break the agent
+            skipped = True
             continue
         for tool_meta in entry.get("tools") or []:
             tools.append(make_tool(holder, tool_meta))
-    _tools_cache[agent_name] = tools
+    if not skipped:
+        _tools_cache[agent_name] = tools
     return tools
 
 
