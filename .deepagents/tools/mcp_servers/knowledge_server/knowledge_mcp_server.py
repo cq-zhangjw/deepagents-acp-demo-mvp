@@ -27,9 +27,11 @@ Configuration (environment variables):
 - MOOFILE_MCP_PORT    port to bind the MCP server, default 8010
 - MOOFILE_MCP_TRANSPORT  MCP transport: "streamable-http" (default) or "stdio"
 """
+import functools
 import mimetypes
 import os
 import time
+import traceback
 
 try:
     from dotenv import load_dotenv
@@ -43,6 +45,25 @@ from fastmcp import FastMCP
 
 API_BASE = os.environ.get("MOOFILE_API_BASE", "http://127.0.0.1:8888")
 API_TIMEOUT = float(os.environ.get("MOOFILE_API_TIMEOUT", "120"))
+
+
+def _safe_tool(func):
+    """Wrap an MCP tool so runtime errors are returned as tool results instead
+    of being raised into the agent loop (same pattern as calc_server).
+
+    A raised exception would abort the whole agent turn; returning an
+    "Error: ..." string lets the model see the failure and continue with the
+    next steps / retry. functools.wraps preserves the original signature so
+    FastMCP still builds the correct input schema.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - any runtime failure becomes a readable result
+            return f"Error: {traceback.format_exc()}"
+    return wrapper
 
 MCP_HOST = os.environ.get("MOOFILE_MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MOOFILE_MCP_PORT", "8010"))
@@ -93,6 +114,7 @@ def _request(method: str, path: str, **kwargs) -> object:
 
 
 @mcp.tool()
+@_safe_tool
 def create_knowledge_base(name: str, db_type: str = "normal") -> dict:
     """Create a new knowledge base.
 
@@ -109,6 +131,7 @@ def create_knowledge_base(name: str, db_type: str = "normal") -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def get_knowledge_base(db_id: str) -> dict:
     """Fetch the details of a knowledge base by its db_id.
 
@@ -124,6 +147,7 @@ def get_knowledge_base(db_id: str) -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def list_knowledge_bases() -> list[dict]:
     """List all non-trashed knowledge bases.
 
@@ -134,6 +158,7 @@ def list_knowledge_bases() -> list[dict]:
 
 
 @mcp.tool()
+@_safe_tool
 def rename_knowledge_base(db_id: str, new_name: str) -> dict:
     """Rename an existing knowledge base.
 
@@ -151,6 +176,7 @@ def rename_knowledge_base(db_id: str, new_name: str) -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def delete_knowledge_base(db_id: str) -> dict:
     """Soft-delete a knowledge base by moving it to the trash.
 
@@ -167,6 +193,7 @@ def delete_knowledge_base(db_id: str) -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def get_db_id_by_name(db_name: str) -> str:
     """Resolve the db_id of a knowledge base from its exact name.
 
@@ -220,6 +247,7 @@ def _wait_for_task(db_id: str, task_id: str, timeout: float) -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def upload_and_vectorize_document(
     local_path: str,
     db_id: str,
@@ -303,6 +331,7 @@ def upload_and_vectorize_document(
 
 
 @mcp.tool()
+@_safe_tool
 def list_documents(db_id: str) -> list[dict]:
     """List all documents of a knowledge base.
 
@@ -318,6 +347,7 @@ def list_documents(db_id: str) -> list[dict]:
 
 
 @mcp.tool()
+@_safe_tool
 def delete_document(db_id: str, doc_id: str) -> dict:
     """Delete a document (and all of its vectorized chunks) from a knowledge base.
 
@@ -336,6 +366,7 @@ def delete_document(db_id: str, doc_id: str) -> dict:
 
 
 @mcp.tool()
+@_safe_tool
 def retrieve_knowledge(
     db_id: str,
     query: str,

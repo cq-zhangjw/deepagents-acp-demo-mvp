@@ -54,6 +54,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import { storageKey, type SupportedLocale } from '../i18n'
 import ExecutionProcess from '../components/ExecutionProcess.vue'
+import KnowledgeManageModal from '../components/KnowledgeManageModal.vue'
 import MarkdownMessage from '../components/MarkdownMessage.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
 import { fetchKnowledgeConfig, fetchKnowledgeDatabases, toggleKnowledgeDb, startKnowledgeService, type KnowledgeDb } from '../api/knowledge'
@@ -202,6 +203,7 @@ const actionLabels = computed(() => ({
   tools: locale.value === 'zh' ? '工具' : locale.value === 'ja' ? 'ツール' : 'Tools',
   knowledge: locale.value === 'zh' ? '知识库' : locale.value === 'ja' ? 'ナレッジベース' : 'Knowledge',
   knowledgeManage: locale.value === 'zh' ? '管理' : locale.value === 'ja' ? '管理' : 'Manage',
+  knowledgeLoading: locale.value === 'zh' ? '正在加载管理页面...' : locale.value === 'ja' ? '管理ページを読み込み中...' : 'Loading management page...',
   knowledgeUnreachable: locale.value === 'zh' ? '知识库服务未启动' : locale.value === 'ja' ? 'ナレッジベースサービスが起動していません' : 'Knowledge base service is unreachable',
   knowledgeStart: locale.value === 'zh' ? '立即启动' : locale.value === 'ja' ? '今すぐ起動' : 'Start now',
   knowledgeStarting: locale.value === 'zh' ? '启动中...' : locale.value === 'ja' ? '起動中...' : 'Starting...',
@@ -596,13 +598,16 @@ async function toggleKnowledge(db: KnowledgeDb) {
   }
 }
 
+const knowledgeManageVisible = ref(false)
 function openKnowledgeManager() {
   const baseUrl = knowledgeConfig.value.baseUrl
   if (!baseUrl) {
     message.warning(actionLabels.value.knowledgeUnreachable)
     return
   }
-  window.open(baseUrl, '_blank')
+  // Open the external moofile_base admin UI inside an in-app modal (iframe)
+  // so the management page feels like part of the application.
+  knowledgeManageVisible.value = true
 }
 
 /** Start the external moofile_base backend and refresh the panel. */
@@ -2654,6 +2659,15 @@ onBeforeUnmount(() => {
         </template>
       </NCard>
     </NModal>
+
+    <!-- Knowledge base management: external moofile_base admin UI in an iframe -->
+    <KnowledgeManageModal
+      :show="knowledgeManageVisible"
+      :src="knowledgeConfig.baseUrl || ''"
+      :title="actionLabels.knowledgeManage"
+      :loading-text="actionLabels.knowledgeLoading"
+      @close="knowledgeManageVisible = false"
+    />
   </main>
 </template>
 
