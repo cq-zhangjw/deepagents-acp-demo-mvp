@@ -1,0 +1,301 @@
+{
+  "environment": {
+    "fastmcp": "4.0.5",
+    "mcp": "1.26.0"
+  },
+  "serverInfo": {
+    "name": "MooFile Knowledge Server",
+    "title": null,
+    "version": "1.0.0",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "capabilities": {},
+  "tools": [
+    {
+      "name": "create_knowledge_base",
+      "title": null,
+      "description": "Create a new knowledge base.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Knowledge base name. Must be 2-64 characters of letters,\ndigits or underscores, and unique across all knowledge bases."
+          },
+          "db_type": {
+            "default": "normal",
+            "type": "string",
+            "description": "Database type, either \"normal\" (plain JSON records) or\n\"vector\" (vector knowledge base with embeddings). Defaults to \"normal\"."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "get_knowledge_base",
+      "title": null,
+      "description": "Fetch the details of a knowledge base by its db_id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The knowledge base id (e.g. \"db_MY_CSDN_de49cda0\")."
+          }
+        },
+        "required": [
+          "db_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "list_knowledge_bases",
+      "title": null,
+      "description": "List all non-trashed knowledge bases.\n\nReturns:\n    A list of knowledge base summaries with id, name, type and counts.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "rename_knowledge_base",
+      "title": null,
+      "description": "Rename an existing knowledge base.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The id of the knowledge base to rename."
+          },
+          "new_name": {
+            "type": "string",
+            "description": "The new name. Must be 2-64 characters of letters, digits or\nunderscores, and unique across all knowledge bases."
+          }
+        },
+        "required": [
+          "db_id",
+          "new_name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "delete_knowledge_base",
+      "title": null,
+      "description": "Soft-delete a knowledge base by moving it to the trash.\n\nThe knowledge base is not physically removed and can still be restored\nthrough the backend trash endpoints.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The id of the knowledge base to delete."
+          }
+        },
+        "required": [
+          "db_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "get_db_id_by_name",
+      "title": null,
+      "description": "Resolve the db_id of a knowledge base from its exact name.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_name": {
+            "type": "string",
+            "description": "The exact knowledge base name (case-insensitive match)."
+          }
+        },
+        "required": [
+          "db_name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "upload_and_vectorize_document",
+      "title": null,
+      "description": "Upload a local document into a vector knowledge base and vectorize it.\n\nThe file is read from disk and sent to the MooFile upload endpoint, then\na vectorization task is started for it. When `wait` is True the tool polls\nthe task until it finishes and reports the final state and chunk count.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "local_path": {
+            "type": "string",
+            "description": "Absolute path of the document file on this machine.\nSupported extensions (parseable by the backend worker): .txt, .md,\n.markdown, .csv, .html, .htm, .json, .log."
+          },
+          "db_id": {
+            "type": "string",
+            "description": "The target knowledge base id; it must be a vector knowledge base."
+          },
+          "chunk_size": {
+            "default": 500,
+            "type": "integer",
+            "description": "Target chunk size in characters (100-2000, default 500)."
+          },
+          "overlap": {
+            "default": 20,
+            "type": "integer",
+            "description": "Chunk overlap in characters (0 <= overlap < chunk_size, default 20)."
+          },
+          "model": {
+            "default": "",
+            "type": "string",
+            "description": "Embedding model name; leave empty to use the knowledge base default."
+          },
+          "wait": {
+            "default": true,
+            "type": "boolean",
+            "description": "If True (default), block until the vectorization task completes."
+          },
+          "timeout": {
+            "default": 600.0,
+            "type": "number",
+            "description": "Max seconds to wait for the task (default 600)."
+          }
+        },
+        "required": [
+          "local_path",
+          "db_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "list_documents",
+      "title": null,
+      "description": "List all documents of a knowledge base.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The knowledge base id."
+          }
+        },
+        "required": [
+          "db_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "delete_document",
+      "title": null,
+      "description": "Delete a document (and all of its vectorized chunks) from a knowledge base.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The knowledge base id."
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "The document id to delete (see list_documents)."
+          }
+        },
+        "required": [
+          "db_id",
+          "doc_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    },
+    {
+      "name": "retrieve_knowledge",
+      "title": null,
+      "description": "Semantic search over a vector knowledge base (RAG retrieval).\n\nThe query is embedded with the knowledge base's configured model and the\nmost similar chunks are returned. Omitting top_k / threshold makes the\nbackend fall back to the knowledge base's vectorConfig defaults.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "db_id": {
+            "type": "string",
+            "description": "The vector knowledge base id."
+          },
+          "query": {
+            "type": "string",
+            "description": "The natural-language query text."
+          },
+          "top_k": {
+            "default": 0,
+            "type": "integer",
+            "description": "Max number of results (use 0 to fall back to the database\ndefault, normally 10)."
+          },
+          "threshold": {
+            "default": -1.0,
+            "type": "number",
+            "description": "Minimum similarity score to keep a result, 0-1\n(use -1 to fall back to the database default, normally 0.3)."
+          }
+        },
+        "required": [
+          "db_id",
+          "query"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": null,
+      "execution": null
+    }
+  ],
+  "prompts": [],
+  "resources": [],
+  "resourceTemplates": []
+}

@@ -141,6 +141,28 @@ def list_builtin_tools():
     return BUILTIN_TOOLS
 
 
+@router.get("/kb-health")
+def knowledge_base_health():
+    """Probe the external MooFile knowledge backend (default :8888).
+
+    The knowledge MCP tools are served by moofile_base (an external project);
+    the frontend polls this endpoint to show a "knowledge service offline"
+    hint without blocking the chat.
+    """
+    import json
+    import urllib.request
+
+    base = os.environ.get("MOOFILE_API_BASE", "http://127.0.0.1:8888").rstrip("/")
+    url = base + "/api/system/health"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            ok = resp.status == 200 and body.get("code") == 0
+            return {"ok": ok, "url": base, "detail": body.get("data") or body.get("message")}
+    except Exception as exc:  # noqa: BLE001 - probe failures are expected when offline
+        return {"ok": False, "url": base, "detail": str(exc)}
+
+
 BUILTIN_TOOL_NAMES = [t["name"] for t in BUILTIN_TOOLS]
 
 

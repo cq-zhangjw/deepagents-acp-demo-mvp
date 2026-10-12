@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.chat_voice.chat_voice import router as chat_voice_router
 from api.history import router as history_router
+from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
 
 from dotenv import load_dotenv
@@ -44,6 +45,8 @@ app = FastAPI(title="ACP client base")
 app.include_router(chat_voice_router)
 # history persistence sub-router: /api/history (MooFile BSON files)
 app.include_router(history_router)
+# knowledge base gateway sub-router: /api/knowledge (external moofile_base)
+app.include_router(knowledge_router)
 # management panel sub-router: /api/manage/skills, /api/manage/tools, /api/manage/agents
 app.include_router(manage_router)
 

@@ -16,6 +16,7 @@ Conventions:
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ from fastmcp import Client
 from fastmcp.client.transports.stdio import PythonStdioTransport
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, create_model
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGENTS_FILE = BASE_DIR / ".deepagents" / "agents" / "agents.json"
@@ -59,6 +62,15 @@ def invalidate_agents_cache() -> None:
     """
     global _agents_cache
     _agents_cache = None
+
+
+def clear_tools_cache() -> None:
+    """Drop cached assembled tool lists so the next assembly re-probes.
+
+    Used after an external dependency (e.g. the knowledge backend) comes back
+    online, so tools that were skipped while it was down get re-injected.
+    """
+    _tools_cache.clear()
 
 
 def _server_entry(server: str) -> Path:
@@ -192,6 +204,29 @@ def make_tool(holder: ServerHolder, meta: dict[str, Any]) -> StructuredTool:
     )
 
 
+def _service_reachable(server: str) -> bool:
+    """Pre-flight check for MCP servers backed by an external HTTP service.
+
+    `knowledge_server` talks to the moofile_base backend on MOOFILE_BASE_URL;
+    when that service is down every tool call would fail (or hang waiting),
+    so those tools are skipped at assembly time and the UI shows the offline
+    hint with a start button instead. Other servers are local stdio and always
+    considered reachable.
+    """
+    if server != "knowledge_server":
+        return True
+    base = os.getenv("MOOFILE_BASE_URL", "http://127.0.0.1:8888").rstrip("/")
+    try:
+        import json as _json
+        import urllib.request
+
+        with urllib.request.urlopen(base + "/api/system/health", timeout=1.5) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+            return resp.status == 200 and body.get("code") == 0
+    except Exception:  # noqa: BLE001 - offline simply means skip the tools
+        return False
+
+
 def get_agent_mcp_tools(agent_name: str) -> list[BaseTool]:
     """Return the enabled MCP tools configured for the given agent."""
     if agent_name in _tools_cache:
@@ -202,6 +237,9 @@ def get_agent_mcp_tools(agent_name: str) -> list[BaseTool]:
     for entry in entries:
         server = entry.get("server")
         if not server:
+            continue
+        if not _service_reachable(server):
+            logger.info("MCP server '%s' skipped: external service offline", server)
             continue
         try:
             holder = _holder(server)

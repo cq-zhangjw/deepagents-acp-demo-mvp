@@ -6,6 +6,7 @@ import {
   AddOutline,
   ArrowDownOutline,
   AttachOutline,
+  BookOutline,
   ChevronBackOutline,
   CloseOutline,
   CodeSlashOutline,
@@ -55,6 +56,7 @@ import { storageKey, type SupportedLocale } from '../i18n'
 import ExecutionProcess from '../components/ExecutionProcess.vue'
 import MarkdownMessage from '../components/MarkdownMessage.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
+import { fetchKnowledgeConfig, fetchKnowledgeDatabases, toggleKnowledgeDb, startKnowledgeService, type KnowledgeDb } from '../api/knowledge'
 
 type TaskStatus = 'pending' | 'streaming' | 'completed' | 'cancelled' | 'failed' | 'waiting_permission'
 type ToolStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_permission'
@@ -198,6 +200,15 @@ const actionLabels = computed(() => ({
   deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message',
   skills: locale.value === 'zh' ? '技能' : locale.value === 'ja' ? 'スキル' : 'Skills',
   tools: locale.value === 'zh' ? '工具' : locale.value === 'ja' ? 'ツール' : 'Tools',
+  knowledge: locale.value === 'zh' ? '知识库' : locale.value === 'ja' ? 'ナレッジベース' : 'Knowledge',
+  knowledgeManage: locale.value === 'zh' ? '管理' : locale.value === 'ja' ? '管理' : 'Manage',
+  knowledgeUnreachable: locale.value === 'zh' ? '知识库服务未启动' : locale.value === 'ja' ? 'ナレッジベースサービスが起動していません' : 'Knowledge base service is unreachable',
+  knowledgeStart: locale.value === 'zh' ? '立即启动' : locale.value === 'ja' ? '今すぐ起動' : 'Start now',
+  knowledgeStarting: locale.value === 'zh' ? '启动中...' : locale.value === 'ja' ? '起動中...' : 'Starting...',
+  knowledgeDocs: locale.value === 'zh' ? '文档' : locale.value === 'ja' ? '文書' : 'Docs',
+  knowledgeRecords: locale.value === 'zh' ? '记录' : locale.value === 'ja' ? 'レコード' : 'Records',
+  knowledgeVector: locale.value === 'zh' ? '向量' : locale.value === 'ja' ? 'ベクトル' : 'Vector',
+  knowledgeNormal: locale.value === 'zh' ? '普通' : locale.value === 'ja' ? '通常' : 'Normal',
   builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
@@ -519,14 +530,15 @@ async function loadContextSize() {
 
 const sidebarCollapsed = ref(false)
 const rightPanelVisible = ref(false)
-const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'settings'>('skills')
+const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'knowledge' | 'settings'>('skills')
 const rightPanelTitle = computed(() =>
   rightPanelTab.value === 'skills' ? actionLabels.value.skills
     : rightPanelTab.value === 'tools' ? actionLabels.value.tools
       : rightPanelTab.value === 'agents' ? actionLabels.value.agents
-        : actionLabels.value.settings
+        : rightPanelTab.value === 'knowledge' ? actionLabels.value.knowledge
+          : actionLabels.value.settings
 )
-function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'settings') {
+function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'settings') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
   panelQuery.value = ''
@@ -538,6 +550,78 @@ const skillList = ref<any[]>([])
 const toolList = ref<any[]>([])
 const builtinTools = ref<any[]>([])
 const agentList = ref<any[]>([])
+
+/** Knowledge base (MooFile Base) state for the current agent. */
+const knowledgeList = ref<KnowledgeDb[]>([])
+const knowledgeConfig = ref<{ baseUrl: string; topK: number; threshold: number | null; reachable: boolean }>({
+  baseUrl: '',
+  topK: 5,
+  threshold: null,
+  reachable: false
+})
+
+const filteredKnowledge = computed(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  const list = knowledgeList.value.filter((k) =>
+    (!q
+      || (k.name || '').toLowerCase().includes(q)
+      || (k.id || '').toLowerCase().includes(q))
+    && k.type === 'vector'
+  )
+  return [...list].sort((a, b) => Number(b.enabled || false) - Number(a.enabled || false))
+})
+
+async function loadKnowledge() {
+  try {
+    knowledgeConfig.value = await fetchKnowledgeConfig()
+    const agent = currentAgentName.value || 'default'
+    knowledgeList.value = await fetchKnowledgeDatabases(agent)
+  } catch {
+    knowledgeList.value = []
+    knowledgeConfig.value = { ...knowledgeConfig.value, reachable: false }
+  }
+}
+
+async function toggleKnowledge(db: KnowledgeDb) {
+  if (!knowledgeConfig.value.reachable) {
+    message.warning(actionLabels.value.knowledgeUnreachable)
+    return
+  }
+  try {
+    const agent = currentAgentName.value || 'default'
+    await toggleKnowledgeDb(db.id, agent)
+    await loadKnowledge()
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  }
+}
+
+function openKnowledgeManager() {
+  const baseUrl = knowledgeConfig.value.baseUrl
+  if (!baseUrl) {
+    message.warning(actionLabels.value.knowledgeUnreachable)
+    return
+  }
+  window.open(baseUrl, '_blank')
+}
+
+/** Start the external moofile_base backend and refresh the panel. */
+const knowledgeStarting = ref(false)
+async function startKnowledge() {
+  if (knowledgeStarting.value) return
+  knowledgeStarting.value = true
+  try {
+    const res = await startKnowledgeService()
+    if (res.started || res.already) {
+      message.success(actionLabels.value.knowledgeStart)
+      await loadKnowledge()
+    }
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  } finally {
+    knowledgeStarting.value = false
+  }
+}
 
 /** Skills: filter by name/description, enabled first. */
 const filteredSkills = computed(() => {
@@ -642,6 +726,7 @@ async function fetchManageData() {
     const toolsAgent = currentAgentName.value || 'default'
     const tools = await fetch(`/api/manage/tools?agent=${toolsAgent}`).then((r) => r.json())
     toolList.value = Array.isArray(tools) ? tools : []
+    await loadKnowledge()
   } catch {
     // keep the list empty when the backend is unavailable
   }
@@ -2252,6 +2337,9 @@ onBeforeUnmount(() => {
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.knowledge" @click="openRightPanel('knowledge')">
+                  <template #icon><NIcon :component="BookOutline" /></template>{{ actionLabels.knowledge }}
+                </NButton>
               </div>
               <div class="composer-toolbar-right">
                 <span v-if="contextUsage" class="composer-context" :title="`${contextUsage.tokens} / ${contextUsage.total} tokens`">{{ actionLabels.context }} {{ contextUsage.pct }}%</span>
@@ -2311,7 +2399,7 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <div class="right-panel-body">
-        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools'" class="panel-search">
+        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge'" class="panel-search">
           <NInput v-model:value="panelQuery" size="small" clearable :placeholder="actionLabels.searchPlaceholder">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
@@ -2407,7 +2495,34 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <!-- 设置（占位） -->
+        <!-- 知识库管理 -->
+<div v-else-if="rightPanelTab === 'knowledge'" class="panel-section panel-section--knowledge">
+  <NAlert v-if="!knowledgeConfig.reachable" type="warning" :show-icon="true" class="knowledge-alert">
+    <div class="knowledge-alert-row">
+      <span>{{ actionLabels.knowledgeUnreachable }}</span>
+      <NButton size="tiny" type="warning" :loading="knowledgeStarting" :disabled="knowledgeStarting" @click="startKnowledge()">
+        {{ knowledgeStarting ? actionLabels.knowledgeStarting : actionLabels.knowledgeStart }}
+      </NButton>
+    </div>
+  </NAlert>
+  <div v-if="!filteredKnowledge.length" class="panel-placeholder">
+    <p>{{ panelQuery ? actionLabels.noMatch : actionLabels.emptyList }}</p>
+  </div>
+  <div v-for="kb in filteredKnowledge" :key="kb.id" class="manage-card" :class="{ 'manage-card--disabled': !kb.enabled }">
+    <div class="manage-card-head">
+      <strong class="manage-card-title">{{ kb.name }}</strong>
+      <NTag size="small" :type="kb.type === 'vector' ? 'info' : 'default'">{{ kb.type === 'vector' ? actionLabels.knowledgeVector : actionLabels.knowledgeNormal }}</NTag>
+      <NSwitch size="small" :value="kb.enabled" :disabled="!knowledgeConfig.reachable" @update:value="toggleKnowledge(kb)" />
+    </div>
+    <p v-if="kb.documentCount !== undefined || kb.recordCount !== undefined" class="manage-card-desc">
+      {{ actionLabels.knowledgeDocs }}: {{ kb.documentCount ?? 0 }} · {{ actionLabels.knowledgeRecords }}: {{ kb.recordCount ?? 0 }}
+    </p>
+  </div>
+  <div class="knowledge-manage-btn">
+    <NButton size="small" :disabled="!knowledgeConfig.reachable" @click="openKnowledgeManager()">{{ actionLabels.knowledgeManage }}</NButton>
+  </div>
+</div>
+<!-- 设置（占位） -->
         <div v-else class="panel-placeholder">
           <p>{{ actionLabels.panelComingSoon }}</p>
         </div>
@@ -2577,6 +2692,10 @@ onBeforeUnmount(() => {
 .manage-card-chips { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
 .manage-chip-label { font-size:11px; color:var(--subtle); margin-right:2px; }
 .manage-card-actions { display:flex; justify-content:flex-end; gap:2px; }
+.knowledge-alert { margin-bottom:8px; }
+.knowledge-alert-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.panel-section--knowledge { position:relative; padding-bottom:44px; }
+.knowledge-manage-btn { position:absolute; right:6px; bottom:6px; }
 .manage-card-head--group { cursor:pointer; user-select:none; }
 .tool-group-left { display:flex; align-items:center; gap:6px; min-width:0; }
 .tool-group-caret { font-size:12px; color:var(--subtle); width:14px; text-align:center; flex:0 0 auto; }

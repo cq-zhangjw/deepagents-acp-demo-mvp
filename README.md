@@ -7,13 +7,14 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 - **Streaming chat**: AI replies stream in real time — text, thought, execution plan and tool-call cards are rendered incrementally; Markdown, code highlight, Mermaid diagrams and sanitized inline HTML are all supported.
 - **Tool calls**: each tool card shows parameters / return value in collapsible `json` tabs; permission requests (`session/request_permission`) can be approved, rejected or always-approved.
 - **Message actions**: copy (plain text or Markdown), retry (last AI message only), edit (Markdown source editing without re-running), delete via the `...` menu.
-- **Conversations**: recent-conversation sidebar with search/filter, rename via context menu, delete with confirmation, and timestamps in `YYYY/MM/DD hh:mm:ss`. History is persisted **backend-authoritatively** in a local MooFile store (`db/history` via `/api/history`); the frontend only reads history (forced `GET` on entering a session) and no longer pushes it or relies on `localStorage`.
+- **Conversations**: recent-conversation sidebar with search/filter, rename via context menu, delete with confirmation, and timestamps in `YYYY/MM/DD hh:mm:ss`. History is persisted **backend-authoritatively** in a local MooFile store (`db/db_history_<hash8>/db.bson` via `/api/history`, following the same `db_<name>_<hash8>` directory convention as the moofile_base knowledge bases so all data under `db/` is uniformly organized); the frontend only reads history (forced `GET` on entering a session) and no longer pushes it or relies on `localStorage`. `HISTORY_ROOT` can override the directory (default: auto-discover `db/db_history_*`, create one on first run). Every record is tagged with the moofile_base data model (`recordType: "record"` + `dbId`) so the knowledge-base management UI can browse chat history like any plain table.
 - **Skills / tools (MCP) / agents management** (2.0): the right-hand panel manages skills, tools (MCP servers + built-in tools) and agents with per-agent enable/disable written to `.deepagents/agents/agents.json` (`skills[]`, `tools.inner_tools`, `tools.mcp_tools`); enabled MCP tools and skills are assembled into the agent by `acp_agent.py build_agent`. The toolbar agent dropdown picks the current agent (icon + capitalized name, appends `` `@Agent` ``), and a new conversation always resets to `default`.
 - **Quick actions**: typing `@`, `/` or `#` as the first character of an empty composer triggers file / skill / tool pickers (backend `/api/manage/files?dir=` supports drilling into subdirectories); a selection is inserted backtick-wrapped as `` `@<path>` `` / `` `/skill` `` / `` `#tool` `` with a trailing space. Backticked inline code is highlighted (white chip in user bubbles, light-blue chip in AI bubbles).
 - **Attachments**: upload or paste images/files, inline preview, download on click; context usage (used / `CONTENT_SIZE`) shown as percentage with hover detail.
 - **Error handling**: ACP error details are returned to the frontend, displayed as the AI message content plus a red error block; the stop button always recovers to send after failures or disconnects.
 - **Multi-language**: UI supports Simplified Chinese / Japanese / English (i18n locale files under `web/src/locales/`).
 - **Voice call** (2.0): a top-bar call icon opens a dedicated voice-call window (`#/voice`, dark theme) that stays separate from the chat UI. It captures your speech with the browser Web Speech API (STT), synchronizes the recognized text into the main window's input box, and auto-sends it on pause through a `window.opener` bridge (`chatBridge`) so it runs as a normal session message; when the AI reply finishes, the call window fetches local TTS (`/api/chat_voice/tts`, genie-tts local ONNX in `models/`, in-memory WAV, 32 kHz) and speaks it aloud, then resumes listening. Preset voices are `zh` / `en` / `jp` / `auto`; `auto` splits mixed text by language segment (CJK hanzi → Chinese character `feibi`, kana → Japanese `mika`, Latin → English `thirtyseven`) and concatenates each language's audio with a short gap, so a mixed-language reply is read naturally. Long text is synthesized in one shot (no token-context truncation). Playback mode is chosen by `TTS_MODE` (default `file`, non-streaming full WAV; `stream` uses `/tts_stream` — with genie the whole audio is returned as a single PCM chunk, kept for compatibility). The TTS engine is selected by `TTS_ENGINE`: `genie` (default, local ONNX) · `edge_tts` (Microsoft Edge online voices — MP3 decoded to 24 kHz PCM via PyAV, no local model; configure `EDGE_TTS_VOICE_ZH` / `EDGE_TTS_VOICE_JA` / `EDGE_TTS_VOICE_EN` defaults, optional `EDGE_TTS_RATE` / `EDGE_TTS_VOLUME` / `EDGE_TTS_PITCH` prosody, and `EDGE_TTS_PROXY` for restricted networks) · `sapi` (Windows built-in speech voices via win32com, always available on Windows). With `TTS_FALLBACK=true` (default) a primary-engine failure (e.g. Edge service unreachable) automatically falls back to the Windows SAPI voices, so playback never goes silent; per-language SAPI voice fragments can be pinned with `SAPI_VOICE_ZH` / `SAPI_VOICE_JA` / `SAPI_VOICE_EN`. The main window keeps a reply-speak toggle next to the call icon plus a screen-share toggle (when on, sending a message auto-captures the screen as an image attachment), and message action bars have a speak button for any plain-text message.
+- **Knowledge base** (2.0): the right-hand panel adds a *Knowledge* tab backed by the external **moofile_base** project (RAG backend on `:8888`, fully separate repo/venv). The gateway exposes `/api/knowledge/config` (liveness probe + base URL), `/api/knowledge/databases` (vector knowledge-base list with per-agent enabled flag) and `/api/knowledge/start` (launch moofile_base from the UI when offline); the panel toggle enable/disable is a single source of truth with the tools panel — it adds/removes the `knowledge_server` MCP entry in `agents.json`, and the AI queries the knowledge base through that MCP server's `retrieve_knowledge` tool whenever it is available. When the backend is unreachable its MCP tools are skipped at assembly time (no hanging calls) and the panel shows an offline hint with a start button. The two projects share one `db/` directory (`MOOFILE_DB_DIR` points to this repo's `db`), so knowledge data and chat history live together. `start-all.ps1` / `stop-all.ps1` bring both services up/down in order (8888 → 8000); the moofile_base location is configured via `MOOFILE_BASE_ROOT_DIR` in `.env` (absolute, or relative to this project; default = sibling directory).
 - **Local run**: `start.ps1` / `stop.ps1` manage the gateway and agent processes; all runtime knobs are configured via `.env`.
 
 ## Architecture
@@ -34,6 +35,7 @@ flowchart LR
     VoiceAPI["/api/chat_voice/voices + /tts + /tts_stream<br/>genie-tts local ONNX (zh/en/jp/auto, 32 kHz)"]
     ManageAPI["/api/manage skills/tools/agents/files"]
     HistoryAPI["/api/history session history (authoritative)"]
+    KbAPI["/api/knowledge config/databases<br/>liveness probe + list + per-agent toggle"]
   end
 
   subgraph Agent["ACP Agent subprocess"]
@@ -48,7 +50,10 @@ flowchart LR
   WSProxy <-->|stdio forwarding| ACP
   ACP -->|HTTP| Model
   Manager <-->|REST| ManageAPI
-  HistoryAPI -->|read/write| MooDB[("db/history — MooFile store")]
+  HistoryAPI -->|read/write| MooDB[("db/db_history_* — MooFile store")]
+  KbAPI -->|probe + list| KbBackend["moofile_base :8888<br/>external RAG backend (own venv)"]
+  Agent -->|stdio| KbMCP[("knowledge_server MCP<br/>retrieve_knowledge / upload / list")]
+  KbMCP -->|HTTP| KbBackend
   Static --> Browser
   Agent -->|checkpoint| DB[("SQLite db/agent_state.sqlite")]
 ```
@@ -64,9 +69,12 @@ flowchart LR
 ├─ app.py                # FastAPI gateway (/upload + /acp-ws + /api/manage + /api/history + /api/chat_voice + /api/config, serves web/dist at /)
 ├─ api/
 │  ├─ chat_voice/        # Voice synthesis sub-router (voices / config / tts / tts_stream; genie-tts / edge_tts / sapi)
-│  ├─ history.py         # Session history sub-router (GET/PUT/DELETE against db/history MooFile store)
+│  ├─ history.py         # Session history sub-router (GET/PUT/DELETE against db/db_history_*/db.bson MooFile store)
+│  ├─ knowledge.py       # Knowledge-base gateway sub-router (/api/knowledge; probes + lists moofile_base, toggles the MCP entry)
 │  └─ manage/manager.py  # Skills / tools (MCP) / agents / built-in tools / file-picker sub-router (/api/manage)
 ├─ acp_agent.py          # DeepAgents ACP agent (stdio service, assembles MCP tools + skills from agents.json)
+├─ start-all.ps1         # Start both systems: moofile_base (:8888) then this gateway (:8000)
+├─ stop-all.ps1          # Stop both systems (moofile_base first, then this gateway)
 ├─ utils/
 │  ├─ model_util.py      # Model initialization configuration (OpenAI-compatible API)
 │  ├─ moofile_util.py    # MooFile wrapper (plain collections + vector collections, used by db/history)
