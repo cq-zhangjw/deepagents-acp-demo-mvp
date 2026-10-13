@@ -1391,7 +1391,8 @@ async function sendAgentPrompt(
   text: string,
   resources: AttachmentRef[],
   assistantMessage: AssistantMessage,
-  isNewConversation: boolean
+  isNewConversation: boolean,
+  retry = false
 ) {
   // Reset the cancel flag on every prompt path (submit & retry), otherwise a
   // previous cancel would skip the completed status and leave the stop button stuck.
@@ -1423,7 +1424,9 @@ async function sendAgentPrompt(
         mimeType: resource.mimeType ?? 'image/png'
       }))
     cancelRequested = false // reset the cancel flag for a new run
-    await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content })
+    // retry re-sends the same user text with _meta.retry so the backend rolls the
+    // checkpoint back by one turn before re-answering (no stitching on the old reply)
+    await callAcp('session/prompt', { sessionId: conversation.agentSessionId ?? conversation.id, prompt: content, _meta: retry ? { retry: true } : {} })
     const assistant = reactiveAssistant()
     if (assistant.status !== 'cancelled' && assistant.status !== 'failed' && !cancelRequested) {
       assistant.status = 'completed'
@@ -1505,7 +1508,7 @@ async function retryAssistant(assistant: AssistantMessage) {
   conversation.updatedAt = Date.now()
   void saveConversation(conversation)
   await nextTick(scrollToBottom)
-  await sendAgentPrompt(conversation, source.text, source.attachments, assistant, !conversation.agentSessionId)
+  await sendAgentPrompt(conversation, source.text, source.attachments, assistant, !conversation.agentSessionId, true)
 }
 
 async function copyText(value: string) {
@@ -1865,7 +1868,7 @@ function duration(process: ExecutionProcess) {
 
 const showScrollBottom = ref(false)
 // user scroll pauses auto-follow: mouse/touch scroll during streaming pauses it;
-// follow resumes after 2s idle or on the scroll-to-bottom button
+// follow resumes after 5s idle or on the scroll-to-bottom button
 const scrollPausedByUser = ref(false)
 let scrollPauseTimer: number | null = null
 function pauseAutoScrollByUser() {
@@ -1876,7 +1879,7 @@ function pauseAutoScrollByUser() {
     scrollPausedByUser.value = false
     scrollPauseTimer = null
     if (isRunning.value) nextTick(() => scrollToBottom(false))
-  }, 2000)
+  }, 5000)
 }
 function onTimelineScroll() {
   const el = timeline.value

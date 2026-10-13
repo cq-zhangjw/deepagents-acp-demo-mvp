@@ -171,16 +171,17 @@ def _field_type(prop: dict[str, Any]) -> type:
 
 
 def _build_args_model(name: str, input_schema: dict[str, Any]) -> type[BaseModel]:
-    """Convert a tool inputSchema into a pydantic model for StructuredTool."""
+    """Convert a tool inputSchema into a pydantic model for StructuredTool.
+
+    Every field is Optional[Any] so no input ever fails schema validation.
+    Missing-argument and runtime errors are surfaced as friendly text by the
+    wrapper in make_tool._run instead of raising into the agent graph, which
+    lets the model read the error and retry with corrected arguments.
+    """
     properties = input_schema.get("properties") or {}
-    required = set(input_schema.get("required") or [])
     fields: dict[str, tuple[type, Any]] = {}
-    for field_name, prop in properties.items():
-        field_type = _field_type(prop)
-        if field_name in required:
-            fields[field_name] = (field_type, ...)
-        else:
-            fields[field_name] = (Optional[field_type], None)
+    for field_name in properties:
+        fields[field_name] = (Optional[Any], None)
     return create_model(f"{name}_args", __base__=BaseModel, **fields)
 
 
@@ -192,9 +193,20 @@ def make_tool(holder: ServerHolder, meta: dict[str, Any]) -> StructuredTool:
     underlying server call still uses the original manifest tool name.
     """
     tool_name = f"mcp_{holder.server}_{meta['name']}"
+    required_names = (meta.get("inputSchema") or {}).get("required") or []
 
     async def _run(**kwargs: Any) -> str:
-        return await holder.call(meta["name"], kwargs)
+        missing = [name for name in required_names if kwargs.get(name) is None]
+        if missing:
+            return (
+                f"参数错误：缺少必需参数：{', '.join(missing)}。"
+                "请参照工具描述补全这些参数后再调用本工具。"
+            )
+        payload = {key: value for key, value in kwargs.items() if value is not None}
+        try:
+            return await holder.call(meta["name"], payload)
+        except Exception as exc:  # noqa: BLE001 - return error text instead of aborting the run
+            return f"工具调用失败：{type(exc).__name__}: {exc}"
 
     return StructuredTool.from_function(
         coroutine=_run,
@@ -251,7 +263,8 @@ def get_agent_mcp_tools(agent_name: str) -> list[BaseTool]:
             continue
         try:
             holder = _holder(server)
-        except Exception:  # noqa: BLE001 - a broken server entry must not break the agent
+        except Exception as exc:  # noqa: BLE001 - a broken server entry must not break the agent
+            logger.warning("MCP server '%s' skipped: %s", server, exc)
             skipped = True
             continue
         for tool_meta in entry.get("tools") or []:

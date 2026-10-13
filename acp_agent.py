@@ -18,6 +18,8 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from acp import run_agent
@@ -25,11 +27,23 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
+from langchain_core.messages import HumanMessage, RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
-from deepagents.middleware.subagents import SubAgent
+# Replace deepagents' upstream FilesystemMiddleware with the Windows
+# real-filesystem override (utils/override/filesystem.py). It allows Windows
+# absolute paths through the tool layer and resolves "/"-prefixed virtual
+# paths under the working directory instead of the drive root. graph.py
+# references the middleware by module-global name, so patching this attribute
+# is enough to cover the main agent, subagents and the default GP subagent.
+import deepagents.graph as _deepagents_graph
+from utils.override.filesystem import FilesystemMiddleware as _OverrideFilesystemMiddleware
 
+_deepagents_graph.FilesystemMiddleware = _OverrideFilesystemMiddleware
+
+from deepagents.middleware.subagents import SubAgent
 from utils.context_compactor import compact_messages, estimate_tokens, should_compact
 from utils.model_util import MODEL
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
@@ -208,7 +222,12 @@ def build_agent(
         #   the model execute PowerShell syntax directly.
         default=(PowerShellBackend if sys.platform == "win32" else LocalShellBackend)(
             root_dir=agent_root_dir,
-            virtual_mode=True,
+            # virtual_mode=False: absolute paths (C:\, D:\, user home) are
+            # passed through as-is so the built-in read_file/write_file/glob/
+            # grep tools can access global Windows locations. Relative paths
+            # still resolve under root_dir, so /uploads/... attachments keep
+            # working. execute is unaffected (shell was never sandboxed).
+            virtual_mode=False,
             inherit_env=True,
         ),
         routes={
@@ -248,7 +267,17 @@ def build_agent(
         # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,
         backend=backend,
-        system_prompt=SYSTEM_PROMPT,
+        # The sandbox is off (virtual_mode=False): built-in file tools operate
+        # on the real Windows filesystem. Tell the model its actual working
+        # directory so ls/read_file/glob resolve relative paths correctly
+        # instead of guessing a drive root.
+        system_prompt=(
+            f"{SYSTEM_PROMPT}\n\n"
+            f"# 当前工作目录\n"
+            f"工作目录为：{str(Path(agent_root_dir).resolve())}\n"
+            f"内置文件工具（ls/read_file/glob/grep 等）可直接访问 Windows 全局绝对路径，"
+            f"相对路径基于上述工作目录解析；/uploads/ 下的附件同样可读。\n"
+        ),
         # Trigger HITL interrupt before risky tool calls -> deepagents_acp converts it to ACP
         # session/request_permission -> frontend shows permission prompt (allow / deny / always allow)
         # Any tool names can be configured: ls/read_file/glob/grep/delete/task/MCP tool, etc.
@@ -292,11 +321,110 @@ class CompactingAgentServer(AgentServerACP):
         return await super().prompt(prompt, session_id=session_id, message_id=message_id, **kwargs)
 
 
+def _drop_last_user_turn(messages: list[Any]) -> list[Any]:
+    """Return messages with the last user turn (and everything after it) removed.
+
+    Used by retry: the client re-sends the same user text, so keeping the
+    original user message would duplicate it. Dropping the whole last turn
+    leaves history at the previous assistant reply and the re-sent prompt
+    rebuilds the turn from a clean slate.
+    """
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human":
+            last_user_idx = i
+            break
+    if last_user_idx is None:
+        return list(messages)
+    return list(messages[:last_user_idx])
+
+
+class RollbackAgentServer(CompactingAgentServer):
+    """CompactingAgentServer that also rolls the session checkpoint back to
+    its pre-prompt messages when a run is cancelled.
+
+    LangGraph persists every node's messages to the checkpointer as it
+    streams, so a cancelled run leaves partial assistant output / tool calls
+    in the checkpoint. Without a rollback the next prompt resumes from that
+    dirty state and the new answer is stitched onto the cancelled run's
+    leftovers. On cancel we snapshot the messages right before the prompt and
+    restore them (REMOVE_ALL_MESSAGES + replay) so the next prompt starts from
+    the clean pre-prompt history.
+
+    A prompt sent with `_meta.retry` (the frontend regenerate button re-sends
+    the same user text) additionally rolls the checkpoint back by one turn
+    before running, so the model re-answers on the previous assistant reply
+    instead of on top of the old answer it is meant to replace.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pre_prompt_messages: dict[str, list[Any]] = {}
+        self._cancel_rollback: set[str] = set()
+
+    async def prompt(self, prompt, session_id, message_id=None, **kwargs):
+        if kwargs.get("retry"):
+            await self._rollback_last_turn(session_id)
+        try:
+            agent = self._checkpointed_agent(session_id)
+            config = self._session_config(session_id)
+            state = await agent.aget_state(config)
+            values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
+            self._pre_prompt_messages[session_id] = list((values or {}).get("messages", []) or [])
+        except Exception:  # noqa: BLE001 - snapshot must never break the prompt
+            self._pre_prompt_messages.pop(session_id, None)
+        result = await super().prompt(prompt, session_id=session_id, message_id=message_id, **kwargs)
+        if (
+            result is not None
+            and getattr(result, "stop_reason", None) == "cancelled"
+            and session_id in self._cancel_rollback
+        ):
+            self._cancel_rollback.discard(session_id)
+            await self._rollback_checkpoint(session_id)
+        return result
+
+    async def cancel(self, session_id, **kwargs):
+        self._cancel_rollback.add(session_id)
+        await super().cancel(session_id, **kwargs)
+
+    async def _rollback_last_turn(self, session_id: str) -> None:
+        try:
+            agent = self._checkpointed_agent(session_id)
+            config = self._session_config(session_id)
+            state = await agent.aget_state(config)
+            values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
+            messages = list((values or {}).get("messages", []) or [])
+            pre = _drop_last_user_turn(messages)
+            await agent.aupdate_state(
+                config,
+                {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *pre]},
+            )
+            logger.info("[retry] session=%s rolled back last user turn (%d -> %d)", session_id, len(messages), len(pre))
+        except Exception:  # noqa: BLE001 - retry rollback must never break the prompt
+            logger.exception("[retry] rollback failed; continuing with existing history")
+
+    async def _rollback_checkpoint(self, session_id: str) -> None:
+        pre = self._pre_prompt_messages.pop(session_id, None)
+        if pre is None:
+            return
+        try:
+            agent = self._checkpointed_agent(session_id)
+            config = self._session_config(session_id)
+            await agent.aupdate_state(
+                config,
+                {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *pre]},
+            )
+            logger.info("[rollback] session=%s restored %d pre-prompt messages", session_id, len(pre))
+        except Exception:  # noqa: BLE001 - rollback must never break the next prompt
+            logger.exception("[rollback] failed for session=%s", session_id)
+
+
 async def main() -> None:
     """Start the stdio ACP service; deepagents_acp handles ACP protocol encoding/decoding and event publishing."""
     conn = await aiosqlite.connect(DB_PATH)
     checkpointer = AsyncSqliteSaver(conn)
-    acp_agent = CompactingAgentServer(
+    acp_agent = RollbackAgentServer(
         # every session reuses the same persistent checkpointer; load_sessions=True makes
         # initialize advertise loadSession:true and implements session/load (replays history update events).
         agent=lambda ctx: build_agent(ctx, checkpointer),

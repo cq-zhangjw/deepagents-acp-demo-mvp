@@ -1,0 +1,179 @@
+{
+  "environment": {
+    "fastmcp": "3.1.1",
+    "mcp": "1.26.0"
+  },
+  "serverInfo": {
+    "name": "Sharepoint MCP Server",
+    "title": null,
+    "version": "3.1.1",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "capabilities": {},
+  "tools": [
+    {
+      "name": "download_spo_file",
+      "title": null,
+      "description": "Download a file from your sharepoint site.\nArgs:\n    site_url: a sharepoint, teams or ondrive site url\n        egg1: https://xxx.sharepoint.com/sites/xxx\n        egg2: https://xxx.sharepoint.com/teams/xxx\n        egg3: https://xxx-my.sharepoint.com/my\n\n    spo_file_path: should be the string between 'Shared%20Documents' and '?' of the file link.t\n        egg:\n            file link:\n                https://xxx.sharepoint.com/:x:/r/sites/CN-BFS-1st-SDD/Shared%20Documents/General/03_PJ%E8%B3%87%E7%94%A3/01_AI%E6%8A%80%E8%A1%93%E3%82%A2%E3%83%97%E3%83%AA%E5%8C%96/80_%E3%83%8E%E3%82%A6%E3%83%8F%E3%82%A6/03_AIAgent/Source/%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88%E3%81%AE%E4%BD%9C%E6%88%90%E3%83%AB%E3%83%BC%E3%83%AB_NEW.xlsx?d=w099c7d79287a41528012a11757ff1de5&csf=1&web=1&e=RcLqkx\n            spo_file_path:\n                Shared%20Documents/General/03_PJ%E8%B3%87%E7%94%A3/01_AI%E6%8A%80%E8%A1%93%E3%82%A2%E3%83%97%E3%83%AA%E5%8C%96/80_%E3%83%8E%E3%82%A6%E3%83%8F%E3%82%A6/03_AIAgent/Source/%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88%E3%81%AE%E4%BD%9C%E6%88%90%E3%83%AB%E3%83%BC%E3%83%AB_NEW.xlsx\nReturns:\n    The save file's absolute path",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "site_url": {
+            "type": "string"
+          },
+          "spo_file_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_url",
+          "spo_file_path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "upload_file_to_spo",
+      "title": null,
+      "description": "Uploads a local file to a specified path in SharePoint Online (SPO).\n\nArgs:\n    site_url (str): The URL of the SharePoint Online site, e.g., 'https://yourcompany.sharepoint.com/sites/YourSite'.\n    file_path (str): The full path to the local file, e.g., 'C:/Users/user/Documents/report.pdf'.\n    spo_path (str): The relative path to the target folder in SharePoint Online.\n                    Example: 'Shared Documents/04_FRDC技術支援（AI関連）/08_2024/04_Traffic LLM datalabeling/99_納品'\n                    This path is relative to the site's root or a document library.\n\nReturns:\n    str: The upload result message.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "site_url": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "spo_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_url",
+          "file_path",
+          "spo_path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "get_list_data",
+      "title": null,
+      "description": "Retrieves data from a specified SharePoint Online (SPO) list and saves it as a local JSON file.\n\nArgs:\n    site_url (str): The URL of the SharePoint Online site, e.g., 'https://yourcompany.sharepoint.com/sites/YourSite'.\n    list_id (str, optional): The GUID (Globally Unique Identifier) of the SharePoint list.\n                             Example: '{{A1B2C3D4-E5F6-7890-1234-567890ABCDEF}}'.\n                             Mutually exclusive with `list_name`; only one should be provided.\n    list_name (str, optional): The display name of the SharePoint list.\n                               Example: 'My Custom List'.\n                               Mutually exclusive with `list_id`; only one should be provided.\n    fields (list[str], optional): A list of field names to retrieve. If None or empty, all fields are retrieved.\n                                  Example: ['Title', 'Author', 'Created'].\n    query (dict[str, str], optional): A dictionary representing the query conditions.\n                                      Keys are field names, and values are the desired values to match.\n                                      Example: {'Status': 'Completed', 'Priority': 'High'}.\n                                      Note: This simple dictionary query currently only supports 'Eq' (equals) operations.\n                                      For more complex queries, the internal logic would need to be expanded.\n    op (str, optional): The logical operator to combine multiple query conditions.\n                        Currently supports \"And\" or \"Or\". Defaults to \"And\".\n\nReturns:\n    str: The full path to the temporary JSON file where the list data is saved.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "site_url": {
+            "type": "string"
+          },
+          "list_id": {
+            "default": null,
+            "type": "string"
+          },
+          "list_name": {
+            "default": null,
+            "type": "string"
+          },
+          "fields": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "query": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "type": "object"
+          },
+          "op": {
+            "default": "And",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_url"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "update_list",
+      "title": null,
+      "description": "Update data to a sharepoint list.\nArgs:\n    site_url: The URL of the SharePoint Online site, e.g., 'https://yourcompany.sharepoint.com/sites/YourSite'.\n    list_id (str, optional): The GUID (Globally Unique Identifier) of the SharePoint list.\n                             Example: '{{A1B2C3D4-E5F6-7890-1234-567890ABCDEF}}'.\n                             Mutually exclusive with `list_name`; only one should be provided.\n    list_name (str, optional): The display name of the SharePoint list.\n                               Example: 'My Custom List'.\n                               Mutually exclusive with `list_id`; only one should be provided.\n    data: Provide data like so and the ID must be set:\n        data = [\n            {'ID': 23, 'Title': 'Updated Title'},\n            {'ID': 28, 'Col1': 'Updated Value'}\n        ]\n\nReturns:",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "site_url": {
+            "type": "string"
+          },
+          "list_id": {
+            "default": null,
+            "type": "string"
+          },
+          "list_name": {
+            "default": null,
+            "type": "string"
+          },
+          "data": {
+            "default": null,
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "site_url"
+        ],
+        "type": "object"
+      },
+      "outputSchema": null,
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    }
+  ],
+  "prompts": [],
+  "resources": [],
+  "resourceTemplates": []
+}
