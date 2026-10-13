@@ -10,7 +10,6 @@ sys.stderr.reconfigure(encoding="utf-8")
 
 import datetime
 import json
-import logging
 import os
 import time
 import traceback
@@ -20,13 +19,6 @@ from playwright.sync_api import sync_playwright
 from fastmcp import FastMCP
 
 from shareplum.site import Site, Version
-
-# 日志：用标准库 logging 替换 agent-base 自研的 utils.log，避免缺模块
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(filename)s:%(lineno)d - [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("spo_server")
 
 mcp = FastMCP("Sharepoint MCP Server")
 
@@ -93,13 +85,9 @@ def perform_login_attempt(spo_site="https://xxx.sharepoint.com", user_data_dir=N
             deadline = time.time() + timeout_ms / 1000.0
             while time.time() < deadline:
                 if _has_spo_auth_cookie(browser_context):
-                    logger.info("检测到 SharePoint 会话 cookie，登录完成 ✅")
                     break
                 time.sleep(1)
-            else:
-                logger.warning(f"超时未检测到 SharePoint 会话 cookie（{timeout_ms}ms）")
 
-            logger.info(f"Goto success! {page.url}")
             # page.expect_request(f"{spo_site}/SitePages/Home.aspx", timeout=timeout_ms)
 
             cookies = browser_context.cookies()
@@ -122,7 +110,7 @@ def perform_login_attempt(spo_site="https://xxx.sharepoint.com", user_data_dir=N
 
 def login_with_retry(
         spo_site,
-        user_data_dir="edge/user_data",
+        user_data_dir=None,
         cookie_json_file="cookie.json",
         max_retries=1,
         base_timeout=60):
@@ -143,15 +131,12 @@ def login_with_retry(
             - If failed after all retries: (error_code, traceback string).
     """
     timeout = base_timeout * 1000
-    logger.info("Try to login by headless[True]...")
     code, auth_cookie = perform_login_attempt(spo_site, user_data_dir, False, cookie_json_file,
                                               timeout_ms=timeout)  # 首次尝试超时1分钟
 
     if code == 200:
-        logger.info("Login successfully!")
         return code, auth_cookie
     else:
-        logger.info("Login failed! Start to login by headless[False]")
         for i in range(max_retries):
             code, auth_cookie = perform_login_attempt(spo_site, user_data_dir, headless=False,
                                                       cookie_json_file=cookie_json_file,
@@ -199,7 +184,6 @@ def init_site(site_url, user_data_dir=None, headless=True):
     spo_site = site_url[0: site_url.find(find_str) + len(find_str)]
     auth_cookie = None
     if os.path.exists(cookie_json_file):
-        logger.info(f"{cookie_json_file} was found! Start to load cookies...")
         cookies = json.load(open(cookie_json_file))
         auth_cookie = requests.cookies.RequestsCookieJar()
         for cookie in cookies:
@@ -210,8 +194,6 @@ def init_site(site_url, user_data_dir=None, headless=True):
         site = Site(site_url, authcookie=auth_cookie, version=Version.v2016)
         return site
     except Exception as e:
-        logger.error(e)
-        logger.info("Start to login...")
         if os.path.exists(cookie_json_file):
             os.remove(cookie_json_file)
         code, auth_cookie = login_with_retry(
@@ -252,8 +234,7 @@ def download_spo_file(site_url: str, spo_file_path: str):
     try:
         site = init_site(site_url)
     except:
-        raise Exception(
-            f"Error: Can't not Access the site url!Please check your site permission!{traceback.format_exc()}")
+        return traceback.format_exc()
     try:
         file_name = spo_file_path[spo_file_path.rfind("/") + 1:]
         folder_path = spo_file_path[0:spo_file_path.rfind("/") + 1]
@@ -270,7 +251,7 @@ def download_spo_file(site_url: str, spo_file_path: str):
             "save_file": save_file
         }
     except:
-        raise Exception(traceback.format_exc())
+        return traceback.format_exc()
 
 
 @mcp.tool()
@@ -288,21 +269,18 @@ def upload_file_to_spo(site_url: str, file_path: str, spo_path: str):
     Returns:
         str: The upload result message.
     """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Error: Local file '{file_path}' was not found. Please check the file path! 🧐")
-
-    site = init_site(site_url=site_url)
     try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Local file '{file_path}' was not found.")
+
+        site = init_site(site_url=site_url)
         folder = site.Folder(spo_path)
         with open(file_path, mode='rb') as file:
             file_content = file.read()
             folder.upload_file(file_content, os.path.basename(file_path))
         return "Upload successfully!"
-    except Exception as e:
-        raise Exception(
-            f"Error: Cannot access SharePoint Online path '{spo_path}' or upload failed! "
-            f"Please ensure 'spo_path' is correct and you have permission to access it. Details: {e} 😢"
-        )
+    except:
+        return traceback.format_exc()
 
 
 def convert_datetime_values_to_isoformat(data):
@@ -428,8 +406,8 @@ def get_list_data(
         with open(tmp_file, mode="w", encoding="utf-8") as f:
             f.write(json.dumps(data, indent=2, ensure_ascii=False))
         return tmp_file
-    except Exception as e:
-        raise Exception(f"An unexpected error occurred while getting SharePoint list data: {e} 😭")
+    except:
+        return traceback.format_exc()
 
 
 @mcp.tool()
@@ -479,37 +457,8 @@ def update_list(
         sp_list.update_list_items(data=data, kind="Update", mutate_data=True)
         return f"Update list successfully!"
     except:
-        raise Exception(f"Error: update list failed! {traceback.format_exc()}")
+        return traceback.format_exc()
 
 
 if __name__ == '__main__':
     mcp.run(transport="stdio")
-
-    # Test: 中间list取得
-    # site_url = 'https://fujitsu.sharepoint.com/sites/CN-BFS-1st-SDD'
-    # query = {'status': '新規'}
-    # list_id = "a44eed25-7e04-4e17-bc09-7e208714efae"
-    # # list_id = "QA_mail"
-    # fields = ["status", "subject", "received_datetime", "sender", "body_plain", "attachments"]
-    # result = get_list_data(site_url=site_url, list_id=list_id, fields=fields, query=query)
-    #
-    # print(result)
-
-    # Test: 保守担当(2026/3/2~) list取得
-    # site_url = 'https://fujitsu-my.sharepoint.com/personal/dai_chao_fujitsu_com'
-    # query = None
-    # # list_id = "a44eed25-7e04-4e17-bc09-7e208714efae"
-    # list_id = "myList"
-    # fields = ["Title", "1StラインBFS以降", "主担当", "副担当"]
-    # result = get_list_data(site_url=site_url, list_id=list_id, fields=fields, query=query)
-    #
-    # print(result)
-
-    # Test: 保守担当(2026/3/2~) list取得 （本番）
-    site_url = 'https://fujitsu.sharepoint.com/teams/JP-5d44c73e'
-    query = None
-    list_id = "f564ac14-58a2-42d2-b05f-3183fd673326"
-    fields = ["Title", "1StラインBFS以降", "主担当", "副担当"]
-    result = get_list_data(site_url=site_url, list_id=list_id, fields=fields, query=query)
-
-    print(result)

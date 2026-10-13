@@ -9,7 +9,7 @@ Write-Host "[启动] 检查并停止旧实例 ..."
 if (Test-Path "$PSScriptRoot\stop.ps1") {
     & "$PSScriptRoot\stop.ps1"
 } else {
-    $targets = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'app\.py' -or $_.CommandLine -match 'acp_agent' }
+    $targets = Get-CimInstance Win32_Process | Where-Object { ($_.CommandLine -match 'app\.py' -or $_.CommandLine -match 'acp_agent') -and $_.ExecutablePath -match 'deepagents_acp' }
     foreach ($t in $targets) { Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue }
     $listener = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
     foreach ($l in $listener) { Stop-Process -Id $l.OwningProcess -Force -ErrorAction SilentlyContinue }

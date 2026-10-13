@@ -16,8 +16,11 @@ function Stop-ChildTree([int]$ParentId) {
 $stopped = $false
 
 # 1) 按命令行匹配网关相关进程（app.py / acp_agent），先杀其子进程树再杀本体
+#    按解释器路径锚定 deepagents_acp 项目，避免连带终止 moofile_base 的
+#    .\app.py 实例（其 CommandLine 同样是相对路径 app.py，靠字符串无法区分）
 $targets = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -match 'app\.py' -or $_.CommandLine -match 'acp_agent'
+    ($_.CommandLine -match 'app\.py' -or $_.CommandLine -match 'acp_agent') -and
+    $_.ExecutablePath -match 'deepagents_acp'
 }
 foreach ($t in $targets) {
     Stop-ChildTree $t.ProcessId

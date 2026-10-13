@@ -24,6 +24,7 @@ the scheduled-task runner) can append to a conversation safely.
 """
 
 import json
+import logging
 import os
 import threading
 import uuid
@@ -37,6 +38,8 @@ from pydantic import BaseModel
 from utils.moofile_util import MooFileUtil
 
 router = APIRouter(prefix="/api/history", tags=["history"])
+
+logger = logging.getLogger("api.history")
 
 # Collection file name inside the history database directory (matches the
 # moofile_base layout where every database stores its BSON as db.bson).
@@ -162,9 +165,25 @@ def put_history(cid: str, payload: HistoryPut) -> dict[str, Any]:
 
 @router.delete("/{cid}")
 def delete_history(cid: str) -> dict[str, Any]:
-    """Remove a single conversation by id."""
+    """Remove a single conversation by id.
+
+    The conversation's ACP session id (`agentSessionId`, hex) is the key of
+    the context table record and the langgraph checkpoint thread; the web id
+    (`cid`, `web-*`) is only the frontend key, so look it up before cleanup.
+    Idempotent: history/web sessions without ACP state are unaffected.
+    """
     util = _util()
     _ensure(util)
+    sc_session = cid
     with _LOCK:
+        rows = util.query_data(_HISTORY_DB, {"id": cid}, _INDEXES)
+        if rows:
+            sc_session = rows[0].get("agentSessionId") or cid
         util.delete_data(_HISTORY_DB, {"id": cid}, _INDEXES)
+    try:
+        from utils.session_context import delete_session as _sc_delete_session
+
+        _sc_delete_session(sc_session)
+    except Exception:  # noqa: BLE001 - session cleanup must never fail the delete
+        logger.exception("[history] session cleanup failed for %s", cid)
     return {"ok": True}

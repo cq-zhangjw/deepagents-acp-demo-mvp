@@ -200,6 +200,8 @@ const actionLabels = computed(() => ({
   cancel: locale.value === 'zh' ? '取消' : locale.value === 'ja' ? 'キャンセル' : 'Cancel',
   preview: locale.value === 'zh' ? '预览' : locale.value === 'ja' ? 'プレビュー' : 'Preview',
   deleteMessage: locale.value === 'zh' ? '删除该消息' : locale.value === 'ja' ? 'このメッセージを削除' : 'Delete message',
+  editLocalOnly: locale.value === 'zh' ? '已更新展示内容（未找到上下文记录，真实上下文未变）' : locale.value === 'ja' ? '表示内容を更新しました（コンテキスト記録が見つからず、実際のコンテキストは変更されていません）' : 'Display updated (no context record found; real context unchanged)',
+  deleteLocalOnly: locale.value === 'zh' ? '已删除展示消息（未找到上下文记录，真实上下文未变）' : locale.value === 'ja' ? '表示メッセージを削除しました（コンテキスト記録が見つからず、実際のコンテキストは変更されていません）' : 'Display message deleted (no context record found; real context unchanged)',
   skills: locale.value === 'zh' ? '技能' : locale.value === 'ja' ? 'スキル' : 'Skills',
   tools: locale.value === 'zh' ? '工具' : locale.value === 'ja' ? 'ツール' : 'Tools',
   knowledge: locale.value === 'zh' ? '知识库' : locale.value === 'ja' ? 'ナレッジベース' : 'Knowledge',
@@ -996,14 +998,76 @@ function notifyComingSoon(_feature: string) {
   message.info(actionLabels.value.comingSoon, { duration: 3000 })
 }
 
+function conversationSessionId(conversation: Conversation): string {
+  return conversation.agentSessionId ?? conversation.id
+}
+
+async function fetchAcpMessages(sessionId: string): Promise<any[] | null> {
+  try {
+    const resp = await fetch(`/api/context/${encodeURIComponent(sessionId)}/messages`)
+    const data = await resp.json()
+    return data?.ok ? (data.messages ?? []) : null
+  } catch {
+    return null
+  }
+}
+
+// Resolve a display message to its ACP message id by role + occurrence order.
+// user -> k-th HumanMessage; assistant -> k-th AIMessage that carries text
+// (tool-call AIMessages are skipped, mirroring the table's message layout).
+function resolveAcpMessageId(role: string, orderIndex: number, acpMessages: any[]): string | null {
+  let seen = -1
+  for (const m of acpMessages) {
+    const kw = m?.kwargs ?? {}
+    const type = String(kw.type ?? '')
+    if (role === 'user') {
+      if (type === 'human') {
+        seen += 1
+        if (seen === orderIndex) return String(kw.id ?? m.id ?? '') || null
+      }
+    } else if (role === 'assistant') {
+      if (type === 'ai' && !kw.tool_calls && kw.content != null && String(kw.content) !== '') {
+        seen += 1
+        if (seen === orderIndex) return String(kw.id ?? m.id ?? '') || null
+      }
+    }
+  }
+  return null
+}
+
 function deleteMessage(item: { id: string }) {
   openMenuId.value = null
   const conversation = currentConversation.value
   if (!conversation) return
-  const index = conversation.messages.findIndex((message) => message.id === item.id)
-  if (index >= 0) conversation.messages.splice(index, 1)
-  conversation.updatedAt = Date.now()
-  void saveConversation(conversation)
+  const index = conversation.messages.findIndex((entry) => entry.id === item.id)
+  if (index < 0) return
+  const msg = conversation.messages[index]
+  void (async () => {
+    // Try to remove from the real context table (+ sqlite mirror) first.
+    const sessionId = conversationSessionId(conversation)
+    const acpMessages = await fetchAcpMessages(sessionId)
+    const orderIndex = conversation.messages.slice(0, index).filter((m) => m.role === msg.role).length
+    if (acpMessages) {
+      const acpId = resolveAcpMessageId(msg.role, orderIndex, acpMessages)
+      if (acpId) {
+        try {
+          const resp = await fetch(`/api/context/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(acpId)}`, { method: 'DELETE' })
+          const data = await resp.json()
+          if (data?.ok) {
+            conversation.messages.splice(index, 1)
+            conversation.updatedAt = Date.now()
+            void saveConversation(conversation)
+            return
+          }
+        } catch { /* fall through to local-only */ }
+      }
+    }
+    // Fallback: legacy local-only removal + notice.
+    conversation.messages.splice(index, 1)
+    conversation.updatedAt = Date.now()
+    void saveConversation(conversation)
+    message.info(actionLabels.value.deleteLocalOnly)
+  })()
 }
 
 const openMenuId = ref<string | null>(null)
@@ -1031,27 +1095,50 @@ function openEditMessage(item: ChatMessage) {
   editModalVisible.value = true
 }
 
-function saveEditMessage() {
+async function saveEditMessage() {
   const conversation = currentConversation.value
   if (!conversation || !editTargetId.value) return
-  const message = conversation.messages.find((entry) => entry.id === editTargetId.value)
-  if (!message) return
+  const index = conversation.messages.findIndex((entry) => entry.id === editTargetId.value)
+  if (index < 0) return
+  const msg = conversation.messages[index]
   const text = editText.value
-  if (message.role === 'user') {
-    message.text = text
+  // Push the edit to the real context table (+ sqlite mirror) first.
+  const sessionId = conversationSessionId(conversation)
+  const acpMessages = await fetchAcpMessages(sessionId)
+  const orderIndex = conversation.messages.slice(0, index).filter((m) => m.role === msg.role).length
+  let synced = false
+  if (acpMessages) {
+    const acpId = resolveAcpMessageId(msg.role, orderIndex, acpMessages)
+    if (acpId) {
+      try {
+        const resp = await fetch(`/api/context/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(acpId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: text })
+        })
+        const data = await resp.json()
+        synced = Boolean(data?.ok)
+      } catch { /* ignore; keep local update below */ }
+    }
+  }
+  // Local update always, so the UI reflects the edit. If sync failed, the next
+  // prompt simply keeps the table content unchanged (notified below).
+  if (msg.role === 'user') {
+    msg.text = text
   } else {
-    message.finalText = text
-    const textSegment = message.segments.find((segment) => segment.type === 'text')
+    msg.finalText = text
+    const textSegment = msg.segments.find((segment) => segment.type === 'text')
     if (textSegment) {
       textSegment.text = text
     } else {
-      message.segments.push({ id: createId('seg'), type: 'text', text })
+      msg.segments.push({ id: createId('seg'), type: 'text', text })
     }
   }
   conversation.updatedAt = Date.now()
   void saveConversation(conversation)
   editModalVisible.value = false
   editTargetId.value = null
+  if (!synced) message.info(actionLabels.value.editLocalOnly)
 }
 
 function moveConversationToTop(conversation: Conversation) {
@@ -2783,7 +2870,7 @@ onBeforeUnmount(() => {
 .process-collapse { margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:8px; } .process-heading,.tool-heading { display:flex; gap:7px; align-items:center; min-width:0; } .process-heading { color:#405166; font-size:13px; } .process-heading small { color:var(--subtle); font-size:11px; } .plan-list { display:flex; flex-direction:column; gap:7px; padding:2px 0 10px; } .plan-item { display:flex; gap:8px; align-items:center; color:#405166; font-size:13px; } .plan-index { display:grid; place-items:center; width:19px; height:19px; color:#2563eb; background:#eaf1ff; border-radius:50%; font-size:11px; } .plan-item :deep(.n-tag) { margin-left:auto; } .detail-collapse { margin-top:8px; border:1px solid var(--border); border-radius:6px; } .analysis-text { padding:8px 0; color:#405166; line-height:1.65; white-space:pre-wrap; } .tool-heading span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .tool-heading :deep(.n-tag) { margin-left:auto; } .message-status { margin-top:10px; }
 .composer-wrap { flex:0 0 auto; padding:12px 0 20px; background:linear-gradient(0deg, var(--canvas) 82%, rgba(247,248,250,0)); } .task-error { margin-bottom:10px; } .pending-attachments { margin:0 0 8px; } .composer { position:relative; display:flex; flex-direction:column; gap:2px; padding:10px 12px 8px; background:var(--surface); border:1px solid var(--border); border-radius:20px; box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer:focus-within { border-color:var(--border); box-shadow:0 4px 14px rgba(29,39,51,.05); } .composer--dragging { border-color:#2563eb; background:#f5f9ff; box-shadow:0 0 0 3px rgba(37,99,235,.16); } .composer-input :deep(.n-input) { --n-border: transparent; --n-box-shadow: none; --n-box-shadow-focus: none; --n-box-shadow-hover: none; --n-color: transparent; --n-color-focus: transparent; background:transparent !important; box-shadow:none !important; } .composer-input :deep(.n-input__border), .composer-input :deep(.n-input__state-border) { border:0 !important; box-shadow:none !important; display:none; } .composer-input :deep(textarea) { padding-top:8px; padding-bottom:4px; } .composer-toolbar { display:flex; align-items:center; justify-content:space-between; margin-top:2px; } .composer-toolbar-left { display:flex; align-items:center; gap:2px; } .composer-toolbar-right { display:flex; align-items:center; gap:6px; } .toolbar-pill { border-radius:10px; padding:0 10px; } .composer-context { font-size:12px; color:var(--subtle); white-space:nowrap; } .context-tooltip { display:flex; flex-direction:column; gap:8px; align-items:stretch; min-width:190px; padding:4px 2px; } .context-tooltip .ctx-tokens { font-size:12px; line-height:1.4; color:#4b5563; white-space:nowrap; } .context-tooltip .ctx-compact-btn { justify-content:center; width:100%; font-size:12px; } .hidden-input { display:none; } .rename-menu { position:fixed; z-index:70; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); }
 .permission-card { width:min(520px, calc(100vw - 32px)); } .permission-code { max-height:260px; margin:0; padding:10px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:6px; font:12px/1.55 "Cascadia Code",Consolas,monospace; } .permission-actions { display:flex; justify-content:flex-end; gap:8px; }
-.hidden-action { display: none; }
+.hidden-action { display:inline-flex; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
 .right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }

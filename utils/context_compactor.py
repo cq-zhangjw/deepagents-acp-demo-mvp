@@ -125,32 +125,52 @@ def split_compact(messages: list[BaseMessage]):
     return list(messages[:-KEEP_RECENT]), list(messages[-KEEP_RECENT:])
 
 
-async def compact_messages(agent, config, messages: list[BaseMessage]) -> dict:
-    """Compact a session's message history in the checkpoint.
+async def compact_messages_list(messages: list[BaseMessage]) -> tuple[list[BaseMessage], dict]:
+    """Pure-function compaction of a message list.
 
-    Summarizes the early messages, removes them, and appends the summary as a
-    HumanMessage. Returns a result dict for logging / the manual API.
+    Summarizes the early messages, drops them, and returns
+    ``(compacted_list, result_dict)``. The caller decides where the compacted
+    list is written (session_content table, checkpoint, or an API response), so
+    the same logic serves the table-authoritative flow and the legacy path.
     """
     before_tokens = estimate_tokens(messages)
     early, recent = split_compact(messages)
     if not early:
-        return {"ok": False, "reason": "not_enough_messages", "before_tokens": before_tokens}
+        return list(messages), {
+            "ok": False,
+            "reason": "not_enough_messages",
+            "before_tokens": before_tokens,
+        }
 
     summary_text = await build_summary(early)
-    removals = [RemoveMessage(id=m.id) for m in early if getattr(m, "id", None)]
-    if removals:
-        await agent.aupdate_state(
-            config,
-            {"messages": [*removals, HumanMessage(content=summary_text)]},
-            as_node="__start__",
-        )
-    return {
+    compacted = [HumanMessage(content=summary_text), *recent]
+    return compacted, {
         "ok": True,
         "summary": summary_text[:200],
-        "removed": len(removals),
+        "removed": len(early),
         "kept": len(recent),
         "before_tokens": before_tokens,
     }
+
+
+async def compact_messages(agent, config, messages: list[BaseMessage]) -> dict:
+    """Compact a session's message history in the checkpoint (legacy path).
+
+    Summarizes the early messages, removes them, and appends the summary as a
+    HumanMessage. Returns a result dict for logging / the manual API.
+    """
+    compacted, result = await compact_messages_list(messages)
+    if not result.get("ok"):
+        return result
+
+    removals = [RemoveMessage(id=m.id) for m in messages if getattr(m, "id", None)]
+    summary_msg = compacted[0]
+    await agent.aupdate_state(
+        config,
+        {"messages": [*removals, summary_msg]},
+        as_node="__start__",
+    )
+    return result
 
 
 def should_compact(messages: list[BaseMessage]) -> bool:

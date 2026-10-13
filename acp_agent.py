@@ -1,4 +1,4 @@
-"""DeepAgents ACP Agent.
+﻿"""DeepAgents ACP Agent.
 
 Runs in standard ACP (Agent Client Protocol) stdio service mode:
 - Reads ACP JSON-RPC requests from stdin (initialize / session/new / session/prompt ...)
@@ -27,7 +27,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain_core.messages import HumanMessage, RemoveMessage, convert_to_messages
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
@@ -44,7 +44,13 @@ from utils.override.filesystem import FilesystemMiddleware as _OverrideFilesyste
 _deepagents_graph.FilesystemMiddleware = _OverrideFilesystemMiddleware
 
 from deepagents.middleware.subagents import SubAgent
-from utils.context_compactor import compact_messages, estimate_tokens, should_compact
+from utils.context_compactor import compact_messages, compact_messages_list, estimate_tokens, should_compact
+from utils.session_context import (  # noqa: E402  (imported after env/DB setup, matches module layout)
+    get_context as sc_get_context,
+    init_from_checkpoint as sc_init_from_checkpoint,
+    rollback_last_turn as sc_rollback_last_turn,
+    save_context as sc_save_context,
+)
 from utils.model_util import MODEL
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
 from utils.skill_loader import get_agent_skills
@@ -321,41 +327,29 @@ class CompactingAgentServer(AgentServerACP):
         return await super().prompt(prompt, session_id=session_id, message_id=message_id, **kwargs)
 
 
-def _drop_last_user_turn(messages: list[Any]) -> list[Any]:
-    """Return messages with the last user turn (and everything after it) removed.
-
-    Used by retry: the client re-sends the same user text, so keeping the
-    original user message would duplicate it. Dropping the whole last turn
-    leaves history at the previous assistant reply and the re-sent prompt
-    rebuilds the turn from a clean slate.
-    """
-    last_user_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human":
-            last_user_idx = i
-            break
-    if last_user_idx is None:
-        return list(messages)
-    return list(messages[:last_user_idx])
-
-
 class RollbackAgentServer(CompactingAgentServer):
-    """CompactingAgentServer that also rolls the session checkpoint back to
-    its pre-prompt messages when a run is cancelled.
+    """Session-context-table authoritative ACP server with cancel/retry safety.
 
-    LangGraph persists every node's messages to the checkpointer as it
-    streams, so a cancelled run leaves partial assistant output / tool calls
-    in the checkpoint. Without a rollback the next prompt resumes from that
-    dirty state and the new answer is stitched onto the cancelled run's
-    leftovers. On cancel we snapshot the messages right before the prompt and
-    restore them (REMOVE_ALL_MESSAGES + replay) so the next prompt starts from
-    the clean pre-prompt history.
+    The conversation history actually fed to the model lives in the MooFile
+    context table (`db/session_content.bson`, see utils/session_context.py),
+    NOT in the langgraph checkpoint. Per prompt:
 
-    A prompt sent with `_meta.retry` (the frontend regenerate button re-sends
-    the same user text) additionally rolls the checkpoint back by one turn
-    before running, so the model re-answers on the previous assistant reply
-    instead of on top of the old answer it is meant to replace.
+      1. read the table (first run for a session: seed it once from the
+         checkpoint);
+      2. compact against the table content (pure function; result written back
+         to the table);
+      3. re-seed the checkpoint from the table (REMOVE_ALL_MESSAGES + replay)
+         so langgraph executes on exactly the table's history — the checkpoint
+         stays a runtime store (breakpoints / crash recovery) but no longer
+         decides what the model sees next;
+      4. run the standard ACP prompt (AgentServerACP directly; the legacy
+         checkpoint-side compaction in CompactingAgentServer is bypassed);
+      5. write the run result back to the table from the checkpoint.
+
+    Cancel: the table stays at the pre-prompt snapshot (this turn is abandoned)
+    and the checkpoint is rolled back too, so the next prompt starts clean.
+    Retry (`_meta.retry`): the last user turn is dropped from the table before
+    running, so the re-sent user text does not duplicate.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -364,45 +358,101 @@ class RollbackAgentServer(CompactingAgentServer):
         self._cancel_rollback: set[str] = set()
 
     async def prompt(self, prompt, session_id, message_id=None, **kwargs):
+        # Retry: drop the last user turn from the context table (the client
+        # re-sends the same user text, so the old copy must go).
         if kwargs.get("retry"):
-            await self._rollback_last_turn(session_id)
+            try:
+                if sc_rollback_last_turn(session_id):
+                    logger.info("[retry] session=%s rolled back last turn in context table", session_id)
+            except Exception:  # noqa: BLE001 - retry rollback must never break the prompt
+                logger.exception("[retry] table rollback failed; continuing")
+
+        # ---- 1) context table is the single source of truth ----
+        context_messages = sc_get_context(session_id)
+        if context_messages is None:
+            # First run for this session: seed the table once from the checkpoint.
+            try:
+                agent = self._checkpointed_agent(session_id)
+                config = self._session_config(session_id)
+                state = await agent.aget_state(config)
+                values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
+                ckpt_msgs = list((values or {}).get("messages", []) or [])
+                context_messages = sc_init_from_checkpoint(session_id, ckpt_msgs)
+            except Exception:  # noqa: BLE001 - seeding must never break the prompt
+                logger.exception("[session_context] init from checkpoint failed; starting empty")
+                context_messages = []
+
+        # ---- 2) compaction acts on the table content ----
+        try:
+            objs = convert_to_messages(context_messages) if context_messages else []
+            if objs and should_compact(objs):
+                logger.info(
+                    "[compact] session=%s tokens=%s overhead=%s -> compacting (table)",
+                    session_id,
+                    estimate_tokens(objs),
+                    os.getenv("CONTEXT_COMPACT_OVERHEAD") or 6000,
+                )
+                compacted, result = await compact_messages_list(objs)
+                sc_save_context(session_id, compacted)
+                context_messages = [m.to_json() for m in compacted]
+                logger.info("[compact] session=%s result=%s", session_id, result)
+        except Exception:  # noqa: BLE001 - compaction must never break the prompt
+            logger.exception("[compact] failed; continuing without compaction")
+
+        # ---- 3) snapshot = table content before this prompt (cancel baseline) ----
+        self._pre_prompt_messages[session_id] = context_messages
+
+        # ---- 4) re-seed the checkpoint from the table ----
         try:
             agent = self._checkpointed_agent(session_id)
             config = self._session_config(session_id)
-            state = await agent.aget_state(config)
-            values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
-            self._pre_prompt_messages[session_id] = list((values or {}).get("messages", []) or [])
-        except Exception:  # noqa: BLE001 - snapshot must never break the prompt
-            self._pre_prompt_messages.pop(session_id, None)
-        result = await super().prompt(prompt, session_id=session_id, message_id=message_id, **kwargs)
+            objs = convert_to_messages(context_messages) if context_messages else []
+            await agent.aupdate_state(
+                config,
+                {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *objs]},
+                as_node="__start__",
+            )
+        except Exception:  # noqa: BLE001 - re-seed must never break the prompt
+            logger.exception("[session_context] checkpoint re-seed failed; continuing")
+
+        # Run the standard ACP prompt. AgentServerACP is called directly so the
+        # legacy checkpoint-side compaction (CompactingAgentServer.prompt) does
+        # not double-compact against the table.
+        result = await AgentServerACP.prompt(
+            self, prompt, session_id=session_id, message_id=message_id, **kwargs
+        )
         if (
             result is not None
             and getattr(result, "stop_reason", None) == "cancelled"
             and session_id in self._cancel_rollback
         ):
             self._cancel_rollback.discard(session_id)
+            # Table stays at the pre-prompt snapshot (this turn is abandoned).
+            pre = self._pre_prompt_messages.get(session_id)
+            if pre is not None:
+                try:
+                    sc_save_context(session_id, pre)
+                except Exception:  # noqa: BLE001 - restore must never break the response
+                    logger.exception("[session_context] cancel snapshot restore failed")
             await self._rollback_checkpoint(session_id)
-        return result
+            return result
 
-    async def cancel(self, session_id, **kwargs):
-        self._cancel_rollback.add(session_id)
-        await super().cancel(session_id, **kwargs)
-
-    async def _rollback_last_turn(self, session_id: str) -> None:
+        # ---- 5) write back the run result ----
+        # The checkpoint now holds history + this turn; copy it back to the table.
         try:
             agent = self._checkpointed_agent(session_id)
             config = self._session_config(session_id)
             state = await agent.aget_state(config)
             values = state.values if hasattr(state, "values") else (state if isinstance(state, dict) else {})
-            messages = list((values or {}).get("messages", []) or [])
-            pre = _drop_last_user_turn(messages)
-            await agent.aupdate_state(
-                config,
-                {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *pre]},
-            )
-            logger.info("[retry] session=%s rolled back last user turn (%d -> %d)", session_id, len(messages), len(pre))
-        except Exception:  # noqa: BLE001 - retry rollback must never break the prompt
-            logger.exception("[retry] rollback failed; continuing with existing history")
+            final_messages = list((values or {}).get("messages", []) or [])
+            sc_save_context(session_id, final_messages)
+        except Exception:  # noqa: BLE001 - write-back must never break the response
+            logger.exception("[session_context] write-back failed")
+        return result
+
+    async def cancel(self, session_id, **kwargs):
+        self._cancel_rollback.add(session_id)
+        await super().cancel(session_id, **kwargs)
 
     async def _rollback_checkpoint(self, session_id: str) -> None:
         pre = self._pre_prompt_messages.pop(session_id, None)
