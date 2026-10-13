@@ -40,8 +40,14 @@ def init_browser(
         headless=headless,
         slow_mo=100 if not headless else 0,
         channel="msedge",
+        # Keep the OS sandbox on: without it Edge shows the
+        # "unsupported command-line flag --no-sandbox" infobar.
+        chromium_sandbox=True,
         args=[
             '--start-maximized',
+            # Suppress the "unsupported command-line flag" infobar for the
+            # automation flags below (Chromium skips it when --test-type is set).
+            '--test-type',
             '--disable-blink-features=AutomationControlled',
             '--disable-infobars',
             '--disable-features=TranslateUI',

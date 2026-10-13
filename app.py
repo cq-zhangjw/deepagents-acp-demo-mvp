@@ -14,6 +14,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
@@ -24,6 +25,7 @@ from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
+from utils.playwright_util import GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT, close_browser, init_browser
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -40,7 +42,28 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ACP agent subprocess startup command
 AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 
-app = FastAPI(title="ACP client base")
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Startup: open the built-in Edge window pointing at this gateway.
+
+    Runs inside uvicorn's own event loop (async_playwright), after the HTTP
+    server is listening, so the goto can actually load the page. Never blocks
+    or fails startup: the browser is a convenience, not a dependency.
+    On shutdown the browser is closed best-effort.
+    """
+    global GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT
+    try:
+        host = "127.0.0.1"
+        port = int(os.getenv("APP_PORT") or 8000)
+        GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT = await init_browser(user_data_dir=None, headless=False)
+        await GLOBAL_BROWSER.pages[0].goto(f"http://{host}:{port}", timeout=5000)
+    except Exception:  # noqa: BLE001 - built-in browser must never break startup
+        pass
+    yield
+    await close_browser()
+
+
+app = FastAPI(title="ACP client base", lifespan=_app_lifespan)
 
 # voice call sub-router: /api/chat_voice/voices, /api/chat_voice/chat
 app.include_router(chat_voice_router)
@@ -189,6 +212,8 @@ async def no_cache_spa_index(request, call_next):
 
 if __name__ == "__main__":
     import uvicorn
-    HOST = os.getenv("APP_HOST") if os.getenv("APP_HOST") else "0.0.0.0"
+
+    HOST = os.getenv("APP_HOST") if os.getenv("APP_HOST") else "127.0.0.1"
     PORT = int(os.getenv("APP_PORT")) if os.getenv("APP_PORT") else 8000
+
     uvicorn.run("app:app", host=HOST, port=PORT)
