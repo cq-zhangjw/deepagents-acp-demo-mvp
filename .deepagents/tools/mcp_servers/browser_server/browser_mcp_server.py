@@ -13,6 +13,64 @@ playwright: Playwright = None
 GLOBAL_TIMEOUT = 5 * 60 * 1000
 storage = {}
 
+# JavaScript that renders a simplified XML element tree of the page for
+# locating elements. Each node carries its key attributes plus a stable
+# `css` selector path so the model can feed it straight into click/fill.
+_XML_TREE_JS = r"""
+(function(){
+  function esc(s){return String(s==null?'':s).replace(/[<>&'"]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c];});}
+  function cssEsc(s){return s.replace(/[^a-zA-Z0-9_\-]/g,function(c){return '\\'+c;});}
+  function cssPath(el){
+    var parts=[], cur=el;
+    while(cur && cur.nodeType===1){
+      var part=cur.tagName.toLowerCase();
+      if(cur.id){ part+='#'+cssEsc(cur.id); parts.unshift(part); break; }
+      var cls=[];
+      for(var i=0;i<cur.classList.length;i++){var c=cur.classList[i]; if(c && !/^[a-f0-9]{6,}$/i.test(c)) cls.push(c); if(cls.length>=2) break;}
+      if(cls.length) part+='.'+cls.map(cssEsc).join('.');
+      var p=cur.parentElement;
+      if(p){
+        var same=Array.prototype.filter.call(p.children,function(x){return x.tagName===cur.tagName;});
+        if(same.length>1) part+=':nth-of-type('+(same.indexOf(cur)+1)+')';
+      }
+      parts.unshift(part);
+      cur=p;
+      if(parts.length>10) break;
+    }
+    return parts.join(' > ');
+  }
+  var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,TEMPLATE:1,HEAD:1,LINK:1,META:1};
+  var ATTRS=['id','name','placeholder','aria-label','data-testid','role','href','type','alt','title','for'];
+  function attrs(el){
+    var out=[];
+    for(var i=0;i<ATTRS.length;i++){var v=el.getAttribute(ATTRS[i]); if(v!==null && v!==''){out.push(ATTRS[i]+'="'+esc(String(v).slice(0,80))+'"');}}
+    var cls=[];
+    for(var j=0;j<el.classList.length;j++){var c=el.classList[j]; if(c && !/^[a-f0-9]{6,}$/i.test(c)) cls.push(c); if(cls.length>=2) break;}
+    if(cls.length) out.push('class="'+esc(cls.join(' '))+'"');
+    var tag=el.tagName.toLowerCase();
+    if(tag==='input'||tag==='textarea'||tag==='select'){var v=el.value; if(v!==null && v!==''){out.push('value="'+esc(String(v).slice(0,60))+'"');}}
+    return out;
+  }
+  var MAXN=window.__PW_MAX_NODES||300, MAXD=window.__PW_MAX_DEPTH||8;
+  var out=[], nodes=0, truncated=false;
+  function walk(el, depth){
+    if(nodes>=MAXN){ if(!truncated){out.push('<!-- truncated -->'); truncated=true;} return; }
+    if(!el || el.nodeType!==1) return;
+    if(SKIP[el.tagName]) return;
+    var tag=el.tagName.toLowerCase();
+    var a=attrs(el), css=cssPath(el);
+    out.push('<'+tag+(a.length?' '+a.join(' '):'')+(css?' css="'+esc(css)+'"':'')+'>');
+    nodes++;
+    if(depth<MAXD){
+      for(var i=0;i<el.children.length;i++){walk(el.children[i], depth+1); if(nodes>=MAXN) break;}
+    } else if(el.children.length){ out.push('...'); }
+    out.push('</'+tag+'>');
+  }
+  walk(document.body||document.documentElement, 0);
+  return out.join('');
+})()
+"""
+
 
 mcp = FastMCP("browser mcp server")
 SCRIPT_PATH = os.path.dirname(__file__)
@@ -71,6 +129,23 @@ def close_browser():
 
     # 重置全局变量
     playwright = browser = None
+
+
+def _ensure_browser(headless=False):
+    """Lazily initialise the persistent browser context if not running."""
+    global browser, playwright
+    if playwright is None or browser is None:
+        init_browser(headless=headless)
+    return browser
+
+
+def _active_page(page_index=-1):
+    """Return the currently usable page (default: the most recently opened)."""
+    global browser
+    _ensure_browser()
+    if browser is None or not browser.pages:
+        return None
+    return browser.pages[page_index]
 
 
 def go_to_url(url: str, css_flag: str = None, max_retry: int = 1) -> Page:
@@ -299,18 +374,100 @@ def run_automation(steps: list, wait_user: bool=True):
     return page
 
 @mcp.tool()
+def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
+    """Capture a screenshot of the current (most recently opened) page.
+
+    Args:
+        page_index: Which page to capture. -1 means the most recent page.
+        full_page: Whether to capture the full scrollable page (True) or only
+            the visible viewport (False).
+
+    Returns:
+        The absolute path of the saved PNG. Use a file-read tool to view it.
+    """
+    try:
+        page = _active_page(page_index)
+        if page is None:
+            return "Error: no page is open. Please run do_automation_by_script or open a URL first."
+        shot_dir = os.path.join(SCRIPT_PATH, "screenshots")
+        os.makedirs(shot_dir, exist_ok=True)
+        name = f"shot_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000) % 1000}.png"
+        path = os.path.join(shot_dir, name)
+        page.screenshot(path=path, full_page=full_page)
+        return f"Screenshot saved: {os.path.abspath(path)}"
+    except Exception:
+        return f"Error: {traceback.format_exc()}"
+
+
+@mcp.tool()
+def browser_get_content(
+    format: str = "text",
+    max_length: int = 20000,
+    max_depth: int = 8,
+    max_nodes: int = 300,
+    page_index: int = -1,
+) -> str:
+    """Extract the current page content in a model-friendly form.
+
+    Args:
+        format: One of "text" (readable page text), "html" (raw page HTML), or
+            "xml" (a simplified XML element tree). The XML tree annotates every
+            element with its key attributes and a `css="..."` selector path so
+            it can be used directly to locate elements for click/fill actions.
+        max_length: Maximum characters returned for text/html output.
+        max_depth: Maximum DOM depth in the XML element tree.
+        max_nodes: Maximum number of elements in the XML element tree.
+        page_index: Which page to read. -1 means the most recent page.
+
+    Returns:
+        The extracted content (truncated with a marker when over the limit).
+    """
+    try:
+        page = _active_page(page_index)
+        if page is None:
+            return "Error: no page is open. Please run do_automation_by_script or open a URL first."
+        fmt = (format or "text").strip().lower()
+        if fmt == "html":
+            html = page.content()
+            if len(html) > max_length:
+                return html[:max_length] + "\n...(truncated)"
+            return html
+        if fmt == "xml":
+            code = (
+                f"window.__PW_MAX_NODES={int(max_nodes)};"
+                f"window.__PW_MAX_DEPTH={int(max_depth)};"
+                + _XML_TREE_JS
+            )
+            tree = page.evaluate(code)
+            if len(tree) > max_length:
+                return tree[:max_length] + "\n...(truncated)"
+            return tree
+        # default: readable text
+        text = page.locator("body").inner_text(timeout=GLOBAL_TIMEOUT)
+        if len(text) > max_length:
+            return text[:max_length] + "\n...(truncated)"
+        return text
+    except Exception:
+        return f"Error: {traceback.format_exc()}"
+
+
+@mcp.tool()
 def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> str:
     """Execute browser automation steps from a JSON script file.
 
     The JSON file must contain a list of step lists. Each step list is passed to
     the browser automation runner, which supports navigation, interaction,
-    waiting, text extraction, and screenshots. When ``wait_user`` is True, the
-    visible browser remains open until its context is closed; otherwise it runs
-    headlessly.
+    waiting, text extraction, and screenshots. ``wait_user`` controls
+    visibility: True shows the browser window, False runs it headless.
+
+    The browser stays resident after the call on purpose, so later tool calls
+    (browser_screenshot / browser_get_content / further automation) reuse the
+    same instance instead of relaunching Edge. It is torn down when this MCP
+    process exits.
 
     Args:
         script_param_file: Path to the UTF-8 encoded JSON automation script. Sample file placed in the ./samples folder.
-        wait_user: Whether to show the browser and wait for the user to close it.
+        wait_user: Whether to show the browser window (True) or run headless (False).
 
     Returns:
         A success message, or an error message containing the traceback.
@@ -321,15 +478,8 @@ def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> s
         for steps in scripts_list:
             page = run_automation(steps, wait_user=wait_user)
             pages.append(page)
-        if wait_user:
-            browser.wait_for_event("close", timeout=60 * 60 * 1000)
-            # while not browser.is_closed():
-            #     logger.info(f"Wait user confirm and close the browser...{browser.pages}")
-            #     time.sleep(2)
-        close_browser()
-        return "Do automation competed."
+        return f"Do automation completed. {len(pages)} page(s) open."
     except:
-        close_browser()
         return f"Error: {traceback.format_exc()}"
 
 
