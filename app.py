@@ -25,7 +25,6 @@ from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
-from utils.playwright_util import GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT, close_browser, init_browser
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -42,25 +41,42 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ACP agent subprocess startup command
 AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 
+def _should_open_browser() -> bool:
+    """Whether the gateway should pop the default browser on startup.
+
+    Controlled by the OPEN_BROWSER env var; enabled by default.
+    """
+    return os.getenv("OPEN_BROWSER", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _open_home_in_default_browser(url: str) -> None:
+    """Background task: open the gateway page in the default browser.
+
+    Uses the stdlib webbrowser module (a plain system command) instead of
+    Playwright: a startup launcher does not need a heavy automation engine.
+    Never blocks or fails startup.
+    """
+    import webbrowser
+
+    try:
+        await asyncio.sleep(1)  # let the HTTP server finish binding
+        await asyncio.to_thread(webbrowser.open, url)
+    except Exception:  # noqa: BLE001 - browser launcher is a convenience
+        pass
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    """Startup: open the built-in Edge window pointing at this gateway.
+    """Startup: optionally open the gateway page in the default browser.
 
-    Runs inside uvicorn's own event loop (async_playwright), after the HTTP
-    server is listening, so the goto can actually load the page. Never blocks
-    or fails startup: the browser is a convenience, not a dependency.
-    On shutdown the browser is closed best-effort.
+    Controlled by the OPEN_BROWSER env var (default on). The page opens in a
+    background task, so startup is never blocked by the browser.
     """
-    global GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT
-    try:
+    if _should_open_browser():
         host = "127.0.0.1"
         port = int(os.getenv("APP_PORT") or 8000)
-        GLOBAL_BROWSER, GLOBAL_PLAYWRIGHT = await init_browser(user_data_dir=None, headless=False)
-        await GLOBAL_BROWSER.pages[0].goto(f"http://{host}:{port}", timeout=5000)
-    except Exception:  # noqa: BLE001 - built-in browser must never break startup
-        pass
+        asyncio.create_task(_open_home_in_default_browser(f"http://{host}:{port}"))
     yield
-    await close_browser()
 
 
 app = FastAPI(title="ACP client base", lifespan=_app_lifespan)
@@ -211,9 +227,22 @@ async def no_cache_spa_index(request, call_next):
 
 
 if __name__ == "__main__":
+    import socket
+
     import uvicorn
 
     HOST = os.getenv("APP_HOST") if os.getenv("APP_HOST") else "127.0.0.1"
     PORT = int(os.getenv("APP_PORT")) if os.getenv("APP_PORT") else 8000
+
+    # Friendly guard: if the port is already taken, the gateway is likely
+    # running already. Exit with a clear message instead of starting a second
+    # instance that races for the port (browser opens, then shuts down).
+    # Probe via loopback: works regardless of APP_HOST being 0.0.0.0 or 127.0.0.1.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        if sock.connect_ex(("127.0.0.1", PORT)) == 0:
+            print(f"[gateway] 端口 {PORT} 已被占用，服务可能已在运行。")
+            print("[gateway] 如需重启，请先停止旧实例（stop.ps1 或任务管理器结束对应 python 进程）。")
+            sys.exit(1)
 
     uvicorn.run("app:app", host=HOST, port=PORT)
