@@ -715,6 +715,59 @@
               "execution": null
             }
           ]
+        },
+        {
+          "server": "browser_server",
+          "serverInfo": {
+            "name": "browser mcp server",
+            "title": null,
+            "version": "3.4.7",
+            "websiteUrl": null,
+            "icons": null
+          },
+          "tools": [
+            {
+              "name": "do_automation_by_script",
+              "title": null,
+              "description": null,
+              "inputSchema": {
+                "additionalProperties": false,
+                "properties": {
+                  "script_param_file": {
+                    "type": "string"
+                  },
+                  "wait_user": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "script_param_file"
+                ],
+                "type": "object"
+              },
+              "outputSchema": {
+                "properties": {
+                  "result": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "type": "object",
+                "x-fastmcp-wrap-result": true
+              },
+              "icons": null,
+              "annotations": null,
+              "_meta": {
+                "fastmcp": {
+                  "tags": []
+                }
+              },
+              "execution": null
+            }
+          ]
         }
       ]
     },

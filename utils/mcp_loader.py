@@ -173,15 +173,20 @@ def _field_type(prop: dict[str, Any]) -> type:
 def _build_args_model(name: str, input_schema: dict[str, Any]) -> type[BaseModel]:
     """Convert a tool inputSchema into a pydantic model for StructuredTool.
 
-    Every field is Optional[Any] so no input ever fails schema validation.
-    Missing-argument and runtime errors are surfaced as friendly text by the
-    wrapper in make_tool._run instead of raising into the agent graph, which
-    lets the model read the error and retry with corrected arguments.
+    Field types are preserved from the MCP inputSchema (str/int/float/bool) so
+    the model can see what each argument expects (without this, every field
+    degrades to Any and models pass objects where strings are required). Every
+    field stays Optional with a None default so a missing argument never fails
+    validation; the required-name check happens in make_tool._run and returns
+    friendly text instead.
     """
     properties = input_schema.get("properties") or {}
     fields: dict[str, tuple[type, Any]] = {}
-    for field_name in properties:
-        fields[field_name] = (Optional[Any], None)
+    for field_name, prop in properties.items():
+        if isinstance(prop, dict):
+            fields[field_name] = (Optional[_field_type(prop)], None)
+        else:
+            fields[field_name] = (Optional[Any], None)
     return create_model(f"{name}_args", __base__=BaseModel, **fields)
 
 

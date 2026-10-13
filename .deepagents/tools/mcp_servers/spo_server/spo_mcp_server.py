@@ -1,13 +1,6 @@
 ###
 # Refrence site: https://shareplum.readthedocs.io/en/latest/files.html
 ###
-import re
-import sys
-
-sys.stdin.reconfigure(encoding="utf-8")
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
-
 import datetime
 import json
 import os
@@ -461,4 +454,8 @@ def update_list(
 
 
 if __name__ == '__main__':
+    import sys
+    sys.stdin = open(sys.stdin.fileno(), "r", encoding="utf-8", closefd=False)
+    sys.stdout = open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)
+
     mcp.run(transport="stdio")

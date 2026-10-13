@@ -1,0 +1,282 @@
+[
+        {
+            "action": "goto",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "https://xxx.xxx.xxx",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "click",
+            "element_selector": "#sysverb_new",
+            "element_iframe": "#gsft_main",
+            "wait_selector": "#sysverb_new",
+            "wait_iframe": "#gsft_main",
+            "value": null,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "click",
+            "element_selector": "a.template-item[data-type='apply-template']:has-text('インシデント')",
+            "element_iframe": "#gsft_main",
+            "wait_selector": "a.template-item[data-type='apply-template']:has-text('インシデント')",
+            "wait_iframe": "#gsft_main",
+            "value": null,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "wait",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": 1000,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.caller_id']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": "[id='incident.short_description']",
+            "wait_iframe": "#gsft_main",
+            "value": "#問い合わせユーザー#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='incident.due_date']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#期日#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.assignment_group']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#アサイン先グループ#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.assigned_to']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#アサイン先#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='incident.short_description']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#簡単な説明#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='incident.description']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#説明#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='incident.u_dp_ope_free_item1']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー項目１#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.u_dp_ope_free_choice1']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー選択項目１（選択肢) #",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.u_dp_ope_free_choice2']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー選択項目２（選択肢）#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.u_dp_ope_free_class4']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー選択項目４（分類）#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.u_dp_ope_free_choice4']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー選択項目４（選択肢）#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.u_dp_ope_free_choice5']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#フリー選択項目５（選択肢）#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "click",
+            "element_selector": "[id='incident.work_notes_list_unlock']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": null,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "click",
+            "element_selector": "[id='sys_display.incident.work_notes_list']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": null,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.work_notes_list']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "佳 许",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "press",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "Enter",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "wait",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": 500,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.work_notes_list']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "金虹 李",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "press",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "Enter",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "wait",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": 500,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "fill",
+            "element_selector": "[id='sys_display.incident.work_notes_list']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "#worker_jp#",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "press",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": "Enter",
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "wait",
+            "element_selector": null,
+            "element_iframe": null,
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": 500,
+            "timeout": null,
+            "max_retry": null
+        },
+        {
+            "action": "click",
+            "element_selector": "[id='incident.work_notes_list_lock']",
+            "element_iframe": "#gsft_main",
+            "wait_selector": null,
+            "wait_iframe": null,
+            "value": null,
+            "timeout": null,
+            "max_retry": null
+        }
+]

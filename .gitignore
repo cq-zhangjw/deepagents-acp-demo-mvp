@@ -35,6 +35,7 @@ __pycache__/
 **/.env
 
 **/tmp/
+.tmp/
 **/~$*
 
 **/cookie.json
