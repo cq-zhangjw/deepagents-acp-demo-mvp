@@ -17,6 +17,17 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 - **Knowledge base** (2.0): the right-hand panel adds a *Knowledge* tab backed by the external **moofile_base** project (RAG backend on `:8888`, fully separate repo/venv). The gateway exposes `/api/knowledge/config` (liveness probe + base URL), `/api/knowledge/databases` (vector knowledge-base list with per-agent enabled flag) and `/api/knowledge/start` (launch moofile_base from the UI when offline); the panel toggle enable/disable is a single source of truth with the tools panel — it adds/removes the `knowledge_server` MCP entry in `agents.json`, and the AI queries the knowledge base through that MCP server's `retrieve_knowledge` tool whenever it is available. When the backend is unreachable its MCP tools are skipped at assembly time (no hanging calls) and the panel shows an offline hint with a start button. The two projects share one `db/` directory (`MOOFILE_DB_DIR` points to this repo's `db`), so knowledge data and chat history live together. `start-all.ps1` / `stop-all.ps1` bring both services up/down in order (8888 → 8000); the moofile_base location is configured via `MOOFILE_BASE_ROOT_DIR` in `.env` (absolute, or relative to this project; default = sibling directory).
 - **Local run**: `start.ps1` / `stop.ps1` manage the gateway and agent processes; all runtime knobs are configured via `.env`.
 
+## Screenshot
+
+![DeepAgents ACP client main interface](docs/imgs/chat-interface.png)
+
+The screenshot shows the main chat interface in action:
+
+- **Left sidebar** — the recent-conversation list with search, rename (context menu) and delete (centered confirmation dialog). Sessions are persisted backend-authoritatively in the local MooFile store (`db/db_history_<hash8>/db.bson`), so they survive reloads and are browsable from the knowledge-base management UI.
+- **Chat area** — the user asked "这张图有什么？" with an image attachment. The image was uploaded through the **unified attachment store** (`db/db_attachments_<hash8>/`, served via `/api/attachments/{file_id}`): the message only carries a lightweight `[图片: <file_id>]` placeholder plus the local absolute path, so the agent's `Read` tool card can open the file directly (see the resolved path in the card) without the model ever receiving raw pixels in the prompt. Attachments are cascade-deleted when their message/session is removed.
+- **Tool-call cards** — each step shows the tool name, the resolved parameters (here: the attachment's absolute path) and its status (`已完成`); parameters/return values expand in collapsible `json` tabs.
+- **Bottom composer** — agent dropdown, skills / tools / knowledge-base pickers, context usage (`上下文 6%`) and the connection indicator (`已连接`).
+
 ## Architecture
 
 ```mermaid
