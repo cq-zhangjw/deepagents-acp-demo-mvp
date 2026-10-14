@@ -41,7 +41,6 @@ import {
   NIcon,
   NInput,
   NModal,
-  NPopconfirm,
   NSelect,
   NSpin,
   NSwitch,
@@ -492,8 +491,20 @@ function deleteConversation(id: string) {
   void deleteConversationRemote(id)
 }
 
+/** Confirm handler for the centered delete dialog: clear the pending target
+ * first so a double positive-click cannot delete twice. */
+function confirmDeleteConversation() {
+  const id = deleteTarget.value
+  deleteTarget.value = null
+  if (id) deleteConversation(id)
+}
+
 const renameMenu = ref<{ id: string; x: number; y: number } | null>(null)
 const renameTarget = ref<Conversation | null>(null)
+// Session to delete when the centered confirm dialog is accepted. A centered
+// NModal is used instead of an anchored NPopconfirm because the popconfirm
+// drifted away from its trigger inside the scrolling conversation list.
+const deleteTarget = ref<string | null>(null)
 const renameText = ref('')
 function openRenameMenu(conversation: Conversation, event: MouseEvent) {
   renameMenu.value = { id: conversation.id, x: event.clientX, y: event.clientY }
@@ -2313,20 +2324,16 @@ onBeforeUnmount(() => {
         >
           <span class="conversation-title">{{ conversation.title }}</span>
           <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-          <NPopconfirm
-            :positive-text="t('deleteConfirmOk')"
-            :negative-text="t('deleteConfirmCancel')"
-            :positive-button-props="{ type: 'error' }"
-            @positive-click="deleteConversation(conversation.id)"
+          <span
+            class="conversation-delete"
+            role="button"
+            tabindex="0"
+            aria-label="删除会话"
+            @click.stop="deleteTarget = conversation.id"
+            @keydown.enter.prevent="deleteTarget = conversation.id"
           >
-            <template #trigger>
-              <span class="conversation-delete" role="button" tabindex="0">
-                <NIcon :component="TrashOutline" />
-              </span>
-            </template>
-            <strong>{{ t('deleteConfirmTitle') }}</strong>
-            <span class="delete-confirm-body">{{ t('deleteConfirmBody') }}</span>
-          </NPopconfirm>
+            <NIcon :component="TrashOutline" />
+          </span>
         </button>
       </nav>
 
@@ -2925,6 +2932,23 @@ onBeforeUnmount(() => {
         </template>
       </NCard>
     </NModal>
+
+    <!-- Centered delete-session confirmation (NPopconfirm drifted inside the
+         scrolling conversation list, so this uses a centered dialog instead) -->
+    <NModal
+      preset="dialog"
+      type="warning"
+      :show="Boolean(deleteTarget)"
+      :title="t('deleteConfirmTitle')"
+      :content="t('deleteConfirmBody')"
+      :positive-text="t('deleteConfirmOk')"
+      :negative-text="t('deleteConfirmCancel')"
+      :positive-button-props="{ type: 'error' }"
+      @positive-click="confirmDeleteConversation"
+      @negative-click="deleteTarget = null"
+      @close="deleteTarget = null"
+      @update:show="(visible) => { if (!visible) deleteTarget = null }"
+    />
 
     <!-- Knowledge base management: external moofile_base admin UI in an iframe -->
     <KnowledgeManageModal
