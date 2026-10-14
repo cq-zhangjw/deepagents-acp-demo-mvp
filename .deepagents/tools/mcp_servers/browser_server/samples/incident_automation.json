@@ -185,7 +185,7 @@
             "element_iframe": "#gsft_main",
             "wait_selector": null,
             "wait_iframe": null,
-            "value": "佳 许",
+            "value": "xxx",
             "timeout": null,
             "max_retry": null
         },
@@ -215,7 +215,7 @@
             "element_iframe": "#gsft_main",
             "wait_selector": null,
             "wait_iframe": null,
-            "value": "金虹 李",
+            "value": "xxx",
             "timeout": null,
             "max_retry": null
         },
