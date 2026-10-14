@@ -2723,21 +2723,40 @@ async function refreshTimerSessionQuiet(id: string) {
 }
 
 let timerRefreshInterval: number | undefined
-watch(activeConversationId, (id) => {
+/** 停止定时任务会话轮询（切换会话 / 面板关闭 / 任务删除时调用）。 */
+function stopTimerPolling() {
   if (timerRefreshInterval !== undefined) {
     window.clearInterval(timerRefreshInterval)
     timerRefreshInterval = undefined
   }
+}
+/** 启动定时任务会话轮询：每 5s 静默更新履历 + 执行记录。 */
+function startTimerPolling(id: string) {
+  stopTimerPolling()
+  timerRefreshInterval = window.setInterval(() => {
+    if (activeConversationId.value === id) {
+      void refreshTimerSessionQuiet(id)
+      void loadTimers() // 执行履历 / 状态同步刷新
+    } else {
+      stopTimerPolling()
+    }
+  }, 5000)
+}
+watch(activeConversationId, (id) => {
+  stopTimerPolling()
+  if (id && String(id).startsWith('timer-') && rightPanelVisible.value) {
+    startTimerPolling(id)
+  }
+})
+// 面板关闭时停止轮询；重新打开且当前为定时任务会话时恢复
+watch(rightPanelVisible, (visible) => {
+  if (!visible) {
+    stopTimerPolling()
+    return
+  }
+  const id = activeConversationId.value
   if (id && String(id).startsWith('timer-')) {
-    timerRefreshInterval = window.setInterval(() => {
-      if (activeConversationId.value === id) {
-        void refreshTimerSessionQuiet(id)
-        void loadTimers() // 执行履历 / 状态同步刷新
-      } else if (timerRefreshInterval !== undefined) {
-        window.clearInterval(timerRefreshInterval)
-        timerRefreshInterval = undefined
-      }
-    }, 5000)
+    startTimerPolling(id)
   }
 })
 

@@ -100,8 +100,12 @@ def _load_agent_md(agent_name: str) -> str:
     return content.strip()
 
 
-def get_system_prompt() -> str:
-    """Return the system prompt for the agent, appending agent md content when available."""
+def get_system_prompt(agent_name: str | None = None) -> str:
+    """Return the system prompt for the agent, appending agent md content when available.
+
+    `agent_name` selects `.deepagents/agents/<name>.agent.md` (per-task agent in the
+    timer engine); when omitted it falls back to the startup `AGENT_NAME` env var.
+    """
     if os.path.exists("./AGENTS.md"):
         with open("./AGENTS.md", "r", encoding="utf-8") as f:
             base_prompt = f.read()
@@ -117,7 +121,8 @@ def get_system_prompt() -> str:
             "5. Always report back to the user when the whole task is finished.\n"
             "Always respond in the user's language."
         )
-    agent_md = _load_agent_md(AGENT_NAME)
+    name = (agent_name or os.getenv("AGENT_NAME", "") or "default").strip() or "default"
+    agent_md = _load_agent_md(name)
     if agent_md:
         return f"{base_prompt}\n\n# Agent Descriptions\n{agent_md}"
     return base_prompt
@@ -282,7 +287,7 @@ def build_agent(
         # directory so ls/read_file/glob resolve relative paths correctly
         # instead of guessing a drive root.
         system_prompt=(
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{get_system_prompt(agent_name)}\n\n"
             f"# 当前工作目录\n"
             f"工作目录为：{str(Path(agent_root_dir).resolve())}\n"
             f"内置文件工具（ls/read_file/glob/grep 等）可直接访问 Windows 全局绝对路径，"
