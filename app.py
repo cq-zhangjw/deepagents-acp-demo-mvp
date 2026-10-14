@@ -26,6 +26,7 @@ from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
+from api.timers import router as timers_router
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -68,16 +69,34 @@ async def _open_home_in_default_browser(url: str) -> None:
 
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    """Startup: optionally open the gateway page in the default browser.
+    """Startup: optionally open the gateway page in the default browser, and
+    start the scheduled-task ticker (TIMER_ENABLED, default on).
 
-    Controlled by the OPEN_BROWSER env var (default on). The page opens in a
-    background task, so startup is never blocked by the browser.
+    The browser opens in a background task so startup is never blocked; the
+    timer scheduler runs until the app shuts down.
     """
     if _should_open_browser():
         host = "127.0.0.1"
         port = int(os.getenv("APP_PORT") or 8000)
         asyncio.create_task(_open_home_in_default_browser(f"http://{host}:{port}"))
-    yield
+
+    # Recover tasks that were left in `running` by a previous process (D10),
+    # then start the scheduler loop (skipped when TIMER_ENABLED=false).
+    from api import timers_engine
+
+    try:
+        timers_engine.recover_running()
+    except Exception:  # noqa: BLE001 - recovery must never break startup
+        pass
+    timers_task = asyncio.create_task(timers_engine.scheduler_loop())
+    try:
+        yield
+    finally:
+        timers_task.cancel()
+        try:
+            await timers_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
 
 app = FastAPI(title="ACP client base", lifespan=_app_lifespan)
@@ -94,6 +113,8 @@ app.include_router(manage_router)
 app.include_router(context_router)
 # attachment (image/file) sub-router: /api/attachments (MooFile-backed)
 app.include_router(attachments_router)
+# scheduled tasks sub-router: /api/timers (MooFile-backed, cron/interval)
+app.include_router(timers_router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 

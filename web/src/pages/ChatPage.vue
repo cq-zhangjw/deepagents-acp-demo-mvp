@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { cleanSpeechText, getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
 import {
@@ -27,6 +27,7 @@ import {
   SparklesOutline,
   StopCircleOutline,
   TrashOutline,
+  TimeOutline,
   VolumeHighOutline,
   VolumeMuteOutline
 } from '@vicons/ionicons5'
@@ -40,7 +41,10 @@ import {
   NDropdown,
   NIcon,
   NInput,
+  NInputNumber,
   NModal,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSpin,
   NSwitch,
@@ -629,15 +633,16 @@ async function loadContextSize() {
 
 const sidebarCollapsed = ref(false)
 const rightPanelVisible = ref(false)
-const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'knowledge' | 'settings'>('skills')
+const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings'>('skills')
 const rightPanelTitle = computed(() =>
   rightPanelTab.value === 'skills' ? actionLabels.value.skills
     : rightPanelTab.value === 'tools' ? actionLabels.value.tools
       : rightPanelTab.value === 'agents' ? actionLabels.value.agents
         : rightPanelTab.value === 'knowledge' ? actionLabels.value.knowledge
-          : actionLabels.value.settings
+          : rightPanelTab.value === 'timers' ? t('timers.panelTitle')
+            : actionLabels.value.settings
 )
-function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'settings') {
+function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
   panelQuery.value = ''
@@ -706,6 +711,191 @@ function openKnowledgeManager() {
   // so the management page feels like part of the application.
   knowledgeManageVisible.value = true
 }
+
+// ---------- Timers panel (scheduled tasks) ----------
+interface TimerRun {
+  id: string
+  startedAt: number
+  finishedAt?: number
+  status: string
+  outputSummary?: string
+}
+interface TimerTask {
+  id: string
+  name: string
+  prompt: string
+  schedule?: string | null
+  intervalMinutes?: number | null
+  sessionId: string
+  enabled: boolean
+  lastRunAt?: number | null
+  lastStatus?: string
+  runHistory?: TimerRun[]
+  createdAt: number
+  updatedAt: number
+}
+
+const timers = ref<TimerTask[]>([])
+const timerSearch = ref('')
+const timerEditVisible = ref(false)
+const timerEditTarget = ref<TimerTask | null>(null)
+const timerDraft = reactive<{
+  name: string
+  prompt: string
+  mode: 'cron' | 'interval'
+  cron: string
+  interval: number
+  enabled: boolean
+}>({ name: '', prompt: '', mode: 'cron', cron: '', interval: 30, enabled: true })
+const timerDeleteTarget = ref<TimerTask | null>(null)
+const timerRunsVisible = ref<string | null>(null)
+const timerBusyId = ref<string | null>(null)
+
+const filteredTimers = computed(() => {
+  const q = timerSearch.value.trim().toLowerCase()
+  if (!q) return timers.value
+  return timers.value.filter(t =>
+    t.name.toLowerCase().includes(q) || t.prompt.toLowerCase().includes(q)
+  )
+})
+
+async function loadTimers() {
+  try {
+    const res = await fetch('/api/timers')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    timers.value = await res.json()
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  }
+}
+
+function timerStatusLabel(task: TimerTask): string {
+  const s = task.lastStatus || 'never'
+  switch (s) {
+    case 'running': return t('timers.statusRunning')
+    case 'success': return t('timers.statusSuccess')
+    case 'failed': return t('timers.statusFailed')
+    case 'skipped': return t('timers.statusSkipped')
+    case 'cancelled': return t('timers.statusCancelled')
+    default: return t('timers.statusNever')
+  }
+}
+
+function timerStatusType(task: TimerTask): 'info' | 'success' | 'error' | 'warning' | 'default' {
+  const s = task.lastStatus || 'never'
+  if (s === 'success') return 'success'
+  if (s === 'failed') return 'error'
+  if (s === 'running') return 'info'
+  if (s === 'skipped' || s === 'cancelled') return 'warning'
+  return 'default'
+}
+
+function timerScheduleLabel(task: TimerTask): string {
+  if (task.schedule) return `${t('timers.scheduleCron')}: ${task.schedule}`
+  if (task.intervalMinutes) return `${t('timers.scheduleInterval')}: ${task.intervalMinutes}`
+  return '--'
+}
+
+function formatTimerTime(ms?: number | null): string {
+  if (!ms) return t('timers.never')
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+async function toggleTimer(task: TimerTask) {
+  const next = !task.enabled
+  try {
+    const res = await fetch(`/api/timers/${task.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    task.enabled = next
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  }
+}
+
+function openTimerEdit(task?: TimerTask) {
+  timerEditTarget.value = task || null
+  timerDraft.name = task?.name || ''
+  timerDraft.prompt = task?.prompt || ''
+  timerDraft.mode = task?.schedule ? 'cron' : task?.intervalMinutes ? 'interval' : 'cron'
+  timerDraft.cron = task?.schedule || ''
+  timerDraft.interval = task?.intervalMinutes ?? 30
+  timerDraft.enabled = task?.enabled ?? true
+  timerEditVisible.value = true
+}
+
+async function saveTimer() {
+  if (!timerDraft.name.trim() || !timerDraft.prompt.trim()) {
+    message.warning(t('timers.name'))
+    return
+  }
+  if (timerDraft.mode === 'cron' && !timerDraft.cron.trim()) {
+    message.warning(t('timers.scheduleCron'))
+    return
+  }
+  const payload = {
+    name: timerDraft.name.trim(),
+    prompt: timerDraft.prompt.trim(),
+    enabled: timerDraft.enabled,
+    schedule: timerDraft.mode === 'cron' ? timerDraft.cron.trim() : null,
+    intervalMinutes: timerDraft.mode === 'interval' ? timerDraft.interval : null,
+  }
+  try {
+    const isEdit = !!timerEditTarget.value
+    const res = await fetch(isEdit ? `/api/timers/${timerEditTarget.value!.id}` : '/api/timers', {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      throw new Error((data && data.detail) || `HTTP ${res.status}`)
+    }
+    message.success(t('timers.save'))
+    timerEditVisible.value = false
+    await loadTimers()
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  }
+}
+
+async function confirmDeleteTimer() {
+  const task = timerDeleteTarget.value
+  if (!task) return
+  timerDeleteTarget.value = null
+  try {
+    const res = await fetch(`/api/timers/${task.id}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    await loadTimers()
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  }
+}
+
+async function runTimer(task: TimerTask) {
+  if (timerBusyId.value) return
+  timerBusyId.value = task.id
+  try {
+    const res = await fetch(`/api/timers/${task.id}/run`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    message.success(t('timers.runDone'))
+    await loadTimers()
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  } finally {
+    timerBusyId.value = null
+  }
+}
+
+function toggleTimerRuns(id: string) {
+  timerRunsVisible.value = timerRunsVisible.value === id ? null : id
+}
+
 
 /** Start the external moofile_base backend and refresh the panel. */
 const knowledgeStarting = ref(false)
@@ -2272,6 +2462,7 @@ watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLoca
 onMounted(async () => {
   void loadContextSize()
   setupChatBridge()
+  void loadTimers()
   try {
     await loadHistory()
     if (!conversations.value.length) createConversation()
@@ -2650,7 +2841,15 @@ onBeforeUnmount(() => {
                   </template>
                   {{ t('cancel') }}
                 </NTooltip>
-                <NTooltip v-else>
+                <NTooltip>
+                  <template #trigger>
+                    <NButton quaternary circle size="small" class="toolbar-timer-btn" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
+                      <template #icon><NIcon :component="TimeOutline" /></template>
+                    </NButton>
+                  </template>
+                  {{ t('timers.panelTitle') }}
+                </NTooltip>
+                <NTooltip v-if="!isRunning">
                   <template #trigger>
                     <NButton circle type="primary" size="small" :aria-label="t('send')" :disabled="(!input.trim() && !attachments.length) || isUploading" @click="submitPrompt">
                       <template #icon><NIcon :component="PaperPlaneOutline" /></template>
@@ -2658,8 +2857,7 @@ onBeforeUnmount(() => {
                   </template>
                   {{ t('send') }}
                 </NTooltip>
-              </div>
-            </div>
+              </div>            </div>
           </div>
         </div>
       </div>
@@ -2821,12 +3019,105 @@ onBeforeUnmount(() => {
     <NButton size="small" :disabled="!knowledgeConfig.reachable" @click="openKnowledgeManager()">{{ actionLabels.knowledgeManage }}</NButton>
   </div>
 </div>
+<!-- 定时任务管理 -->
+        <div v-else-if="rightPanelTab === 'timers'" class="panel-section panel-section--timers">
+          <div class="panel-section-actions">
+            <NInput v-model:value="timerSearch" size="small" clearable :placeholder="t('timers.search')" class="panel-search-input">
+              <template #prefix><NIcon :component="SearchOutline" /></template>
+            </NInput>
+            <NButton size="small" type="primary" @click="openTimerEdit()">
+              <template #icon><NIcon :component="AddOutline" /></template>{{ t('timers.newTask') }}
+            </NButton>
+          </div>
+          <div v-if="!filteredTimers.length" class="panel-placeholder"><p>{{ t('timers.noTasks') }}</p></div>
+          <div v-for="task in filteredTimers" :key="task.id" class="manage-card" :class="{ 'manage-card--disabled': !task.enabled }">
+            <div class="manage-card-head">
+              <strong class="manage-card-title" :title="task.name">{{ task.name }}</strong>
+              <NSwitch size="small" :value="task.enabled" @update:value="toggleTimer(task)" />
+            </div>
+            <p class="manage-card-desc" :title="task.prompt">{{ task.prompt }}</p>
+            <div class="manage-card-chips">
+              <NTag size="small" type="info">{{ timerScheduleLabel(task) }}</NTag>
+              <NTag size="small" :type="timerStatusType(task)">{{ timerStatusLabel(task) }}</NTag>
+              <span v-if="task.lastRunAt" class="timer-last-run">{{ t('timers.lastRun') }}: {{ formatTimerTime(task.lastRunAt) }}</span>
+            </div>
+            <div class="manage-card-actions">
+              <NButton quaternary size="tiny" :loading="timerBusyId === task.id" :disabled="!!timerBusyId" @click="runTimer(task)">{{ t('timers.run') }}</NButton>
+              <NButton quaternary size="tiny" @click="openTimerEdit(task)">{{ actionLabels.edit }}</NButton>
+              <NButton quaternary size="tiny" type="error" @click="timerDeleteTarget = task">{{ actionLabels.delete }}</NButton>
+              <NButton quaternary size="tiny" @click="toggleTimerRuns(task.id)">{{ t('timers.history') }}<span v-if="(task.runHistory || []).length" class="timer-runs-count">{{ task.runHistory!.length }}</span></NButton>
+            </div>
+            <div v-if="timerRunsVisible === task.id" class="timer-runs">
+              <div v-for="run in task.runHistory || []" :key="run.id" class="timer-run">
+                <div class="timer-run-head">
+                  <NTag size="tiny" :type="run.status === 'success' ? 'success' : run.status === 'failed' ? 'error' : run.status === 'running' ? 'info' : 'default'">{{ run.status }}</NTag>
+                  <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt"> → {{ formatTimerTime(run.finishedAt) }}</template></span>
+                </div>
+                <p v-if="run.outputSummary" class="timer-run-summary">{{ run.outputSummary }}</p>
+              </div>
+              <div v-if="!(task.runHistory || []).length" class="panel-placeholder"><p>{{ t('timers.noRuns') }}</p></div>
+            </div>
+          </div>
+        </div>
 <!-- 设置（占位） -->
         <div v-else class="panel-placeholder">
           <p>{{ actionLabels.panelComingSoon }}</p>
         </div>
       </div>
     </aside>
+
+    <!-- 定时任务新建/编辑弹窗 -->
+    <NModal :show="timerEditVisible" :mask-closable="false" @after-leave="timerEditVisible = false">
+      <NCard :title="timerEditTarget ? t('timers.editTask') : t('timers.createTitle')" :bordered="false" class="manage-modal" role="dialog">
+        <div class="manage-form">
+          <label class="manage-form-label">{{ t('timers.name') }}</label>
+          <NInput v-model:value="timerDraft.name" size="small" :placeholder="t('timers.namePlaceholder')" />
+          <label class="manage-form-label">{{ t('timers.prompt') }}</label>
+          <NInput v-model:value="timerDraft.prompt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" :placeholder="t('timers.promptPlaceholder')" />
+          <div class="timer-schedule-mode">
+            <NRadioGroup v-model:value="timerDraft.mode" size="small">
+              <NRadioButton value="cron">{{ t('timers.scheduleCron') }}</NRadioButton>
+              <NRadioButton value="interval">{{ t('timers.scheduleInterval') }}</NRadioButton>
+            </NRadioGroup>
+          </div>
+          <div v-if="timerDraft.mode === 'cron'">
+            <label class="manage-form-label">{{ t('timers.scheduleCron') }}</label>
+            <NInput v-model:value="timerDraft.cron" size="small" :placeholder="t('timers.cronPlaceholder')" />
+          </div>
+          <div v-else>
+            <label class="manage-form-label">{{ t('timers.scheduleInterval') }}</label>
+            <NInputNumber v-model:value="timerDraft.interval" size="small" :min="1" :max="10080" style="width: 100%" />
+          </div>
+          <div class="manage-form-row">
+            <NSwitch v-model:value="timerDraft.enabled" size="small" />
+            <span>{{ t('timers.enabled') }}</span>
+          </div>
+        </div>
+        <template #footer>
+          <div class="manage-modal-footer">
+            <NButton size="small" @click="timerEditVisible = false">{{ t('timers.close') }}</NButton>
+            <NButton size="small" type="primary" @click="saveTimer">{{ t('timers.save') }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+
+    <!-- 定时任务删除确认 -->
+    <NModal
+      :show="!!timerDeleteTarget"
+      :mask-closable="false"
+      @update:show="(visible) => { if (!visible) timerDeleteTarget = null }"
+    >
+      <NCard :title="t('timers.deleteConfirmTitle')" :bordered="false" class="manage-modal" role="dialog">
+        <p class="delete-confirm-body">{{ t('timers.deleteConfirmBody') }}</p>
+        <template #footer>
+          <div class="manage-modal-footer">
+            <NButton size="small" @click="timerDeleteTarget = null">{{ t('deleteConfirmCancel') }}</NButton>
+            <NButton size="small" type="error" @click="confirmDeleteTimer">{{ t('deleteConfirmOk') }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
 
     <!-- 技能新建/编辑弹窗 -->
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
@@ -3001,6 +3292,19 @@ onBeforeUnmount(() => {
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
 .right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
 .panel-search { position:sticky; top:0; z-index:2; background:var(--surface); padding-bottom:6px; }
+.panel-section-actions { display:flex; align-items:center; gap:8px; }
+.panel-section-actions .panel-search-input { flex:1; }
+.manage-form-label { display:block; margin:8px 0 4px; color:var(--subtle); font-size:12px; }
+.timer-schedule-mode { margin:12px 0 2px; }
+.manage-form-row { display:flex; align-items:center; gap:8px; margin-top:14px; color:var(--subtle); font-size:13px; }
+.manage-modal-footer { display:flex; justify-content:flex-end; gap:8px; }
+.timer-last-run { color:var(--subtle); font-size:11px; }
+.timer-runs-count { margin-left:4px; color:var(--subtle); font-size:11px; }
+.timer-runs { display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+.timer-run { padding:6px 8px; background:var(--surface); border:1px solid var(--border); border-radius:6px; }
+.timer-run-head { display:flex; align-items:center; gap:6px; }
+.timer-run-time { color:var(--subtle); font-size:11px; }
+.timer-run-summary { margin:4px 0 0; color:#405166; font-size:12px; line-height:1.5; word-break:break-word; max-height:64px; overflow:hidden; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section > .n-button { align-self:flex-start; }
 .panel-group-head { display:flex; align-items:center; gap:6px; margin-top:2px; }

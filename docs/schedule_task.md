@@ -1,7 +1,9 @@
 # 会话持久化改造 & 定时任务方案（Schedule & Task）
 
 > 状态：方案已拍板，进入实施。本文档为设计与决策记录，代码实现以本文件为准。
-> **实施进度（2026-10-11 核对）**：阶段一「会话持久化改造（后端权威存储）」**已实装**（`/api/history` GET/PUT/DELETE + MooFile `db/history`，前端进会话强制 GET、不推送历史、不再依赖 localStorage，`utils/moofile_util.py` 封装）；阶段二「定时任务」**尚未实装**（`api/timers.py` / 调度器 / 任务面板均未落地，待后续迭代，以本文档 4-6 章为实施蓝本）。
+> **实施进度（2026-10-14 核对）**：
+> - 阶段一「会话持久化改造（后端权威存储）」**已实装**（`/api/history` GET/PUT/DELETE + MooFile `db/history`，前端进会话强制 GET、不推送历史、不再依赖 localStorage，`utils/moofile_util.py` 封装）。
+> - 阶段二「定时任务」**已实装**：后端 `api/timers_engine.py`（MooFile `db/db_timer_tasks_*` 数据层 + 无人值守 ACP 执行引擎 + 调度器）+ `api/timers.py`（CRUD/手动执行/履历 API）+ `app.py` 挂载与 lifespan 启动调度器；前端右侧面板 `timers` tab（时钟入口：任务列表/搜索/新建/编辑/启停/立即执行/删除/执行记录）；`croniter` 依赖已入 venv；`.env` / `.env.bak` 增加 `TIMER_TASKS_ROOT` / `TIMER_ENABLED` / `TIMER_TICK_SECONDS`。测试与验证清单见文末「实施验证记录」。
 
 ## 1. 背景与目标
 
@@ -179,4 +181,40 @@ TIMER_TICK_SECONDS=30
 
 ---
 
-（阶段二定时任务的验证清单在阶段一实施完成后追加。）
+## 实施验证记录（2026-10-14，阶段一与阶段二）
+
+### 阶段一（会话持久化）验证
+
+- [x] 前端：新建会话 → 刷新恢复；发送消息 → AI 流式 → 完成后刷新恢复（含工具调用、失败、取消态）
+- [x] 前端：删除会话 → 刷新不残留；重命名 / 编辑消息 → 刷新恢复
+- [x] 前端：流式中切走再切回 → 不被历史覆盖（内存态保护）
+- [x] 网络面板：流式期间无 history PUT 请求
+- [x] 旧数据迁移：清空后端 + localStorage 有旧数据 → 首次启动导入一次
+
+### 阶段二（定时任务）验证
+
+后端（隔离环境单测 + 8010 真实实例 e2e）：
+
+- [x] `py_compile` 通过：`app.py` / `api/timers.py` / `api/timers_engine.py`
+- [x] 数据层 CRUD：save / get / list（enabled 过滤）/ delete；`runHistory` 追加与 50 条截断
+- [x] 调度判断 `_is_due`：cron 命中（`* * * * *` 在 10:00:30 命中、`0 8 * * *` 在 10:00 不命中）；interval（首次立即、5 分钟内不触发、5 分钟后触发）
+- [x] 会话履历写入：`append_timer_start`（user 标记 + assistant pending 占位）→ `append_timer_end`（覆盖为 completed + finalText），消息结构对齐前端 `Conversation` / `AssistantMessage`
+- [x] 最终文本提取 `_extract_ai_text`：AIMessage 纯文本 / 多段 content 列表
+- [x] API：POST（自动建专用会话并写 history，侧栏可见）/ GET 列表 / PUT 更新 / DELETE / GET history / 404；schedule 与 intervalMinutes 二选一校验
+- [x] 真实调度触发：`TIMER_TICK_SECONDS=10` 起 8010 实例，intervalMinutes=1 任务与 `* * * * *` cron 任务均按周期自动触发；无人值守执行经模型端点返回 `success`，`outputSummary` / `lastStatus` / `runHistory` 正确回写
+- [x] 手动执行 `POST /api/timers/{id}/run`：同步返回 `run.status=success`
+- [x] 会话履历可见：`GET /api/history` 返回 `timer-*` 专用会话（标题 `【定时任务】xxx`），消息含 user 触发标记与 assistant 最终文本
+- [x] 重启恢复（D10）：`recover_running` 把遗留 `running` 补 `cancelled`
+
+前端（playwright headless + 浏览器实测）：
+
+- [x] composer 发送按钮左侧时钟入口 → 右侧面板 `timers` tab（标题"定时任务"）
+- [x] 面板：搜索框 + 新建按钮；任务卡片（名称 / prompt / 调度标签 / 状态标签 / 上次执行时间）
+- [x] 新建弹窗（名称 / prompt / cron-间隔切换 / 启用开关）→ 保存 → 列表刷新出现
+- [x] 删除（确认弹窗）→ 列表移除；编辑 / 立即执行 / 执行记录入口齐全
+- [x] 修复项：`reactive` 未 import 导致白屏（`ReferenceError: reactive is not defined`）；新建任务默认调度方式修正为 cron（原逻辑对空任务误走 interval）
+
+### 已知说明
+
+- 定时任务专用会话（`timer-*`）由后端直接写入 history，前端展示为只读履历；发送端验证时该会话因无真实 ACP session 会提示 `unverifiable session kept`（非致命，lazy-recreated 仅在用户手动发送时触发）。
+- 任务名/触发文本中的中文在 PowerShell 直传 JSON 时会因终端编码损坏为 `??`（服务端 UTF-8 数据正常）；通过 Python / 前端 UI 写入无此问题。
