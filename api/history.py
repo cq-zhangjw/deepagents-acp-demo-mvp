@@ -186,4 +186,14 @@ def delete_history(cid: str) -> dict[str, Any]:
         _sc_delete_session(sc_session)
     except Exception:  # noqa: BLE001 - session cleanup must never fail the delete
         logger.exception("[history] session cleanup failed for %s", cid)
+    # 双向联动：删除定时任务会话时，一并删除绑定的定时任务。
+    # 先删会话记录（上文），delete_task 再次清理会话时幂等，不会递归。
+    try:
+        from api.timers_engine import delete_task, list_tasks
+
+        for t in list_tasks():
+            if (t.get("sessionId") or None) == cid:
+                delete_task(t["id"])
+    except Exception:  # noqa: BLE001 - linked-task cleanup must never fail the delete
+        logger.exception("[history] delete linked timer task failed cid=%s", cid)
     return {"ok": True}

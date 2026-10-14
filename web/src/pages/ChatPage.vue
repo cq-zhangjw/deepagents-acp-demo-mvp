@@ -185,6 +185,10 @@ const timerConversations = computed(() =>
 const normalConversations = computed(() =>
   filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-'))
 )
+/** 会话对应的定时任务（无绑定返回 undefined）。 */
+function timerTaskOf(cid: string) {
+  return timers.value.find((t) => t.sessionId === cid)
+}
 const input = ref('')
 const attachments = ref<AttachmentRef[]>([])
 const previewImage = ref<string | null>(null)
@@ -540,6 +544,13 @@ function deleteConversation(id: string) {
     activeConversationId.value = conversations.value[0]?.id ?? ''
   }
   void deleteConversationRemote(id)
+  // 双向联动：删除定时任务会话时，一并删除绑定的定时任务
+  const linked = timers.value.find((t) => t.sessionId === id)
+  if (linked) {
+    void fetch(`/api/timers/${linked.id}`, { method: 'DELETE' })
+      .catch(() => undefined)
+      .finally(() => void loadTimers())
+  }
 }
 
 /** Confirm handler for the centered delete dialog: clear the pending target
@@ -1070,6 +1081,14 @@ async function confirmDeleteTimer() {
     const res = await fetch(`/api/timers/${task.id}`, { method: 'DELETE' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     await loadTimers()
+    // 双向联动：删除任务时，一并删除绑定会话
+    if (task.sessionId) {
+      conversations.value = conversations.value.filter((c) => c.id !== task.sessionId)
+      if (activeConversationId.value === task.sessionId) {
+        activeConversationId.value = conversations.value[0]?.id ?? ''
+      }
+      void deleteConversationRemote(task.sessionId)
+    }
   } catch (e: any) {
     message.error(e.message || String(e))
   }
@@ -2831,7 +2850,7 @@ onBeforeUnmount(() => {
               v-for="conversation in timerConversations"
               :key="conversation.id"
               class="conversation-item"
-              :class="{ active: conversation.id === activeConversationId }"
+              :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
               @click="selectConversation(conversation.id)"
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
@@ -3191,14 +3210,6 @@ onBeforeUnmount(() => {
     <aside class="right-panel" :class="{ 'right-panel--open': rightPanelVisible }">
       <div class="right-panel-header">
         <strong>{{ rightPanelTitle }}</strong>
-        <div class="right-panel-header-actions">
-          <NButton v-if="rightPanelTab === 'timers'" quaternary circle size="tiny" :aria-label="t('timers.refresh')" :loading="timersRefreshing" @click="refreshTimerPanel">
-            <template #icon><NIcon :component="RefreshOutline" /></template>
-          </NButton>
-          <NButton quaternary circle size="tiny" :aria-label="actionLabels.closePanel" @click.capture="rightPanelVisible = false">
-            <template #icon><NIcon :component="CloseOutline" /></template>
-          </NButton>
-        </div>
       </div>
       <div class="right-panel-body">
         <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge'" class="panel-search">
@@ -3632,11 +3643,11 @@ onBeforeUnmount(() => {
 .new-conversation { justify-content:flex-start; margin-bottom:16px; } .conversation-search { padding:0 2px 8px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
  .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:14px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
 .conversation-list { display:flex; flex:1 1 auto; min-height:0; flex-direction:column; gap:3px; overflow-y:auto; } .conversation-list::-webkit-scrollbar { width:6px; } .conversation-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
-.conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; }
+.conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
 .workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .language-icon { color:var(--subtle); font-size:17px; } .locale-select { width:102px; }
-.timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
+.timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .timeline::-webkit-scrollbar { width:6px; } .timeline::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .timeline::-webkit-scrollbar-track { background:transparent; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
@@ -3647,7 +3658,7 @@ onBeforeUnmount(() => {
 .hidden-action { display:inline-flex; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
-.right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-header-actions { display:flex; align-items:center; gap:2px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+.right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
 .panel-search { position:sticky; top:0; z-index:2; background:var(--surface); padding-bottom:6px; }
 .panel-section-actions { display:flex; align-items:center; gap:8px; }
 .panel-section-actions .panel-search-input { flex:1; }

@@ -157,10 +157,22 @@ def _migrate_record_type() -> None:
 
 
 def delete_task(task_id: str) -> None:
+    """删除任务；若绑定会话，则联动删除会话（双向联动：任务⇄会话）。"""
     util = _util()
     _ensure(util)
+    linked_cid: str | None = None
     with _LOCK:
+        rows = util.query_data(_TIMER_DB, {"id": task_id}, _INDEXES)
+        if rows:
+            linked_cid = rows[0].get("sessionId") or None
         util.delete_data(_TIMER_DB, {"id": task_id}, _INDEXES)
+    if linked_cid:
+        try:
+            from api.history import delete_history
+
+            delete_history(linked_cid)  # 会话已删除后此处幂等，不会递归
+        except Exception:  # noqa: BLE001 - linked-session cleanup must not fail the delete
+            logger.exception("[timers] delete linked session failed cid=%s", linked_cid)
 
 
 # ---- 无人值守 ACP 连接替身 ----
