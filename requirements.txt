@@ -4,8 +4,15 @@ python-multipart==0.0.32
 deepagents==0.7.19
 deepagents-acp==0.0.12
 langchain-openai==1.6.6
+langchain-core==1.6.9
+langgraph==1.2.14
 langgraph-checkpoint-sqlite==3.1.1
 pillow==12.3.0
+
+# Env loading + scheduled tasks (Schedule & Task: croniter cron / interval scheduler)
+python-dotenv==1.2.4
+croniter==6.2.4
+aiosqlite==0.22.1
 
 # Windows SAPI fallback TTS (win32com; Windows only, no model files)
 pywin32; sys_platform == "win32"
