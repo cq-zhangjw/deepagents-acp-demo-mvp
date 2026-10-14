@@ -394,6 +394,41 @@ async def run_automation(steps: list, wait_user: bool=True):
 
 
 @mcp.tool()
+async def browser_goto_url(
+    url: str,
+    timeout: int = 30000,
+    wait_selector: str = None,
+    wait_timeout: int = None,
+) -> str:
+    """Open a URL in a new page with configurable waiting.
+
+    Args:
+        url: The URL to navigate to.
+        timeout: Maximum time in milliseconds to wait for the page to load
+            (default 30000).
+        wait_selector: Optional CSS selector to wait for after navigation,
+            e.g. a container that must finish rendering. Use it when the page
+            loads content asynchronously.
+        wait_timeout: Maximum time in milliseconds to wait for the selector
+            (defaults to ``timeout``).
+
+    Returns:
+        A success message with the page URL, or an error message.
+    """
+    try:
+        await _ensure_browser()
+        page = await browser.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+        if wait_selector is not None:
+            await page.locator(wait_selector).wait_for(
+                state="visible", timeout=wait_timeout or timeout
+            )
+        return f"Navigated to {page.url}. {len(browser.pages)} page(s) open."
+    except Exception:
+        return f"Error: {traceback.format_exc()}"
+
+
+@mcp.tool()
 async def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
     """Capture a screenshot of the current (most recently opened) page.
 

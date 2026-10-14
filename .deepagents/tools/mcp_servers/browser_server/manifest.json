@@ -15,6 +15,59 @@
   "capabilities": {},
   "tools": [
     {
+      "name": "browser_goto_url",
+      "title": "Browser Goto Url",
+      "description": "Open a URL in a new page with configurable waiting.",
+      "inputSchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to navigate to."
+          },
+          "timeout": {
+            "default": 30000,
+            "type": "integer",
+            "description": "Maximum time in milliseconds to wait for the page to load\n(default 30000)."
+          },
+          "wait_selector": {
+            "default": null,
+            "type": "string",
+            "description": "Optional CSS selector to wait for after navigation,\ne.g. a container that must finish rendering. Use it when the page\nloads content asynchronously."
+          },
+          "wait_timeout": {
+            "default": null,
+            "type": "integer",
+            "description": "Maximum time in milliseconds to wait for the selector\n(defaults to ``timeout``)."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "execution": null,
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object",
+        "x-fastmcp-wrap-result": true
+      },
+      "icons": null,
+      "annotations": null,
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
       "name": "browser_screenshot",
       "title": "Browser Screenshot",
       "description": "Capture a screenshot of the current (most recently opened) page.",
