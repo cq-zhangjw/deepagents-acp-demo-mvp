@@ -118,6 +118,9 @@ def get_task(task_id: str) -> dict[str, Any] | None:
 
 
 def save_task(task: dict[str, Any]) -> None:
+    # 对齐 moofile 服务规范：数据行必须带 recordType="record"，
+    # 否则 moofile 管理界面（按 recordType 过滤）看不到任何数据。
+    task = {**task, "recordType": "record"}
     util = _util()
     _ensure(util)
     with _LOCK:
@@ -126,6 +129,31 @@ def save_task(task: dict[str, Any]) -> None:
             util.update_data(_TIMER_DB, {"id": task["id"]}, task, _INDEXES)
         else:
             util.insert_data(_TIMER_DB, [task], _INDEXES)
+
+
+def _migrate_record_type() -> None:
+    """旧数据迁移：给已写入、缺少 recordType 的任务记录补 recordType="record"。
+
+    幂等：已有该字段的记录跳过。启动时由 recover_running 调用一次。
+    """
+    try:
+        util = _util()
+        if not util.database_exists(_TIMER_DB):
+            return
+        with _LOCK:
+            rows = util.query_data(_TIMER_DB, {}, _INDEXES)
+            missing = [r for r in rows if r.get("recordType") != "record"]
+            for r in missing:
+                util.update_data(
+                    _TIMER_DB,
+                    {"id": r["id"]},
+                    {"recordType": "record"},
+                    _INDEXES,
+                )
+            if missing:
+                logger.info("[timers] migrated %d task record(s) with recordType", len(missing))
+    except Exception:  # noqa: BLE001 - migration must never break startup
+        logger.warning("[timers] recordType migration failed", exc_info=True)
 
 
 def delete_task(task_id: str) -> None:
@@ -625,6 +653,7 @@ async def scheduler_loop() -> None:
 
 def recover_running() -> None:
     """重启恢复（D10）：把遗留 running 记录补 cancelled。"""
+    _migrate_record_type()  # 对齐 moofile 规范：旧数据补 recordType（幂等）
     try:
         tasks = list_tasks()
     except Exception:  # noqa: BLE001 - recovery must never break startup
