@@ -54,6 +54,20 @@ class TimerUpdate(BaseModel):
     enabled: bool | None = None
 
 
+class CronExplainPayload(BaseModel):
+    cron: str
+
+
+def _validate_schedule(schedule: str | None) -> str | None:
+    """校验 cron 表达式：非法返回 None（同时规范化）。"""
+    if schedule is None:
+        return None
+    norm = engine.normalize_cron_safe(schedule)
+    if not norm:
+        raise HTTPException(status_code=400, detail="cron 表达式无效，请使用标准 5 段格式（如 30 16 * * *）")
+    return norm
+
+
 @router.get("")
 def list_timers() -> list[dict[str, Any]]:
     """任务列表（最新在前），附下次触发时间与 cron 有效性。"""
@@ -77,6 +91,7 @@ def create_timer(payload: TimerPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="schedule 与 intervalMinutes 只能二选一")
     if not payload.schedule and not payload.intervalMinutes:
         raise HTTPException(status_code=400, detail="schedule 与 intervalMinutes 至少填一个")
+    schedule = _validate_schedule(payload.schedule)
 
     task_id = _new_task_id()
     cid = payload.sessionId or _new_cid()
@@ -100,7 +115,7 @@ def create_timer(payload: TimerPayload) -> dict[str, Any]:
         "id": task_id,
         "name": payload.name,
         "prompt": payload.prompt,
-        "schedule": payload.schedule,
+        "schedule": schedule,
         "intervalMinutes": payload.intervalMinutes,
         "sessionId": cid,
         "agentSessionId": agent_session_id,
@@ -121,7 +136,7 @@ def update_timer(task_id: str, payload: TimerUpdate) -> dict[str, Any]:
     """更新任务（名称 / prompt / 调度 / 启停 / 绑定会话）。"""
     task = _ensure_task(task_id)
     if payload.schedule is not None:
-        task["schedule"] = payload.schedule
+        task["schedule"] = _validate_schedule(payload.schedule)
     if payload.intervalMinutes is not None:
         task["intervalMinutes"] = payload.intervalMinutes
     if payload.schedule is None and payload.intervalMinutes is None:
@@ -153,9 +168,19 @@ def delete_timer(task_id: str) -> dict[str, Any]:
 async def run_timer(task_id: str) -> dict[str, Any]:
     """手动立即执行一次（同步等待结果返回）。"""
     task = _ensure_task(task_id)
-    trigger_text = f"【定时任务】{task.get('name', '定时任务')} · 手动触发"
+    trigger_text = "手动触发"
     run = await engine.run_timer_task(task, trigger_text)
     return {"ok": True, "run": run}
+
+
+@router.post("/explain-cron")
+async def explain_cron(payload: CronExplainPayload) -> dict[str, Any]:
+    """解析 cron 表达式：返回有效性 + 自然语言描述（AI 优先，本地兜底）。"""
+    norm = engine.normalize_cron_safe(payload.cron)
+    if not norm:
+        return {"valid": False, "normalized": None, "description": ""}
+    desc = await engine.explain_cron_ai(norm)
+    return {"valid": True, "normalized": norm, "description": desc}
 
 
 @router.get("/{task_id}/history")

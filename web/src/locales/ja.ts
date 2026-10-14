@@ -127,6 +127,8 @@ export default {
     lastRun: '前回実行',
     nextRun: '次回実行',
     cronInvalid: 'cron 形式が無効（5 項目の標準式）',
+    cronExplain: '意味',
+    openSession: 'バインドされたセッションを開く',
     runJump: 'クリックで該当メッセージへ',
     timerGroupNormal: '通常チャット',
     timerGroupScheduled: '定期タスク',

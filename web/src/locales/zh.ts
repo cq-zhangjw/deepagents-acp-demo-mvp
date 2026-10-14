@@ -127,6 +127,8 @@ export default {
     lastRun: '上次执行',
     nextRun: '下次触发',
     cronInvalid: 'cron 格式无效（需 5 段标准表达式）',
+    cronExplain: '含义',
+    openSession: '打开绑定会话',
     runJump: '点击跳转到对应消息',
     timerGroupNormal: '普通会话',
     timerGroupScheduled: '定时任务',

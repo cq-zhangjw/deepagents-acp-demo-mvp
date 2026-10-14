@@ -205,6 +205,31 @@ def _make_user_msg(text: str) -> dict[str, Any]:
     }
 
 
+def _schedule_text(task: dict[str, Any]) -> str:
+    """任务的周期信息（用于会话履历展示）。"""
+    if task.get("schedule"):
+        return f"Cron `{task['schedule']}`"
+    if task.get("intervalMinutes"):
+        return f"每 {task['intervalMinutes']} 分钟"
+    return "—"
+
+
+def _make_timer_user_msg(task: dict[str, Any], trigger_text: str) -> dict[str, Any]:
+    """定时任务的「用户消息」：结构化展示任务类型 / 周期 / 触发方式 / Prompt。"""
+    name = (task.get("name") or "定时任务").strip()
+    prompt = (task.get("prompt") or "").strip()
+    task_type = "Cron 定时" if task.get("schedule") else "间隔执行"
+    text = (
+        f"### ⏰ 定时任务执行\n"
+        f"- **任务名称**：{name}\n"
+        f"- **任务类型**：{task_type}\n"
+        f"- **周期**：{_schedule_text(task)}\n"
+        f"- **触发方式**：{trigger_text}\n"
+        f"- **Prompt**：{prompt}"
+    )
+    return _make_user_msg(text)
+
+
 def _make_assistant_msg(
     final_text: str, status: str, started_at: int, msg_id: str | None = None
 ) -> dict[str, Any]:
@@ -241,20 +266,20 @@ def upsert_conversation(conv: dict[str, Any]) -> None:
     put_history(conv["id"], HistoryPut(conversation=conv))
 
 
-def append_timer_start(cid: str, title: str, trigger_text: str) -> None:
-    """写「开始」：user 标记消息 + assistant 占位（status=pending 不存在——
+def append_timer_start(cid: str, task: dict[str, Any], trigger_text: str) -> None:
+    """写「开始」：结构化 user 标记消息 + assistant 占位（status=pending 不存在——
     用 running 骨架，最终由 append_timer_end 覆盖）。"""
     conv = get_conversation(cid)
     if conv is None:
         conv = {
             "id": cid,
-            "title": title,
+            "title": f"【定时任务】{(task.get('name') or '定时任务')}",
             "updatedAt": _now_ms(),
             "messages": [],
         }
     msgs = conv.get("messages") or []
     started_at = _now_ms()
-    msgs.append(_make_user_msg(trigger_text))
+    msgs.append(_make_timer_user_msg(task, trigger_text))
     msgs.append(
         {
             "id": uuid.uuid4().hex,
@@ -336,7 +361,7 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
 
     if cid:
         try:
-            append_timer_start(cid, task.get("name", "定时任务"), trigger_text)
+            append_timer_start(cid, task, trigger_text)
         except Exception:  # noqa: BLE001 - history write must never break execution
             logger.exception("[timers] write start to session failed cid=%s", cid)
 
@@ -427,6 +452,107 @@ def _normalize_cron(expr: str) -> str:
     return " ".join(norm)
 
 
+def normalize_cron_safe(expr: str) -> str:
+    """规范化并校验 cron：合法返回标准 5 段表达式，非法返回空串。"""
+    expr = (expr or "").strip()
+    if not expr:
+        return ""
+    norm = _normalize_cron(expr)
+    if norm.count(" ") != 4:  # 必须为 5 段
+        return ""
+    try:
+        croniter(norm, datetime.now()).get_next(datetime)
+    except Exception:  # noqa: BLE001 - invalid field values / ranges
+        return ""
+    return norm
+
+
+def _cron_field(field: str, names: list[str]) -> str:
+    """把单段 cron 字段翻译成人话；无法解析时原样返回。"""
+    if field in ("*", ""):
+        return "*"
+    if field.startswith("*/"):
+        n = field[2:]
+        if n.isdigit():
+            return f"每 {n} {names[-1]}"
+        return field
+    if field.isdigit():
+        return names[int(field) % len(names)] if names[0] in ("周日",) else f"{int(field)}{names[-1]}"
+    if "-" in field and field.split("-")[0].isdigit() and field.split("-")[1].isdigit():
+        a, b = field.split("-")
+        return f"{a}-{b}"
+    return field
+
+
+def cron_description_local(norm: str) -> str:
+    """本地确定性翻译：标准 5 段 cron → 中文自然语言（AI 不可用时的降级）。"""
+    try:
+        parts = norm.split()
+        if len(parts) != 5:
+            return ""
+        m, h, dom, mon, dow = parts
+        dow_names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        is_all = lambda v: v in ("*", "?")  # noqa: E731
+        time_text = ""
+        if m.startswith("*/") and is_all(h):
+            time_text = f"每 {m[2:]} 分钟"
+        elif h.startswith("*/") and m == "0":
+            time_text = f"每 {h[2:]} 小时"
+        elif is_all(m) and is_all(h):
+            time_text = "每分钟"
+        elif h.isdigit() and m.isdigit():
+            time_text = f"{h.zfill(2)}:{m.zfill(2)}"
+        else:
+            time_text = f"{h if not is_all(h) else ''}时{m if not is_all(m) else ''}分"
+        if not is_all(dom) and not is_all(dow):
+            mon_text = "" if is_all(mon) else f"{mon} 月"
+            return f"每年{mon_text} {dom} 日 {time_text}".replace("  ", " ")
+        if not is_all(dom):
+            return f"每月 {dom} 日 {time_text}"
+        if not is_all(dow):
+            dow_text = ""
+            if dow.isdigit():
+                dow_text = dow_names[int(dow) % 7]
+            elif "-" in dow and dow.split("-")[0].isdigit() and dow.split("-")[1].isdigit():
+                a, b = dow.split("-")
+                dow_text = f"{dow_names[int(a) % 7]}至{dow_names[int(b) % 7]}"
+            else:
+                dow_text = dow
+            return f"每周{dow_text} {time_text}"
+        if not is_all(mon):
+            return f"每年 {mon} 月 {time_text}"
+        return f"每天 {time_text}"
+    except Exception:  # noqa: BLE001 - never break explain
+        return ""
+
+
+async def explain_cron_ai(norm: str) -> str:
+    """AI 生成 cron 自然语言描述；模型不可用/超时降级为本地翻译。"""
+    local = cron_description_local(norm)
+    try:
+        from langchain_core.messages import HumanMessage
+        from utils.model_util import MODEL
+
+        prompt = (
+            "把下面这个标准 5 段 cron 表达式翻译成一句简洁的中文自然语言描述"
+            "（不要解释字段含义，直接说‘每天 09:00 触发’这类一句话）。\n"
+            f"cron: {norm}\n"
+            "只输出描述本身，不要多余内容。"
+        )
+        result = await asyncio.wait_for(
+            MODEL.ainvoke([HumanMessage(content=prompt)]), timeout=8
+        )
+        text = getattr(result, "content", "") or ""
+        if isinstance(text, list):
+            text = "".join(str(c.get("text", "")) if isinstance(c, dict) else str(c) for c in text)
+        text = str(text).strip().strip('"').strip()
+        if text and len(text) <= 120:
+            return text
+    except Exception:  # noqa: BLE001 - fall back to deterministic description
+        logger.warning("[timers] AI cron explain failed, fallback local: %s", norm)
+    return local
+
+
 def next_run_ms(schedule: str, now: datetime) -> int | None:
     """计算下次触发时间（毫秒）；非法表达式返回 None。"""
     try:
@@ -472,7 +598,7 @@ async def tick() -> None:
             continue
         try:
             name = task.get("name", "定时任务")
-            trigger_text = f"【定时任务】{name} · {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            trigger_text = f"自动触发 · {now.strftime('%Y-%m-%d %H:%M:%S')}"
             await run_timer_task(task, trigger_text)
         except Exception:  # noqa: BLE001 - one failing task never stops the loop
             logger.exception("[timers] tick task failed task=%s", task.get("id"))

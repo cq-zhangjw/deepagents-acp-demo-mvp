@@ -127,6 +127,8 @@ export default {
     lastRun: 'Last Run',
     nextRun: 'Next Run',
     cronInvalid: 'Invalid cron (5-field standard required)',
+    cronExplain: 'Meaning',
+    openSession: 'Open bound session',
     runJump: 'Click to jump to the message',
     timerGroupNormal: 'Chats',
     timerGroupScheduled: 'Scheduled Tasks',
