@@ -44,8 +44,8 @@ const mermaidCache = new Map<string, string>()
 // （token 友好）。
 function resolveAttachments(content: string): string {
   return content
-    .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![图片](/api/attachments/${id})`)
-    .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 附件](/api/attachments/${id})`)
+    .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![${t('attachmentImage')}](/api/attachments/${id})`)
+    .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 ${t('attachmentFile')}](/api/attachments/${id})`)
 }
 
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS

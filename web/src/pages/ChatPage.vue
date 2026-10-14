@@ -328,12 +328,20 @@ function isAssistantRunning(item: AssistantMessage) {
   return item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
 }
+/** 空会话默认标题按当前语言显示（兼容历史数据里写死的 中/英/日「新建会话」）。 */
+function displayTitle(title: string): string {
+  const n = (title || '').trim()
+  if (!n) return t('newSessionTitle')
+  if (n === '新建会话' || n === 'New conversation' || n === '新しい会話') return t('newSessionTitle')
+  return n
+}
+
 const currentTitle = computed(() => {
   const t0 = currentConversation.value?.title ?? ''
   if (String(currentConversation.value?.id ?? '').startsWith('timer-')) {
     return timerTitle(t0) || t('newSessionTitle')
   }
-  return t0 || t('newSessionTitle')
+  return displayTitle(t0)
 })
 const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
 
@@ -2066,7 +2074,7 @@ async function submitPrompt() {
     createdAt: Date.now()
   }
   conversation.messages.push(userMessage, assistantMessage)
-  conversation.title = conversation.title === t('newSessionTitle') ? (text || resources[0]?.name || t('attachmentTask')).slice(0, 24) : conversation.title
+  conversation.title = displayTitle(conversation.title) === t('newSessionTitle') ? (text || resources[0]?.name || t('attachmentTask')).slice(0, 24) : conversation.title
   conversation.updatedAt = Date.now()
   moveConversationToTop(conversation)
   input.value = ''
@@ -2783,10 +2791,10 @@ onMounted(async () => {
   try {
     await loadHistory()
     if (!conversations.value.length) createConversation()
-    const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && conversation.title === t('newSessionTitle'))
+    const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && displayTitle(conversation.title) === t('newSessionTitle'))
     if (defaultEmpties.length > 1) {
       const keepId = defaultEmpties[0].id
-      conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || conversation.title !== t('newSessionTitle'))
+      conversations.value = conversations.value.filter((conversation) => conversation.id === keepId || conversation.messages.length > 0 || displayTitle(conversation.title) !== t('newSessionTitle'))
       defaultEmpties.slice(1).forEach((conversation) => void deleteConversationRemote(conversation.id))
     }
     void validateStoredSessions()
@@ -2859,13 +2867,13 @@ onBeforeUnmount(() => {
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
               <span class="conversation-icon"><NIcon :component="ChatbubbleOutline" /></span>
-              <span class="conversation-title">{{ conversation.title }}</span>
+              <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
               <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
               <span
                 class="conversation-delete"
                 role="button"
                 tabindex="0"
-                aria-label="删除会话"
+                :aria-label="t('deleteSession')"
                 @click.stop="deleteTarget = conversation.id"
                 @keydown.enter.prevent="deleteTarget = conversation.id"
               >
@@ -2890,13 +2898,13 @@ onBeforeUnmount(() => {
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
               <span class="conversation-icon"><NIcon :component="TimeOutline" /></span>
-              <span class="conversation-title">{{ timerTitle(conversation.title) }}</span>
+              <span class="conversation-title">{{ timerTitle(conversation.title) || displayTitle(conversation.title) }}</span>
               <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
               <span
                 class="conversation-delete"
                 role="button"
                 tabindex="0"
-                aria-label="删除会话"
+                :aria-label="t('deleteSession')"
                 @click.stop="deleteTarget = conversation.id"
                 @keydown.enter.prevent="deleteTarget = conversation.id"
               >
@@ -2990,7 +2998,7 @@ onBeforeUnmount(() => {
           <div v-if="showLoadEarlier" class="load-earlier" role="button" tabindex="0" @click="loadEarlierMessages">{{ t('loadEarlier') }}</div>
           <article v-for="item in visibleMessages" :key="item.id" :data-message-id="item.id" class="message" :class="`message--${item.role}`">
             <NAvatar round :size="30" :color="item.role === 'user' ? '#2563eb' : '#1d2733'">
-              {{ item.role === 'user' ? '我' : 'AI' }}
+              {{ item.role === 'user' ? t('you') : t('assistant') }}
             </NAvatar>
             <div class="message-body">
               <div class="message-meta">
@@ -3128,7 +3136,7 @@ onBeforeUnmount(() => {
             <span v-for="(attachment, index) in attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }">
               <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
               <NIcon :component="AttachOutline" /><span class="attachment-name">{{ attachment.name }}</span>
-              <button aria-label="移除附件" @click="removeAttachment(index)">×</button>
+              <button :aria-label="t('removeAttachment')" @click="removeAttachment(index)">×</button>
             </span>
           </div>
           <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles" @paste="onComposerPaste">
@@ -3418,7 +3426,7 @@ onBeforeUnmount(() => {
               >
                 <div class="timer-run-head">
                   <NTag size="tiny" :type="run.status === 'success' ? 'success' : run.status === 'failed' ? 'error' : run.status === 'running' ? 'info' : 'default'">{{ run.status }}</NTag>
-                  <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt">・耗时 {{ formatDuration(run.startedAt, run.finishedAt) }}</template></span>
+                  <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt">・{{ t('timers.duration') }} {{ formatDuration(run.startedAt, run.finishedAt) }}</template></span>
                 </div>
                 <p v-if="run.outputSummary" class="timer-run-summary">{{ run.outputSummary }}</p>
               </div>
