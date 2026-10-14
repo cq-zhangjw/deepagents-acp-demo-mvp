@@ -2610,7 +2610,22 @@ function submitOnEnter(event: KeyboardEvent) {
 
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 
-// 定时任务会话自动刷新：进入 timer-* 会话时每 5s 重拉履历，切换会话立即停止
+// 定时任务会话自动刷新：进入 timer-* 会话时每 5s 静默更新履历（不滚动、不重置窗口），切换会话立即停止
+/** 静默刷新会话数据：只替换内存数据，不重置消息窗口、不滚动（避免画面跳动）。 */
+async function refreshTimerSessionQuiet(id: string) {
+  try {
+    const res = await fetch(`/api/history/${encodeURIComponent(id)}`)
+    if (!res.ok) return
+    const rows = migrateConversations([await res.json()])
+    if (!rows.length) return
+    const index = conversations.value.findIndex((c) => c.id === id)
+    if (index >= 0) conversations.value[index] = rows[0]
+    else conversations.value.unshift(rows[0])
+  } catch {
+    // 静默失败，保持现有数据
+  }
+}
+
 let timerRefreshInterval: number | undefined
 watch(activeConversationId, (id) => {
   if (timerRefreshInterval !== undefined) {
@@ -2620,7 +2635,7 @@ watch(activeConversationId, (id) => {
   if (id && String(id).startsWith('timer-')) {
     timerRefreshInterval = window.setInterval(() => {
       if (activeConversationId.value === id) {
-        selectConversation(id)
+        void refreshTimerSessionQuiet(id)
       } else if (timerRefreshInterval !== undefined) {
         window.clearInterval(timerRefreshInterval)
         timerRefreshInterval = undefined
@@ -2848,7 +2863,7 @@ onBeforeUnmount(() => {
             <div class="message-body">
               <div class="message-meta">
                 <strong>{{ item.role === 'user' ? t('you') : t('assistant') }}</strong>
-                <span v-if="!isTimerSession || item.role !== 'user'">{{ formatTime(item.createdAt) }}</span>
+                <span v-if="!isTimerSession || item.role === 'user'">{{ formatTime(item.createdAt) }}</span>
               </div>
               <div v-if="item.role === 'user'" class="message-bubble user-bubble">
                 <MarkdownMessage v-if="item.text" class="user-content" variant="user" :content="item.text" />

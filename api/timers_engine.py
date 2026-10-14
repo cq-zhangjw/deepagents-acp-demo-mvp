@@ -215,12 +215,12 @@ def _schedule_text(task: dict[str, Any]) -> str:
 
 
 def _make_timer_user_msg(task: dict[str, Any], trigger_text: str) -> dict[str, Any]:
-    """定时任务的「用户消息」：结构化展示任务类型 / 周期 / 触发方式 / Prompt。"""
+    """定时任务的「用户消息」：结构化展示任务类型 / 周期 / 触发方式 / Prompt（不带时间）。"""
     name = (task.get("name") or "定时任务").strip()
     prompt = (task.get("prompt") or "").strip()
     task_type = "Cron 定时" if task.get("schedule") else "间隔执行"
     text = (
-        f"### ⏰ 定时任务执行\n"
+        f"**⏰ 定时任务执行**\n"
         f"- **任务名称**：{name}\n"
         f"- **任务类型**：{task_type}\n"
         f"- **周期**：{_schedule_text(task)}\n"
@@ -279,7 +279,8 @@ def append_timer_start(cid: str, task: dict[str, Any], trigger_text: str) -> Non
         }
     msgs = conv.get("messages") or []
     started_at = _now_ms()
-    msgs.append(_make_timer_user_msg(task, trigger_text))
+    # 任务会话不带累积履历：每次执行独立，先清空旧消息只保留本次执行
+    msgs = [_make_timer_user_msg(task, trigger_text)]
     msgs.append(
         {
             "id": uuid.uuid4().hex,
@@ -598,7 +599,7 @@ async def tick() -> None:
             continue
         try:
             name = task.get("name", "定时任务")
-            trigger_text = f"自动触发 · {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            trigger_text = "自动触发"
             await run_timer_task(task, trigger_text)
         except Exception:  # noqa: BLE001 - one failing task never stops the loop
             logger.exception("[timers] tick task failed task=%s", task.get("id"))
