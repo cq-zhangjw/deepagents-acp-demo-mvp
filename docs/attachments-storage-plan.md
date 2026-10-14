@@ -1,9 +1,9 @@
-# 附件（图片）统一存储方案（MooFile 附件库）
+# 附件（图片/文件）统一存储方案（MooFile 附件库）
 
-> 版本：v1
+> 版本：v2（v1 → v2：方案落地为实际实现，新增前端统一上传、文件占位、base64 迁移、报错堆栈）
 > 日期：2026-10-14
-> 状态：📋 待实施
-> 关联：`utils/moofile_util.py`、`utils/session_context.py`、`api/context.py`、`api/history.py`、`browser_server/browser_mcp_server.py`、`web/src/components/MarkdownMessage.vue`、moofile_base 存储规范
+> 状态：✅ 已实施（提交：`ed03e8f`、`e3e02cf`、`56f7ac5`、`5be39d6`）
+> 关联：`utils/attachment_store.py`、`utils/session_context.py`、`api/attachments.py`、`api/context.py`、`api/history.py`、`.deepagents/tools/mcp_servers/browser_server/browser_mcp_server.py`、`web/src/pages/ChatPage.vue`、`web/src/components/MarkdownMessage.vue`、moofile_base 存储规范
 
 ---
 
@@ -38,6 +38,9 @@ db/
 - `_upload/` 与 moofile_base documents 功能的附件目录同构，命名规则一致。
 - **物理文件命名 = file_id**：`_upload/{file_id}.png`。记录与文件一一对应，无重名、无绝对路径依赖。
 - 迁移/备份 = 整体搬 `db_attachments_*` 目录，随 `db/` 一起走。
+- 真实实例：`db/db_attachments_74760fdf/`（首次上传自动创建，含 `.attachments.lock` 跨进程锁）。
+
+> ⚠️ **上线提醒**：`api/attachments.py` 是新增路由，**旧后端进程不会加载**——改完附件代码必须重启服务（`python app.py`），否则前端上传会得到 404/405 并报"文件上传失败"。
 
 ---
 
@@ -63,9 +66,9 @@ db/
 
 ## 3. 消息中的引用（token 控制的关键）
 
-- 消息 `content` 中放置轻量占位：**`[图片: {file_id}]`**（模型易生成、markdown 兼容、前端易替换）。
-- **LLM 上下文**：占位原样保留（≈10 token/张），不读像素。需要 alt_text 时格式化为 `[图片: {file_id}]（{alt_text}）`。
-- **前端渲染**：渲染时把占位替换为 `<img src="/api/attachments/{file_id}">`（见 §5）。
+- 消息 `content` 中放置轻量占位：**`[图片: {file_id}]`** / **`[文件: {file_id}]`**（模型易生成、markdown 兼容、前端易替换）。
+- **LLM 上下文**：占位原样保留（≈10 token/张），不读像素；用户消息在占位后附带 `附件路径：<绝对路径>`，模型需要读图/读文件时走现有本地文件工具，无需吃像素。
+- **前端渲染**：渲染时把占位替换为 `<img src="/api/attachments/{file_id}">` 或附件下载链接（见 §5）。
 - **双保险**：附件表以 `message_id` 关联，前端也可按消息批量拉取附件清单，不依赖文本解析。
 
 ---
@@ -74,13 +77,15 @@ db/
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `POST /api/attachments` | 注册 | 表单上传（file + session_id + message_id? + kind?）→ 存 `_upload/` + 写记录 → 返回 `{file_id, url: "/api/attachments/{file_id}", alt_text}` |
+| `POST /api/attachments` | 注册 | 表单上传（file + session_id + message_id? + kind? + alt_text?）→ 存 `_upload/` + 写记录 → 返回 `{file_id, url: "/api/attachments/{file_id}", attachment:{..., path:<绝对路径>}}`（`path` 供模型本地文件工具读取） |
 | `GET /api/attachments/{file_id}` | 读取 | `FileResponse`，Content-Type 按 mime；校验 session 归属；**前端 `<img>` 与未来 CDN 切换的唯一入口** |
 | `GET /api/attachments?session_id=...` | 列表 | 返回该会话全部附件（按 message_id 分组），会话详情加载时用 |
 | `DELETE /api/attachments/{file_id}` | 删除单条 | 删记录 + 物理文件（幂等） |
 | `DELETE /api/attachments?session_id=...` | 级联删除 | 会话删除时调用：删全部记录 + 物理文件 |
 
 **鉴权**：`GET /{file_id}` 校验 `session_id` 归属（防止跨会话枚举）；本地应用可放宽为仅校验会话存在。
+
+**报错契约**：存储异常返回 `500 {detail: "store failed: <err>\n<traceback>"}`——**完整堆栈随响应返回**，前端会把 detail 原样带进错误信息（AI 消息 / 错误条 / console.error），不再出现"文件上传失败。"这种无信息报错。
 
 ---
 
@@ -90,11 +95,11 @@ db/
 |---|---|
 | **`utils/attachment_store.py`（新建）** | 附件库封装，对齐 `session_context.py` 风格：`_root_dir()`（`ATTACHMENT_ROOT` env → `DB_ROOT` → 项目根/db，自动发现/创建 `db_attachments_<hash8>`）、进程锁 + 文件锁、`register(file, session_id, message_id, kind, alt_text)` / `get(file_id)` / `list_by_session(session_id)` / `delete(file_id)` / `delete_by_session(session_id)` / `resolve_abs(file_id)` |
 | **`api/attachments.py`（新建）** | §4 五个接口；`app.py` 挂载 router |
-| **`browser_server/browser_mcp_server.py`** | `browser_screenshot` 加 `session_id` 参数（可选）：截图落盘改到附件库 `_upload/`（通过 `attachment_store.register`），返回 `Screenshot saved: {file_id} (path: {abs})`——模型可凭 abs 路径用文件工具读图 |
+| **`browser_server/browser_mcp_server.py`** | `browser_screenshot` 加 `session_id` 参数（可选）：截图落盘改到附件库 `_upload/`（通过 `attachment_store.register`），返回 `[图片: {file_id}]` 占位 + 绝对路径——模型可凭 abs 路径用文件工具读图 |
 | **`api/context.py`** | `DELETE /api/context/{session_id}` 中追加：`attachment_store.delete_by_session(session_id)`（先删 sqlite thread → 再删上下文表 → 最后删附件，保持既有删除顺序语义） |
-| **`utils/session_context.py`** | `delete_message` / `update_message` 中追加：级联删该 `message_id` 的附件（`attachment_store.delete_by_message(message_id)`） |
-| **`web/src/components/MarkdownMessage.vue`** | markdown-it 渲染管线中追加占位替换：`[图片: {id}]` → `<img src="/api/attachments/{id}">`（正则预处理 content，再走原 sanitize 管线；img 加 `loading="lazy"`、`max-width:100%`） |
-| **`web/src/pages/ChatPage.vue`** | 会话详情加载时调 `GET /api/attachments?session_id=...`，缓存 `file_id → 附件元数据`，供消息组件渲染 |
+| **`utils/session_context.py`** | `delete_message` / `update_message` 中追加：级联删该 `message_id` 的附件（`attachment_store.delete_by_message(message_id)`）；编辑消息时若 `[图片: id]` / `[文件: id]` 占位被移除，级联删对应附件（`_cascade_removed_images`） |
+| **`web/src/components/MarkdownMessage.vue`** | 渲染前正则预处理：`[图片: {id}]` → `<img src="/api/attachments/{id}">`；`[文件: {id}]` → `[📎 附件](/api/attachments/{id})` 下载链接 |
+| **`web/src/pages/ChatPage.vue`** | **前端统一上传**：粘贴/拖拽/屏幕截屏的图片与文件在发送前一律 `uploadResource` 上传附件库，消息与持久化只保留轻量 ref（`file_id/url/path/name/mimeType/kind`）；prompt 组装 `[图片: id]`（附 `附件路径：...`）/ `[文件: id]` 占位；**旧 base64 图片在消息回放/重试时自动转回 File 迁移入库**；已有 `file_id` 直接复用不重传；上传失败时把后端 detail（含堆栈）透传给 AI 消息与错误条 |
 
 **不做**（控制范围）：
 - 不迁移 `browser_server/screenshots/` 历史截图（旧消息中 "Screenshot saved: ..." 纯文字保持原样）。
@@ -117,28 +122,30 @@ db/
 
 编辑消息  PUT .../messages/{mid}
    ├─ 内容替换（既有 update_message）
-   └─ 【新增】附件归属不变；若消息里的 [图片: id] 被移除，级联删该附件
+   └─ 【新增】附件归属不变；若消息里的 `[图片: id]` / `[文件: id]` 占位被移除，级联删对应附件（_cascade_removed_images）
 ```
 
 ---
 
-## 7. 验证方式
+## 7. 验证方式（已执行 ✅）
 
-| 层 | 验证 |
-|---|---|
-| 单测 | `test_attachment_store.py`：register（blob 落盘 + 记录可查）/ get / list_by_session / delete（记录+文件双清）/ delete_by_session / 幂等重复删 |
-| 级联 | 复用 `test_session_delete.py` 风格：删消息 → 附件消失；删会话 → `_upload/` 无残留；`moofile_base UI` 能看到 `db_attachments_*` 库 |
-| 接口 | `POST /api/attachments` 上传 → `GET /{file_id}` 返回图片（浏览器可开）→ 跨会话访问返回 403 |
-| 前端 | 新建会话 → 触发 `browser_screenshot` → 消息中 `[图片: id]` 渲染为 `<img>`；刷新页面图片仍在；删消息/会话后图片消失 |
-| token | 上下文 JSON 中确认图片仅以 `[图片: id]` 存在，无 base64 |
+| 层 | 验证 | 结果 |
+|---|---|---|
+| 单测 | `test_attachment_store.py`（23 项） | ✅ 全过 |
+| 接口 | `test_attachment_api.py`（19 项，临时 DB_ROOT 隔离） | ✅ 全过 |
+| 真实实例 | 运行中的 8000 服务 `POST /api/attachments`（真实 `db_attachments_74760fdf`）→ 200 + file_id；`GET /{file_id}?session_id=` → 200 返回 PNG 字节一致；测试附件已清理 | ✅ |
+| 前端 | `vite build` 通过；截图/粘贴/文件上传链路在运行实例上验证 | ✅ |
+| token | 上下文 JSON 中图片仅以 `[图片: id]` 存在，无 base64（用户消息另附绝对路径提示） | ✅ |
 
 ---
 
-## 8. 实施顺序（建议）
+## 8. 实施顺序（实际执行轨迹）
 
-1. `utils/attachment_store.py` + 单测
-2. `api/attachments.py` + `app.py` 挂载 + 接口测试
-3. `browser_screenshot` 接入（改落盘 + 注册 + 返回 file_id）
-4. `api/context.py` / `session_context.py` 级联删除
-5. 前端 `MarkdownMessage.vue` + `ChatPage.vue` 渲染
-6. 全链路 e2e + 提交推送
+1. ✅ `utils/attachment_store.py` + 单测（`ed03e8f`）
+2. ✅ `api/attachments.py` + `app.py` 挂载 + 接口测试（`ed03e8f` / `e3e02cf`）
+3. ✅ `browser_screenshot` 接入（改落盘 + 注册 + 返回 file_id + 占位）
+4. ✅ `api/context.py` / `session_context.py` 级联删除（`ed03e8f`）
+5. ✅ 前端统一上传：`MarkdownMessage.vue`（[图片]/[文件] 渲染）+ `ChatPage.vue`（uploadResource + 占位 + base64 迁移 + 轻量持久化）（`e3e02cf`）
+6. ✅ 删除会话弹窗改为居中 NModal（`56f7ac5`）
+7. ✅ 报错保留堆栈（后端 detail + traceback；前端透传）（`5be39d6`）
+8. ✅ 全链路 e2e + 重启服务加载新路由 + 提交推送
