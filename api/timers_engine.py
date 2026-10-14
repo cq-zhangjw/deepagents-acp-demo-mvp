@@ -258,21 +258,24 @@ def _schedule_text(task: dict[str, Any]) -> str:
 
 
 def _make_timer_user_msg(task: dict[str, Any], trigger_text: str) -> dict[str, Any]:
-    """定时任务的「用户消息」：结构化展示任务类型 / 周期 / 触发方式 / Agent / Prompt（不带时间）。"""
+    """定时任务的「用户消息」：任务名・类型・周期 / 描述 / 触发方式 / 执行代理 / Prompt（不带时间）。"""
     name = (task.get("name") or "定时任务").strip()
+    desc = (task.get("description") or "").strip()
     prompt = (task.get("prompt") or "").strip()
     agent = (task.get("agent") or "default").strip() or "default"
     task_type = "Cron 定时" if task.get("schedule") else "间隔执行"
-    text = (
-        f"**⏰ 定时任务执行**\n"
-        f"- **任务名称**：{name}\n"
-        f"- **任务类型**：{task_type}\n"
-        f"- **周期**：{_schedule_text(task)}\n"
-        f"- **触发方式**：{trigger_text}\n"
-        f"- **执行代理**：{agent}\n"
-        f"- **Prompt**：{prompt}"
-    )
-    return _make_user_msg(text)
+    lines = [f"任务名称：{name}・{task_type}・{_schedule_text(task)}"]
+    if desc:
+        lines.append(f"任务描述：{desc}")
+    lines += [
+        "",
+        f"触发方式：{trigger_text}",
+        "",
+        f"执行代理：{agent}",
+        "",
+        f"Prompt：{prompt}",
+    ]
+    return _make_user_msg("\n".join(lines))
 
 
 def _make_assistant_msg(

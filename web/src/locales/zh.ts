@@ -90,6 +90,8 @@ export default {
     editTask: '编辑任务',
     name: '任务名称',
     namePlaceholder: '例：每日早报',
+    description: '任务描述',
+    descriptionPlaceholder: '一句话描述这个任务（可选）',
     prompt: '任务指令（prompt）',
     promptPlaceholder: '例：生成今日行业早报，输出到会话',
     scheduleType: '调度方式',

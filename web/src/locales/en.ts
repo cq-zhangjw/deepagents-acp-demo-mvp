@@ -90,6 +90,8 @@ export default {
     editTask: 'Edit Task',
     name: 'Task Name',
     namePlaceholder: 'e.g. Daily briefing',
+    description: 'Task description',
+    descriptionPlaceholder: 'One-line description of this task (optional)',
     prompt: 'Task Prompt',
     promptPlaceholder: 'e.g. Generate today\'s industry briefing and output to the session',
     scheduleType: 'Schedule Type',

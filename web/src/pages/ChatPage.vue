@@ -808,13 +808,14 @@ const timerEditVisible = ref(false)
 const timerEditTarget = ref<TimerTask | null>(null)
 const timerDraft = reactive<{
   name: string
+  description: string
   prompt: string
   mode: 'cron' | 'interval'
   cron: string
   interval: number
   agent: string
   enabled: boolean
-}>({ name: '', prompt: '', mode: 'cron', cron: '', interval: 30, agent: 'default', enabled: true })
+}>({ name: '', description: '', prompt: '', mode: 'cron', cron: '', interval: 30, agent: 'default', enabled: true })
 const timerDeleteTarget = ref<TimerTask | null>(null)
 const timerBusyId = ref<string | null>(null)
 
@@ -1004,6 +1005,14 @@ function formatTimerTime(ms?: number | null): string {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
+/** 执行耗时：秒 / 分秒。 */
+function formatDuration(startMs: number, endMs: number): string {
+  const s = Math.max(0, Math.round((endMs - startMs) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${s % 60 ? `${s % 60}s` : ''}`
+}
+
 async function toggleTimer(task: TimerTask) {
   const next = !task.enabled
   try {
@@ -1022,6 +1031,7 @@ async function toggleTimer(task: TimerTask) {
 function openTimerEdit(task?: TimerTask) {
   timerEditTarget.value = task || null
   timerDraft.name = task?.name || ''
+  timerDraft.description = task?.description || ''
   timerDraft.prompt = task?.prompt || ''
   timerDraft.mode = task?.schedule ? 'cron' : task?.intervalMinutes ? 'interval' : 'cron'
   timerDraft.cron = task?.schedule || ''
@@ -1048,6 +1058,7 @@ async function saveTimer() {
   }
   const payload = {
     name: timerDraft.name.trim(),
+    description: timerDraft.description.trim(),
     prompt: timerDraft.prompt.trim(),
     enabled: timerDraft.enabled,
     agent: timerDraft.agent || 'default',
@@ -1067,7 +1078,12 @@ async function saveTimer() {
     }
     message.success(t('timers.save'))
     timerEditVisible.value = false
+    const saved = await res.json().catch(() => null)
     await loadTimers()
+    // 新建任务：立即刷新会话履历并切到对应会话
+    if (!isEdit && saved?.sessionId) {
+      await selectConversation(saved.sessionId)
+    }
   } catch (e: any) {
     message.error(e.message || String(e))
   }
@@ -3375,7 +3391,7 @@ onBeforeUnmount(() => {
                 <NSwitch size="small" :value="task.enabled" @click.stop @update:value="toggleTimer(task)" />
               </div>
             </div>
-            <p class="manage-card-desc" :title="task.prompt">{{ task.prompt }}</p>
+            <p class="manage-card-desc" :title="task.description || task.prompt">{{ task.description || task.prompt }}</p>
             <div class="manage-card-chips">
               <NTag size="small" type="warning">{{ t('timers.agent') }}: {{ timerAgentLabel(task) }}</NTag>
               <NTag size="small" type="info">{{ timerScheduleLabel(task) }}</NTag>
@@ -3402,7 +3418,7 @@ onBeforeUnmount(() => {
               >
                 <div class="timer-run-head">
                   <NTag size="tiny" :type="run.status === 'success' ? 'success' : run.status === 'failed' ? 'error' : run.status === 'running' ? 'info' : 'default'">{{ run.status }}</NTag>
-                  <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt"> → {{ formatTimerTime(run.finishedAt) }}</template></span>
+                  <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt">・耗时 {{ formatDuration(run.startedAt, run.finishedAt) }}</template></span>
                 </div>
                 <p v-if="run.outputSummary" class="timer-run-summary">{{ run.outputSummary }}</p>
               </div>
@@ -3423,6 +3439,8 @@ onBeforeUnmount(() => {
         <div class="manage-form">
           <label class="manage-form-label">{{ t('timers.name') }}</label>
           <NInput v-model:value="timerDraft.name" size="small" :placeholder="t('timers.namePlaceholder')" />
+          <label class="manage-form-label">{{ t('timers.description') }}</label>
+          <NInput v-model:value="timerDraft.description" size="small" :placeholder="t('timers.descriptionPlaceholder')" />
           <label class="manage-form-label">{{ t('timers.agent') }}</label>
           <NSelect v-model:value="timerDraft.agent" size="small" :options="timerAgentOptions" :placeholder="t('timers.agentPlaceholder')" />
           <label class="manage-form-label">{{ t('timers.prompt') }}</label>
@@ -3701,7 +3719,7 @@ onBeforeUnmount(() => {
 .timer-runs::-webkit-scrollbar-track { background:transparent; }
 .timer-run { padding:6px 8px; background:var(--surface); border:1px solid var(--border); border-radius:6px; }
 .timer-run-head { display:flex; align-items:center; gap:6px; }
-.timer-run-time { color:var(--subtle); font-size:11px; }
+.timer-run-time { color:var(--subtle); font-size:11px; white-space:nowrap; }
 .timer-run-summary { margin:4px 0 0; color:#405166; font-size:12px; line-height:1.5; word-break:break-word; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .timer-run--clickable { cursor:pointer; transition:background .15s; }
 .timer-run--clickable:hover { background:#f2f6ff; }

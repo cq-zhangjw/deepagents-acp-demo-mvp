@@ -90,6 +90,8 @@ export default {
     editTask: 'タスクを編集',
     name: 'タスク名',
     namePlaceholder: '例：毎朝の要約',
+    description: 'タスク説明',
+    descriptionPlaceholder: 'タスクの説明を一言（任意）',
     prompt: 'タスク指示（prompt）',
     promptPlaceholder: '例：今日の業界要約を生成してセッションに出力',
     scheduleType: 'スケジュール方式',

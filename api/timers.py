@@ -36,6 +36,7 @@ def _ensure_task(task_id: str) -> dict[str, Any]:
 
 class TimerPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
     prompt: str = Field(min_length=1, max_length=8000)
     schedule: str | None = None
     intervalMinutes: int | None = Field(default=None, ge=1, le=10080)
@@ -46,6 +47,7 @@ class TimerPayload(BaseModel):
 
 class TimerUpdate(BaseModel):
     name: str | None = None
+    description: str | None = None
     prompt: str | None = None
     schedule: str | None = None
     intervalMinutes: int | None = None
@@ -114,6 +116,7 @@ def create_timer(payload: TimerPayload) -> dict[str, Any]:
     task: dict[str, Any] = {
         "id": task_id,
         "name": payload.name,
+        "description": (payload.description or "").strip(),
         "prompt": payload.prompt,
         "schedule": schedule,
         "intervalMinutes": payload.intervalMinutes,
@@ -143,6 +146,8 @@ def update_timer(task_id: str, payload: TimerUpdate) -> dict[str, Any]:
         pass  # 未指定调度字段则保留
     if payload.name is not None:
         task["name"] = payload.name
+    if payload.description is not None:
+        task["description"] = (payload.description or "").strip()
     if payload.prompt is not None:
         task["prompt"] = payload.prompt
     if payload.sessionId is not None:
