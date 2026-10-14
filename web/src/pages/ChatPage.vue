@@ -937,6 +937,23 @@ async function refreshTimerPanel() {
   }
 }
 
+/** 卡片刷新：刷新任务状态 + 该任务绑定会话的履历。 */
+async function refreshTask(task: TimerTask) {
+  timersRefreshing.value = true
+  try {
+    await loadTimers()
+    if (task.sessionId) {
+      if (activeConversationId.value === task.sessionId) {
+        await selectConversation(task.sessionId)
+      } else {
+        await refreshTimerSessionQuiet(task.sessionId)
+      }
+    }
+  } finally {
+    timersRefreshing.value = false
+  }
+}
+
 function timerStatusLabel(task: TimerTask): string {
   const s = task.lastStatus || 'never'
   switch (s) {
@@ -973,7 +990,7 @@ function formatTimerTime(ms?: number | null): string {
   if (!ms) return t('timers.never')
   const d = new Date(ms)
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 async function toggleTimer(task: TimerTask) {
@@ -1059,7 +1076,10 @@ async function confirmDeleteTimer() {
 }
 
 async function runTimer(task: TimerTask) {
-  if (timerBusyId.value) return
+  if (timerBusyId.value) {
+    message.warning(t('timers.busy'))
+    return
+  }
   timerBusyId.value = task.id
   try {
     const res = await fetch(`/api/timers/${task.id}/run`, { method: 'POST' })
@@ -3335,6 +3355,7 @@ onBeforeUnmount(() => {
               <span v-if="task.lastRunAt" class="timer-last-run">{{ t('timers.lastRun') }}: {{ formatTimerTime(task.lastRunAt) }}</span>
             </div>
             <div class="manage-card-actions" @click.stop>
+              <NButton quaternary size="tiny" :loading="timersRefreshing" :disabled="!!timerBusyId || timersRefreshing" @click="refreshTask(task)">{{ t('timers.refresh') }}</NButton>
               <NButton quaternary size="tiny" :loading="timerBusyId === task.id" :disabled="!!timerBusyId" @click="runTimer(task)">{{ t('timers.run') }}</NButton>
               <NButton quaternary size="tiny" @click="openTimerEdit(task)">{{ actionLabels.edit }}</NButton>
               <NButton quaternary size="tiny" type="error" @click="timerDeleteTarget = task">{{ actionLabels.delete }}</NButton>
@@ -3605,7 +3626,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
-.sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar * { overflow-x:hidden; }
+.sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:16px; } .conversation-search { padding:0 2px 8px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
