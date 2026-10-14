@@ -104,7 +104,7 @@ def create_timer(payload: TimerPayload) -> dict[str, Any]:
         conv = {
             "id": cid,
             "agentSessionId": agent_session_id,
-            "title": f"【定时任务】{payload.name}",
+            "title": payload.name,
             "updatedAt": now,
             "messages": [],
         }

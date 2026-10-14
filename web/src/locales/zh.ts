@@ -123,6 +123,7 @@ export default {
     deleteConfirmTitle: '删除定时任务？',
     deleteConfirmBody: '该任务将被移除，绑定会话保留。',
     history: '执行记录',
+    ranTimes: '已运行 {count} 次',
     noRuns: '暂无执行记录',
     lastRun: '上次执行',
     nextRun: '下次触发',

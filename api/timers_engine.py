@@ -190,6 +190,9 @@ class TimerConn:
 _server: Any = None
 _server_conn: TimerConn | None = None
 _server_lock = asyncio.Lock()
+# 全局执行互斥：调度器 tick 与手动「立即执行」共用同一把锁，
+# 保证任意时刻只有一个任务在执行，避免两次 run 交错写入会话消息。
+_run_lock = asyncio.Lock()
 
 
 async def _get_server() -> tuple[Any, TimerConn]:
@@ -294,17 +297,21 @@ def upsert_conversation(conv: dict[str, Any]) -> None:
     put_history(conv["id"], HistoryPut(conversation=conv))
 
 
-def append_timer_start(cid: str, task: dict[str, Any], trigger_text: str) -> None:
+def append_timer_start(
+    cid: str, task: dict[str, Any], trigger_text: str, agent_session_id: str | None = None
+) -> None:
     """写「开始」：结构化 user 标记消息 + assistant 占位（status=pending 不存在——
     用 running 骨架，最终由 append_timer_end 覆盖）。"""
     conv = get_conversation(cid)
     if conv is None:
         conv = {
             "id": cid,
-            "title": f"【定时任务】{(task.get('name') or '定时任务')}",
+            "title": (task.get("name") or "定时任务"),
             "updatedAt": _now_ms(),
             "messages": [],
         }
+    if agent_session_id:
+        conv["agentSessionId"] = agent_session_id
     msgs = conv.get("messages") or []
     started_at = _now_ms()
     # 任务会话不带累积履历：每次执行独立，先清空旧消息只保留本次执行
@@ -376,8 +383,21 @@ def _extract_ai_text(messages: list[Any]) -> str:
 
 # ---- 执行 ----
 async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, Any]:
-    """执行单个任务并写回履历。返回本轮 run 记录（含 status）。"""
-    session_id = task.get("agentSessionId") or task.get("id")
+    """执行单个任务并写回履历。返回本轮 run 记录（含 status）。
+
+    全局互斥：调度器 tick 与手动「立即执行」都走这里，同一时刻只允许
+    一个任务执行，防止两次 run 交错写入会话消息。
+    """
+    async with _run_lock:
+        return await _run_timer_task_locked(task, trigger_text)
+
+
+async def _run_timer_task_locked(task: dict[str, Any], trigger_text: str) -> dict[str, Any]:
+    """run_timer_task 的锁内实现（调用方已持有 _run_lock）。"""
+    # 每次执行独立上下文：新建 agentSessionId，不复用历史 sqlite 会话。
+    # 若沿用固定 agentSessionId，checkpointer 会把全部历史消息装进上下文
+    # （AI 会"记得"之前的对话），与"任务会话不带履历、每次独立"的语义冲突。
+    session_id = uuid.uuid4().hex
     cid = task.get("sessionId") or ""
     started_at = _now_ms()
     assistant_message_id = uuid.uuid4().hex
@@ -390,9 +410,19 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
 
     if cid:
         try:
-            append_timer_start(cid, task, trigger_text)
+            append_timer_start(cid, task, trigger_text, agent_session_id=session_id)
         except Exception:  # noqa: BLE001 - history write must never break execution
             logger.exception("[timers] write start to session failed cid=%s", cid)
+
+    # 执行前先持久化 running 记录：面板可立即看到「运行中」，最新记录在前
+    task["agentSessionId"] = session_id  # 每次执行独立上下文
+    task["lastStatus"] = "running"
+    task["runHistory"] = [run, *list(task.get("runHistory") or [])][:50]
+    task["updatedAt"] = started_at
+    try:
+        save_task(task)
+    except Exception:  # noqa: BLE001 - persistence must never break execution
+        logger.exception("[timers] persist running state failed task=%s", task.get("id"))
 
     server, conn = await _get_server()
     # 注册 session 元数据（_session_config 依赖 _session_cwds）
@@ -454,10 +484,20 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
         except Exception:  # noqa: BLE001 - history write must never fail the run
             logger.exception("[timers] write end to session failed cid=%s", cid)
 
-    # 回写任务记录
+    # 回写任务记录：更新本次 run 状态（success/failed/cancelled），最新在前
+    task["agentSessionId"] = session_id  # 记录本次执行使用的会话（每次独立）
     task["lastRunAt"] = finished_at
     task["lastStatus"] = status
-    task["runHistory"] = [*list(task.get("runHistory") or []), run][-50:]
+    history = list(task.get("runHistory") or [])
+    found = False
+    for i, r in enumerate(history):
+        if r.get("id") == run["id"]:
+            history[i] = run
+            found = True
+            break
+    if not found:
+        history = [run, *history][:50]
+    task["runHistory"] = history
     task["updatedAt"] = finished_at
     try:
         save_task(task)

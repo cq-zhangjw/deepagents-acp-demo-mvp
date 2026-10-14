@@ -92,10 +92,28 @@ async def _app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Graceful shutdown: cancel the scheduler with a hard timeout so
+        # Ctrl+C never hangs on an in-flight timer run (agent init / model
+        # call may block past cancellation).
         timers_task.cancel()
         try:
-            await timers_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            await asyncio.wait_for(timers_task, timeout=5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+        # Cancel any other lingering background tasks (browser launcher, etc.)
+        current = asyncio.current_task()
+        for task in asyncio.all_tasks():
+            if task is current or task is timers_task:
+                continue
+            task.cancel()
+        # Close MCP client subprocesses so the event loop can exit cleanly.
+        try:
+            from utils.mcp_loader import close_mcp_clients
+
+            close_mcp_clients()
+        except Exception:  # noqa: BLE001 - cleanup must never raise
             pass
 
 
@@ -269,4 +287,11 @@ if __name__ == "__main__":
             print("[gateway] 如需重启，请先停止旧实例（stop.ps1 或任务管理器结束对应 python 进程）。")
             sys.exit(1)
 
-    uvicorn.run("app:app", host=HOST, port=PORT)
+    uvicorn.run(
+        "app:app",
+        host=HOST,
+        port=PORT,
+        # Hard cap on graceful shutdown so Ctrl+C always exits even when a
+        # websocket or background task does not finish promptly.
+        timeout_graceful_shutdown=10,
+    )

@@ -324,7 +324,13 @@ function isAssistantRunning(item: AssistantMessage) {
   return item.role === 'assistant'
     && (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission')
 }
-const currentTitle = computed(() => currentConversation.value?.title ?? t('newSessionTitle'))
+const currentTitle = computed(() => {
+  const t0 = currentConversation.value?.title ?? ''
+  if (String(currentConversation.value?.id ?? '').startsWith('timer-')) {
+    return timerTitle(t0) || t('newSessionTitle')
+  }
+  return t0 || t('newSessionTitle')
+})
 const connectionLabel = computed(() => connected.value ? t('connected') : t('disconnected'))
 
 function migrateConversations(saved: unknown): Conversation[] {
@@ -457,6 +463,16 @@ function openVoiceCall() {
   window.open(url, 'voice-call', 'width=440,height=720,resizable=yes')
 }
 
+/** 定时任务会话标题：去掉历史遗留的「【定时任务】」前缀再展示。 */
+function timerTitle(title: string): string {
+  return String(title || '').replace(/^【定时任务】/, '')
+}
+
+/** 执行记录按开始时间降序（最新在前），兼容后端新旧两种存储顺序。 */
+function sortedRuns(task: { runHistory?: any[] }): any[] {
+  return [...(task.runHistory || [])].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+}
+
 function selectConversation(id: string) {
   activeConversationId.value = id
   contextOverride.value = null // usage is per-session; refreshed after history load
@@ -464,6 +480,13 @@ function selectConversation(id: string) {
   attachments.value = []
   sidebarVisible.value = false
   errorText.value = ''
+  // 切换会话时自动展开对应分组；进入具体定时任务会话时，右侧面板只保留该任务
+  if (String(id).startsWith('timer-')) {
+    timerCollapsed.value = false
+    timersScopeAll.value = false
+  } else {
+    normalCollapsed.value = false
+  }
   // Keep the in-memory state of a running conversation local so history cannot
   // roll the stream back
   const local = conversations.value.find((conversation) => conversation.id === id)
@@ -664,6 +687,11 @@ function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'time
   rightPanelTab.value = tab
   rightPanelVisible.value = true
   panelQuery.value = ''
+  if (tab === 'timers') {
+    // 点击「定时任务」导航：展开侧栏分组并显示所有定时器（不按会话过滤）
+    timerCollapsed.value = false
+    timersScopeAll.value = true
+  }
 }
 
 // ---------- Manage panel (skills / tools / agents) ----------
@@ -770,7 +798,6 @@ const timerDraft = reactive<{
   enabled: boolean
 }>({ name: '', prompt: '', mode: 'cron', cron: '', interval: 30, agent: 'default', enabled: true })
 const timerDeleteTarget = ref<TimerTask | null>(null)
-const timerRunsVisible = ref<string | null>(null)
 const timerBusyId = ref<string | null>(null)
 
 /** 常用调度预设（选中的值直接写入 cron 输入框）。 */
@@ -857,12 +884,26 @@ const timerAgentOptions = computed(() =>
     .map((a) => ({ label: displayAgentName(a.name), value: a.name }))
 )
 
-const filteredTimers = computed(() => {
+/** 定时任务面板范围：true=显示全部（点击导航），false=只显示当前会话对应任务。 */
+const timersScopeAll = ref(false)
+
+/** 面板任务列表：点击「定时任务」显示全部；进入具体定时任务会话时只保留对应任务。 */
+const panelTimers = computed(() => {
+  let list = timers.value
+  if (
+    !timersScopeAll.value
+    && activeConversationId.value
+    && String(activeConversationId.value).startsWith('timer-')
+  ) {
+    list = list.filter((t) => t.sessionId === activeConversationId.value)
+  }
   const q = timerSearch.value.trim().toLowerCase()
-  if (!q) return timers.value
-  return timers.value.filter(t =>
-    t.name.toLowerCase().includes(q) || t.prompt.toLowerCase().includes(q)
-  )
+  if (q) {
+    list = list.filter((t) =>
+      (t.name || '').toLowerCase().includes(q) || (t.prompt || '').toLowerCase().includes(q)
+    )
+  }
+  return list
 })
 
 async function loadTimers() {
@@ -1041,11 +1082,6 @@ async function timerRunClicked(task: TimerTask, run: TimerRun) {
     if (tl) tl.scrollTo({ top: tl.scrollHeight, behavior: 'smooth' })
   }
 }
-
-function toggleTimerRuns(id: string) {
-  timerRunsVisible.value = timerRunsVisible.value === id ? null : id
-}
-
 
 /** Start the external moofile_base backend and refresh the panel. */
 const knowledgeStarting = ref(false)
@@ -2758,7 +2794,7 @@ onBeforeUnmount(() => {
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
               <span class="conversation-icon"><NIcon :component="TimeOutline" /></span>
-              <span class="conversation-title">{{ conversation.title }}</span>
+              <span class="conversation-title">{{ timerTitle(conversation.title) }}</span>
               <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
               <span
                 class="conversation-delete"
@@ -3104,7 +3140,7 @@ onBeforeUnmount(() => {
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
           <NButton v-for="conversation in filteredConversations" :key="conversation.id" text class="drawer-item" @click="selectConversation(conversation.id)">
-            {{ conversation.title }}
+            {{ timerTitle(conversation.title) }}
           </NButton>
         </div>
       </NDrawerContent>
@@ -3251,13 +3287,16 @@ onBeforeUnmount(() => {
               <template #icon><NIcon :component="AddOutline" /></template>{{ t('timers.newTask') }}
             </NButton>
           </div>
-          <div v-if="!filteredTimers.length" class="panel-placeholder"><p>{{ t('timers.noTasks') }}</p></div>
-          <div v-for="task in filteredTimers" :key="task.id" class="manage-card" :class="{ 'manage-card--disabled': !task.enabled, 'manage-card--active': activeConversationId === task.sessionId }">
+          <div v-if="!panelTimers.length" class="panel-placeholder"><p>{{ t('timers.noTasks') }}</p></div>
+          <div v-for="task in panelTimers" :key="task.id" class="manage-card" :class="{ 'manage-card--disabled': !task.enabled, 'manage-card--active': activeConversationId === task.sessionId }">
             <div class="manage-card-head">
               <button type="button" class="manage-card-title-btn" :class="{ 'manage-card-title-btn--active': activeConversationId === task.sessionId }" :title="task.sessionId ? t('timers.openSession') : undefined" :disabled="!task.sessionId" @click="task.sessionId && selectConversation(task.sessionId)">
                 <strong class="manage-card-title">{{ task.name }}</strong>
               </button>
-              <NSwitch size="small" :value="task.enabled" @update:value="toggleTimer(task)" />
+              <div class="manage-card-head-right">
+                <span class="timer-run-badge">{{ t('timers.ranTimes', { count: (task.runHistory || []).length }) }}</span>
+                <NSwitch size="small" :value="task.enabled" @update:value="toggleTimer(task)" />
+              </div>
             </div>
             <p class="manage-card-desc" :title="task.prompt">{{ task.prompt }}</p>
             <div class="manage-card-chips">
@@ -3272,11 +3311,11 @@ onBeforeUnmount(() => {
               <NButton quaternary size="tiny" :loading="timerBusyId === task.id" :disabled="!!timerBusyId" @click="runTimer(task)">{{ t('timers.run') }}</NButton>
               <NButton quaternary size="tiny" @click="openTimerEdit(task)">{{ actionLabels.edit }}</NButton>
               <NButton quaternary size="tiny" type="error" @click="timerDeleteTarget = task">{{ actionLabels.delete }}</NButton>
-              <NButton quaternary size="tiny" @click="toggleTimerRuns(task.id)">{{ t('timers.history') }}<span v-if="(task.runHistory || []).length" class="timer-runs-count">{{ task.runHistory!.length }}</span></NButton>
             </div>
-            <div v-if="timerRunsVisible === task.id" class="timer-runs">
+            <!-- 执行记录常开（最新在前） -->
+            <div class="timer-runs">
               <div
-                v-for="run in task.runHistory || []"
+                v-for="run in sortedRuns(task)"
                 :key="run.id"
                 class="timer-run"
                 :class="{ 'timer-run--clickable': !!(run.assistantMessageId && task.sessionId) }"
@@ -3578,7 +3617,10 @@ onBeforeUnmount(() => {
 .manage-modal-footer { display:flex; justify-content:flex-end; gap:8px; }
 .timer-last-run { color:var(--subtle); font-size:11px; }
 .timer-runs-count { margin-left:4px; color:var(--subtle); font-size:11px; }
-.timer-runs { display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+.timer-runs { display:flex; flex-direction:column; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border); max-height:min(48vh, 440px); overflow-y:auto; }
+.timer-runs::-webkit-scrollbar { width:6px; }
+.timer-runs::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; }
+.timer-runs::-webkit-scrollbar-track { background:transparent; }
 .timer-run { padding:6px 8px; background:var(--surface); border:1px solid var(--border); border-radius:6px; }
 .timer-run-head { display:flex; align-items:center; gap:6px; }
 .timer-run-time { color:var(--subtle); font-size:11px; }
@@ -3599,6 +3641,8 @@ onBeforeUnmount(() => {
 .manage-card:hover { box-shadow:0 2px 8px rgba(29,39,51,.06); }
 .manage-card--disabled { opacity:.55; } .manage-card--active { border-color:#2563eb; box-shadow:0 0 0 1px rgba(37,99,235,.35); }
 .manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.manage-card-head-right { display:flex; align-items:center; gap:8px; }
+.timer-run-badge { font-size:12px; color:var(--subtle); white-space:nowrap; }
 .manage-card-title-btn { display:inline-flex; min-width:0; padding:0; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; } .manage-card-title-btn:hover .manage-card-title { color:#2563eb; } .manage-card-title-btn--active .manage-card-title { color:#2563eb; } .manage-card-title-btn:disabled { cursor:default; }
 .manage-card-title { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .manage-card-desc { font-size:12px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }

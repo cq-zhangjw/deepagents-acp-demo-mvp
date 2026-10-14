@@ -123,6 +123,7 @@ export default {
     deleteConfirmTitle: '定时タスクを削除しますか？',
     deleteConfirmBody: 'タスクは削除されますが、セッションは保持されます。',
     history: '実行履歴',
+    ranTimes: '実行回数 {count} 回',
     noRuns: '実行履歴はありません',
     lastRun: '前回実行',
     nextRun: '次回実行',
