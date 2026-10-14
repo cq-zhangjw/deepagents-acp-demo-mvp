@@ -67,4 +67,4 @@ rag-video/
 
 
 # Browser MCP screenshots (runtime artifacts, never commit)
-.deepagents/tools/mcp_servers/browser_server/screenshots/
+**/screenshots/

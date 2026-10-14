@@ -452,6 +452,41 @@ def browser_get_content(
 
 
 @mcp.tool()
+def browser_execute_js(script: str, page_index: int = -1) -> str:
+    """Execute JavaScript in the current page and return its result.
+
+    Use this to verify elements before acting on them: check that a selector
+    matches, read an element's state, or extract a value (e.g.
+    ``document.querySelector('#submit') !== null``,
+    ``document.querySelectorAll('.item').length``). The result is returned as
+    JSON when it is structured, otherwise as its string form.
+
+    Args:
+        script: JavaScript expression to evaluate in the page's main frame.
+            For multi-statement logic wrap it in an IIFE, e.g.
+            ``(function(){ var el = document.querySelector('#x'); return el ? el.value : null; })()``.
+        page_index: Which page to run on. -1 means the most recent page.
+
+    Returns:
+        The evaluated result as a string (JSON for dicts/lists).
+    """
+    try:
+        page = _active_page(page_index)
+        if page is None:
+            return "Error: no page is open. Please run do_automation_by_script or open a URL first."
+        result = page.evaluate(script)
+        if isinstance(result, (dict, list)):
+            return json.dumps(result, ensure_ascii=False, default=str)
+        if isinstance(result, bool):
+            return "true" if result else "false"
+        if result is None:
+            return "null"
+        return str(result)
+    except Exception:
+        return f"Error: {traceback.format_exc()}"
+
+
+@mcp.tool()
 def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> str:
     """Execute browser automation steps from a JSON script file.
 
