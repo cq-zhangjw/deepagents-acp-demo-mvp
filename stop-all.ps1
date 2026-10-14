@@ -41,7 +41,7 @@ foreach ($l in $listener) {
 # --- 2) stop DeepAgents ACP (its stop.ps1 kills app.py/acp_agent + child tree) ---
 if (Test-Path (Join-Path $AcpRoot 'stop.ps1')) {
     Write-Host "[停止] 停止 DeepAgents ACP (:8000) ..."
-    & (Join-Path $AcpRoot 'stop.ps1')
+    & (Join-Path $AcpRoot 'stop.ps1') -NoWait
 }
 
 Write-Host "[停止] 全部服务已停止。"

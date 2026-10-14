@@ -44,7 +44,7 @@ foreach ($t in $mbTargets) {
     Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue
 }
 if (Test-Path (Join-Path $AcpRoot 'stop.ps1')) {
-    & (Join-Path $AcpRoot 'stop.ps1')
+    & (Join-Path $AcpRoot 'stop.ps1') -NoWait
 }
 Start-Sleep -Seconds 2
 
