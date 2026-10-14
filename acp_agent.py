@@ -1,4 +1,4 @@
-﻿"""DeepAgents ACP Agent.
+"""DeepAgents ACP Agent.
 
 Runs in standard ACP (Agent Client Protocol) stdio service mode:
 - Reads ACP JSON-RPC requests from stdin (initialize / session/new / session/prompt ...)
@@ -207,14 +207,18 @@ class PowerShellBackend(LocalShellBackend):
 
 
 def build_agent(
-    context: AgentSessionContext, checkpointer=None
+    context: AgentSessionContext, checkpointer=None, agent_name: str | None = None
 ) -> CompiledStateGraph:
     """Agent factory: build a DeepAgent from the session context (each session has independent state and working directory).
+
+    `agent_name` overrides the AGENT_NAME env var (used by the in-process timer
+    engine to run each scheduled task with the agent it was created for).
 
     Uses a virtual filesystem backend: when the agent reads/writes files or executes commands,
     ACP session/request_permission is triggered and must be approved by the frontend user.
     """
     agent_root_dir = getattr(context, "cwd", None) or "."
+    agent_name = (agent_name or os.getenv("AGENT_NAME", "") or "default").strip() or "default"
 
     ephemeral_backend = StateBackend()
     backend = CompositeBackend(
@@ -243,7 +247,7 @@ def build_agent(
     )
     # Build subagents from agents.json "subagents" field
     subagents: list[SubAgent] = []
-    for sa_cfg in get_agent_subagents_config(AGENT_NAME):
+    for sa_cfg in get_agent_subagents_config(agent_name):
         sa_name = sa_cfg.get("name")
         if not sa_name:
             continue
@@ -264,11 +268,11 @@ def build_agent(
         model=MODEL,
         # MCP tools configured for the selected agent (agents.json -> mcp_tools);
         # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
-        tools=get_agent_mcp_tools(AGENT_NAME),
+        tools=get_agent_mcp_tools(agent_name),
         subagents=subagents or None,
         # Skills enabled for the selected agent (agents.json -> skills; the
         # default agent starts with every installed skill).
-        skills=get_agent_skills(AGENT_NAME),
+        skills=get_agent_skills(agent_name),
         # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
         # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,
@@ -356,6 +360,35 @@ class RollbackAgentServer(CompactingAgentServer):
         super().__init__(*args, **kwargs)
         self._pre_prompt_messages: dict[str, list[Any]] = {}
         self._cancel_rollback: set[str] = set()
+        # Per-session agent override (used by the timer engine: each scheduled
+        # task may run with the agent it was created for, unlike the WS flow
+        # where AGENT_NAME is fixed per subprocess).
+        self._session_agents: dict[str, str] = {}
+
+    def _reset_agent(self, session_id: str) -> None:
+        """Reset the agent instance, re-creating it from the factory if applicable.
+
+        Honors the per-session agent override (`_session_agents`) so the
+        in-process server can switch agents between scheduled task sessions.
+        """
+        cwd = self._session_cwds.get(session_id)
+        if cwd is not None:
+            self._cwd = cwd
+        if isinstance(self._agent_factory, CompiledStateGraph):
+            self._agent = self._agent_factory
+        else:
+            mode = self._session_modes.get(
+                session_id,
+                self._modes.current_mode_id if self._modes is not None else "auto",
+            )
+            model = self._session_models.get(session_id) if self._models is not None else None
+            context = AgentSessionContext(cwd=self._cwd, mode=mode, model=model)
+            agent_name = self._session_agents.get(session_id)
+            if agent_name:
+                self._agent = self._agent_factory(context, agent_name=agent_name)
+            else:
+                self._agent = self._agent_factory(context)
+        self._agent_session_id = session_id
 
     async def prompt(self, prompt, session_id, message_id=None, **kwargs):
         # Retry: drop the last user turn from the context table (the client

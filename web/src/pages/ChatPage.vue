@@ -28,6 +28,7 @@ import {
   StopCircleOutline,
   TrashOutline,
   TimeOutline,
+  HelpCircleOutline,
   VolumeHighOutline,
   VolumeMuteOutline
 } from '@vicons/ionicons5'
@@ -171,6 +172,13 @@ const filteredConversations = computed(() => {
     conversation.title.toLowerCase().includes(keyword)
   )
 })
+// 侧栏分组：定时任务专用会话（timer-*）与普通会话
+const timerConversations = computed(() =>
+  filteredConversations.value.filter((c) => String(c.id).startsWith('timer-'))
+)
+const normalConversations = computed(() =>
+  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-'))
+)
 const input = ref('')
 const attachments = ref<AttachmentRef[]>([])
 const previewImage = ref<string | null>(null)
@@ -269,6 +277,10 @@ const currentConversation = computed(() =>
   conversations.value.find((conversation) => conversation.id === activeConversationId.value)
 )
 const currentMessages = computed(() => currentConversation.value?.messages ?? [])
+// 定时任务专用会话是只读履历：隐藏输入框（composer）
+const isTimerSession = computed(() =>
+  !!currentConversation.value && String(currentConversation.value.id).startsWith('timer-')
+)
 // Large conversations render only a tail window so the full message list DOM
 // stays small; the "load earlier" button widens the window step by step.
 const MESSAGE_WINDOW = 60
@@ -727,12 +739,15 @@ interface TimerTask {
   schedule?: string | null
   intervalMinutes?: number | null
   sessionId: string
+  agent?: string
   enabled: boolean
   lastRunAt?: number | null
   lastStatus?: string
   runHistory?: TimerRun[]
   createdAt: number
   updatedAt: number
+  nextRunAt?: number | null
+  cronValid?: boolean
 }
 
 const timers = ref<TimerTask[]>([])
@@ -745,11 +760,64 @@ const timerDraft = reactive<{
   mode: 'cron' | 'interval'
   cron: string
   interval: number
+  agent: string
   enabled: boolean
-}>({ name: '', prompt: '', mode: 'cron', cron: '', interval: 30, enabled: true })
+}>({ name: '', prompt: '', mode: 'cron', cron: '', interval: 30, agent: 'default', enabled: true })
 const timerDeleteTarget = ref<TimerTask | null>(null)
 const timerRunsVisible = ref<string | null>(null)
 const timerBusyId = ref<string | null>(null)
+
+/** 常用调度预设（选中的值直接写入 cron 输入框）。 */
+const cronPresets = [
+  { label: '每小时', value: '0 * * * *' },
+  { label: '每 10 分钟', value: '*/10 * * * *' },
+  { label: '每天 00:00', value: '0 0 * * *' },
+  { label: '每天 09:00', value: '0 9 * * *' },
+  { label: '工作日 09:00', value: '0 9 * * 1-5' },
+  { label: '每周一 09:00', value: '0 9 * * 1' },
+  { label: '每月 1 日 09:00', value: '0 9 1 * *' },
+  { label: '每月 15 日 09:00', value: '0 9 15 * *' },
+]
+
+/** 把 5 段 cron 表达式翻译成人话；无法解析时返回空串（不展示）。 */
+function cronToText(expr: string): string {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return ''
+  const [m, h, dom, mon, dow] = parts
+  const isAll = (v: string) => v === '*'
+  const everyN = (v: string) => (/^\*\/\d+$/.test(v) ? parseInt(v.slice(2), 10) : 0)
+  // 时间部分
+  let timeText = ''
+  if (everyN(m) && isAll(h)) timeText = `每 ${everyN(m)} 分钟`
+  else if (everyN(h) && m === '0') timeText = `每 ${everyN(h)} 小时`
+  else if (isAll(m) && isAll(h)) timeText = '每分钟'
+  else if (/^\d+$/.test(h) && /^\d+$/.test(m)) timeText = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`
+  else timeText = `${h === '*' ? '' : h}时${m === '*' ? '' : m}分`
+  // 日期部分
+  const dowNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+  const parseDow = (v: string): string => {
+    if (/^\d+$/.test(v)) return dowNames[parseInt(v, 10) % 7] || ''
+    if (/^(\d)-(\d)$/.test(v)) {
+      const [, a, b] = v.match(/^(\d)-(\d)$/)!
+      return `${dowNames[parseInt(a, 10) % 7] || ''}至${dowNames[parseInt(b, 10) % 7] || ''}`
+    }
+    return ''
+  }
+  if (!isAll(dom) && !isAll(dow)) {
+    const monText = isAll(mon) ? '' : `${mon} 月`
+    return `每年${monText} ${dom} 日 ${timeText}`
+  }
+  if (!isAll(dom)) return `每月 ${dom} 日 ${timeText}`
+  if (!isAll(dow)) return `每周${parseDow(dow) || dow} ${timeText}`
+  if (!isAll(mon)) return `每年 ${mon} 月 ${timeText}`
+  return `每天 ${timeText}`
+}
+const cronPreview = computed(() => (timerDraft.mode === 'cron' ? cronToText(timerDraft.cron) : ''))
+const timerAgentOptions = computed(() =>
+  agentList.value
+    .filter((a) => a.enabled !== false)
+    .map((a) => ({ label: displayAgentName(a.name), value: a.name }))
+)
 
 const filteredTimers = computed(() => {
   const q = timerSearch.value.trim().toLowerCase()
@@ -796,6 +864,11 @@ function timerScheduleLabel(task: TimerTask): string {
   return '--'
 }
 
+function timerAgentLabel(task: TimerTask): string {
+  const name = (task.agent || 'default').trim() || 'default'
+  return displayAgentName(name)
+}
+
 function formatTimerTime(ms?: number | null): string {
   if (!ms) return t('timers.never')
   const d = new Date(ms)
@@ -825,6 +898,7 @@ function openTimerEdit(task?: TimerTask) {
   timerDraft.mode = task?.schedule ? 'cron' : task?.intervalMinutes ? 'interval' : 'cron'
   timerDraft.cron = task?.schedule || ''
   timerDraft.interval = task?.intervalMinutes ?? 30
+  timerDraft.agent = task?.agent || currentAgentName.value || 'default'
   timerDraft.enabled = task?.enabled ?? true
   timerEditVisible.value = true
 }
@@ -842,6 +916,7 @@ async function saveTimer() {
     name: timerDraft.name.trim(),
     prompt: timerDraft.prompt.trim(),
     enabled: timerDraft.enabled,
+    agent: timerDraft.agent || 'default',
     schedule: timerDraft.mode === 'cron' ? timerDraft.cron.trim() : null,
     intervalMinutes: timerDraft.mode === 'interval' ? timerDraft.interval : null,
   }
@@ -885,10 +960,41 @@ async function runTimer(task: TimerTask) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     message.success(t('timers.runDone'))
     await loadTimers()
+    // 当前正显示该任务绑定会话时，重新拉取让新履历立即可见
+    if (activeConversationId.value === task.sessionId) {
+      selectConversation(task.sessionId)
+    }
   } catch (e: any) {
     message.error(e.message || String(e))
   } finally {
     timerBusyId.value = null
+  }
+}
+
+/** 执行记录点击：跳转到对应会话消息（消息 id 由后端透传，新记录才可跳）。 */
+async function timerRunClicked(task: TimerTask, run: TimerRun) {
+  if (!run.assistantMessageId || !task.sessionId) return
+  const target = run.assistantMessageId
+  if (activeConversationId.value !== task.sessionId) {
+    selectConversation(task.sessionId)
+    // selectConversation 内部异步拉取会话，轮询等待目标消息出现
+    const deadline = Date.now() + 8000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 300))
+      const conv = conversations.value.find((c) => c.id === task.sessionId)
+      if (conv?.messages.some((m) => m.id === target)) break
+    }
+  }
+  await nextTick()
+  const el = document.querySelector(`[data-message-id="${target}"]`)
+  if (el) {
+    ;(el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' })
+    ;(el as HTMLElement).classList.add('message--highlight')
+    setTimeout(() => (el as HTMLElement).classList.remove('message--highlight'), 2000)
+  } else {
+    // 目标消息不在当前渲染窗口（load-earlier 未展开）：滚动到会话底部
+    const tl = timeline.value
+    if (tl) tl.scrollTo({ top: tl.scrollHeight, behavior: 'smooth' })
   }
 }
 
@@ -2504,6 +2610,9 @@ onBeforeUnmount(() => {
           <strong>ACP client base</strong>
           <span>{{ t('brandSubline') }}</span>
         </div>
+        <NButton class="toolbar-timer-btn" quaternary circle size="tiny" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
+          <template #icon><NIcon :component="TimeOutline" /></template>
+        </NButton>
         <NButton class="sidebar-collapse-btn" quaternary circle size="tiny" :aria-label="actionLabels.collapseSidebar" @click="sidebarCollapsed = true">
           <template #icon><NIcon :component="ChevronBackOutline" /></template>
         </NButton>
@@ -2522,27 +2631,54 @@ onBeforeUnmount(() => {
       <div class="conversation-label">{{ t('recentConversations') }}</div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
         <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
-        <button
-          v-for="conversation in filteredConversations"
-          :key="conversation.id"
-          class="conversation-item"
-          :class="{ active: conversation.id === activeConversationId }"
-          @click="selectConversation(conversation.id)"
-          @contextmenu.prevent="openRenameMenu(conversation, $event)"
-        >
-          <span class="conversation-title">{{ conversation.title }}</span>
-          <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-          <span
-            class="conversation-delete"
-            role="button"
-            tabindex="0"
-            aria-label="删除会话"
-            @click.stop="deleteTarget = conversation.id"
-            @keydown.enter.prevent="deleteTarget = conversation.id"
+        <template v-if="normalConversations.length">
+          <div class="conversation-group-label">{{ t('timers.timerGroupNormal') }}</div>
+          <button
+            v-for="conversation in normalConversations"
+            :key="conversation.id"
+            class="conversation-item"
+            :class="{ active: conversation.id === activeConversationId }"
+            @click="selectConversation(conversation.id)"
+            @contextmenu.prevent="openRenameMenu(conversation, $event)"
           >
-            <NIcon :component="TrashOutline" />
-          </span>
-        </button>
+            <span class="conversation-title">{{ conversation.title }}</span>
+            <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+            <span
+              class="conversation-delete"
+              role="button"
+              tabindex="0"
+              aria-label="删除会话"
+              @click.stop="deleteTarget = conversation.id"
+              @keydown.enter.prevent="deleteTarget = conversation.id"
+            >
+              <NIcon :component="TrashOutline" />
+            </span>
+          </button>
+        </template>
+        <template v-if="timerConversations.length">
+          <div class="conversation-group-label">{{ t('timers.timerGroupScheduled') }}</div>
+          <button
+            v-for="conversation in timerConversations"
+            :key="conversation.id"
+            class="conversation-item"
+            :class="{ active: conversation.id === activeConversationId }"
+            @click="selectConversation(conversation.id)"
+            @contextmenu.prevent="openRenameMenu(conversation, $event)"
+          >
+            <span class="conversation-title">{{ conversation.title }}</span>
+            <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+            <span
+              class="conversation-delete"
+              role="button"
+              tabindex="0"
+              aria-label="删除会话"
+              @click.stop="deleteTarget = conversation.id"
+              @keydown.enter.prevent="deleteTarget = conversation.id"
+            >
+              <NIcon :component="TrashOutline" />
+            </span>
+          </button>
+        </template>
       </nav>
 
       <div class="sidebar-footer">
@@ -2626,7 +2762,7 @@ onBeforeUnmount(() => {
 
         <div v-else class="message-column">
           <div v-if="showLoadEarlier" class="load-earlier" role="button" tabindex="0" @click="loadEarlierMessages">{{ t('loadEarlier') }}</div>
-          <article v-for="item in visibleMessages" :key="item.id" class="message" :class="`message--${item.role}`">
+          <article v-for="item in visibleMessages" :key="item.id" :data-message-id="item.id" class="message" :class="`message--${item.role}`">
             <NAvatar round :size="30" :color="item.role === 'user' ? '#2563eb' : '#1d2733'">
               {{ item.role === 'user' ? '我' : 'AI' }}
             </NAvatar>
@@ -2757,7 +2893,7 @@ onBeforeUnmount(() => {
       </NButton>
       </div>
 
-      <div class="composer-wrap">
+      <div v-if="!isTimerSession" class="composer-wrap">
         <div class="composer-column">
           <NAlert v-if="errorText" type="error" closable class="task-error" @close="errorText = ''">
             {{ errorText }}
@@ -2840,14 +2976,6 @@ onBeforeUnmount(() => {
                     </NButton>
                   </template>
                   {{ t('cancel') }}
-                </NTooltip>
-                <NTooltip>
-                  <template #trigger>
-                    <NButton quaternary circle size="small" class="toolbar-timer-btn" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
-                      <template #icon><NIcon :component="TimeOutline" /></template>
-                    </NButton>
-                  </template>
-                  {{ t('timers.panelTitle') }}
                 </NTooltip>
                 <NTooltip v-if="!isRunning">
                   <template #trigger>
@@ -3037,8 +3165,11 @@ onBeforeUnmount(() => {
             </div>
             <p class="manage-card-desc" :title="task.prompt">{{ task.prompt }}</p>
             <div class="manage-card-chips">
+              <NTag size="small" type="warning">{{ t('timers.agent') }}: {{ timerAgentLabel(task) }}</NTag>
               <NTag size="small" type="info">{{ timerScheduleLabel(task) }}</NTag>
               <NTag size="small" :type="timerStatusType(task)">{{ timerStatusLabel(task) }}</NTag>
+              <span v-if="task.schedule && task.cronValid === false" class="timer-cron-invalid">{{ t('timers.cronInvalid') }}</span>
+              <span v-else-if="task.nextRunAt" class="timer-next-run">{{ t('timers.nextRun') }}: {{ formatTimerTime(task.nextRunAt) }}</span>
               <span v-if="task.lastRunAt" class="timer-last-run">{{ t('timers.lastRun') }}: {{ formatTimerTime(task.lastRunAt) }}</span>
             </div>
             <div class="manage-card-actions">
@@ -3048,7 +3179,14 @@ onBeforeUnmount(() => {
               <NButton quaternary size="tiny" @click="toggleTimerRuns(task.id)">{{ t('timers.history') }}<span v-if="(task.runHistory || []).length" class="timer-runs-count">{{ task.runHistory!.length }}</span></NButton>
             </div>
             <div v-if="timerRunsVisible === task.id" class="timer-runs">
-              <div v-for="run in task.runHistory || []" :key="run.id" class="timer-run">
+              <div
+                v-for="run in task.runHistory || []"
+                :key="run.id"
+                class="timer-run"
+                :class="{ 'timer-run--clickable': !!(run.assistantMessageId && task.sessionId) }"
+                :title="run.assistantMessageId && task.sessionId ? t('timers.runJump') : undefined"
+                @click="timerRunClicked(task, run)"
+              >
                 <div class="timer-run-head">
                   <NTag size="tiny" :type="run.status === 'success' ? 'success' : run.status === 'failed' ? 'error' : run.status === 'running' ? 'info' : 'default'">{{ run.status }}</NTag>
                   <span class="timer-run-time">{{ formatTimerTime(run.startedAt) }}<template v-if="run.finishedAt"> → {{ formatTimerTime(run.finishedAt) }}</template></span>
@@ -3072,6 +3210,8 @@ onBeforeUnmount(() => {
         <div class="manage-form">
           <label class="manage-form-label">{{ t('timers.name') }}</label>
           <NInput v-model:value="timerDraft.name" size="small" :placeholder="t('timers.namePlaceholder')" />
+          <label class="manage-form-label">{{ t('timers.agent') }}</label>
+          <NSelect v-model:value="timerDraft.agent" size="small" :options="timerAgentOptions" :placeholder="t('timers.agentPlaceholder')" />
           <label class="manage-form-label">{{ t('timers.prompt') }}</label>
           <NInput v-model:value="timerDraft.prompt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" :placeholder="t('timers.promptPlaceholder')" />
           <div class="timer-schedule-mode">
@@ -3081,8 +3221,38 @@ onBeforeUnmount(() => {
             </NRadioGroup>
           </div>
           <div v-if="timerDraft.mode === 'cron'">
+            <label class="manage-form-label">{{ t('timers.cronPreset') }}</label>
+            <NSelect
+              size="small"
+              :options="cronPresets"
+              :placeholder="t('timers.cronPresetPlaceholder')"
+              @update:value="(v: string) => { timerDraft.mode = 'cron'; timerDraft.cron = v }"
+            />
             <label class="manage-form-label">{{ t('timers.scheduleCron') }}</label>
-            <NInput v-model:value="timerDraft.cron" size="small" :placeholder="t('timers.cronPlaceholder')" />
+            <div class="cron-input-row">
+              <NInput v-model:value="timerDraft.cron" size="small" :placeholder="t('timers.cronPlaceholder')" />
+              <NTooltip placement="right">
+                <template #trigger>
+                  <NButton quaternary circle size="small" class="cron-help-btn" :aria-label="t('timers.cronHelp')">
+                    <template #icon><NIcon :component="HelpCircleOutline" /></template>
+                  </NButton>
+                </template>
+                <div class="cron-help">
+                  <p class="cron-help-title">{{ t('timers.cronHelpTitle') }}</p>
+                  <p class="cron-help-row"><code>*</code> {{ t('timers.cronHelpWildcard') }}</p>
+                  <p class="cron-help-row"><code>*/15</code> {{ t('timers.cronHelpStep') }}</p>
+                  <p class="cron-help-row"><code>1-5</code> {{ t('timers.cronHelpRange') }}</p>
+                  <p class="cron-help-row"><code>1,2,3</code> {{ t('timers.cronHelpList') }}</p>
+                  <p class="cron-help-title">{{ t('timers.cronHelpExamples') }}</p>
+                  <p class="cron-help-row"><code>0 9 * * *</code> {{ t('timers.cronExDaily') }}</p>
+                  <p class="cron-help-row"><code>0 * * * *</code> {{ t('timers.cronExHourly') }}</p>
+                  <p class="cron-help-row"><code>*/10 * * * *</code> {{ t('timers.cronEx10min') }}</p>
+                  <p class="cron-help-row"><code>0 9 * * 1-5</code> {{ t('timers.cronExWorkday') }}</p>
+                  <p class="cron-help-row"><code>0 9 1 * *</code> {{ t('timers.cronExMonthly') }}</p>
+                </div>
+              </NTooltip>
+            </div>
+            <p v-if="cronPreview" class="cron-preview">{{ t('timers.cronPreview') }}: {{ cronPreview }}</p>
           </div>
           <div v-else>
             <label class="manage-form-label">{{ t('timers.scheduleInterval') }}</label>
@@ -3297,6 +3467,14 @@ onBeforeUnmount(() => {
 .manage-form-label { display:block; margin:8px 0 4px; color:var(--subtle); font-size:12px; }
 .timer-schedule-mode { margin:12px 0 2px; }
 .manage-form-row { display:flex; align-items:center; gap:8px; margin-top:14px; color:var(--subtle); font-size:13px; }
+.cron-input-row { display:flex; align-items:center; gap:6px; }
+.cron-input-row .n-input { flex:1; }
+.cron-help-btn { flex-shrink:0; }
+.cron-preview { margin:6px 0 0; color:var(--subtle); font-size:12px; }
+.cron-help { max-width: 280px; }
+.cron-help-title { margin:6px 0 2px; font-weight:600; font-size:12px; }
+.cron-help-row { margin:2px 0; font-size:12px; line-height:1.5; color:inherit; }
+.cron-help-row code { background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:11px; }
 .manage-modal-footer { display:flex; justify-content:flex-end; gap:8px; }
 .timer-last-run { color:var(--subtle); font-size:11px; }
 .timer-runs-count { margin-left:4px; color:var(--subtle); font-size:11px; }
@@ -3304,7 +3482,13 @@ onBeforeUnmount(() => {
 .timer-run { padding:6px 8px; background:var(--surface); border:1px solid var(--border); border-radius:6px; }
 .timer-run-head { display:flex; align-items:center; gap:6px; }
 .timer-run-time { color:var(--subtle); font-size:11px; }
-.timer-run-summary { margin:4px 0 0; color:#405166; font-size:12px; line-height:1.5; word-break:break-word; max-height:64px; overflow:hidden; }
+.timer-run-summary { margin:4px 0 0; color:#405166; font-size:12px; line-height:1.5; word-break:break-word; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.timer-run--clickable { cursor:pointer; transition:background .15s; }
+.timer-run--clickable:hover { background:#f2f6ff; }
+.timer-cron-invalid { color:#d03050; font-size:11px; font-weight:600; }
+.timer-next-run { color:var(--subtle); font-size:11px; }
+.conversation-group-label { margin:10px 2px 2px; color:var(--subtle); font-size:11px; font-weight:600; letter-spacing:.3px; }
+.message--highlight { outline:2px solid #2563eb; outline-offset:2px; border-radius:10px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section > .n-button { align-self:flex-start; }
 .panel-group-head { display:flex; align-items:center; gap:6px; margin-top:2px; }

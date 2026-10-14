@@ -1,4 +1,4 @@
-﻿"""定时任务 API：任务 CRUD + 立即执行 + 执行履历。
+"""定时任务 API：任务 CRUD + 立即执行 + 执行履历。
 
 设计文档：docs/schedule_task.md 阶段二（§4.6）。
 存储与执行见 `api/timers_engine.py`（MooFile `db_timer_tasks_<hash8>`）。
@@ -40,6 +40,7 @@ class TimerPayload(BaseModel):
     schedule: str | None = None
     intervalMinutes: int | None = Field(default=None, ge=1, le=10080)
     sessionId: str | None = None
+    agent: str | None = None
     enabled: bool = True
 
 
@@ -49,13 +50,24 @@ class TimerUpdate(BaseModel):
     schedule: str | None = None
     intervalMinutes: int | None = None
     sessionId: str | None = None
+    agent: str | None = None
     enabled: bool | None = None
 
 
 @router.get("")
 def list_timers() -> list[dict[str, Any]]:
-    """任务列表（最新在前）。"""
-    return engine.list_tasks()
+    """任务列表（最新在前），附下次触发时间与 cron 有效性。"""
+    tasks = engine.list_tasks()
+    now = datetime.now()
+    for t in tasks:
+        sched = (t.get("schedule") or "").strip()
+        if sched:
+            nxt = engine.next_run_ms(sched, now)
+            t["nextRunAt"] = nxt
+            t["cronValid"] = nxt is not None
+        else:
+            t["cronValid"] = True
+    return tasks
 
 
 @router.post("")
@@ -92,6 +104,7 @@ def create_timer(payload: TimerPayload) -> dict[str, Any]:
         "intervalMinutes": payload.intervalMinutes,
         "sessionId": cid,
         "agentSessionId": agent_session_id,
+        "agent": (payload.agent or "default").strip() or "default",
         "enabled": payload.enabled,
         "lastRunAt": None,
         "lastStatus": "never",
@@ -119,6 +132,8 @@ def update_timer(task_id: str, payload: TimerUpdate) -> dict[str, Any]:
         task["prompt"] = payload.prompt
     if payload.sessionId is not None:
         task["sessionId"] = payload.sessionId
+    if payload.agent is not None:
+        task["agent"] = (payload.agent or "default").strip() or "default"
     if payload.enabled is not None:
         task["enabled"] = payload.enabled
     task["updatedAt"] = int(datetime.now().timestamp() * 1000)

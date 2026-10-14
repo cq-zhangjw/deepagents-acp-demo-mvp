@@ -185,7 +185,7 @@ async def _get_server() -> tuple[Any, TimerConn]:
         conn = await aiosqlite.connect(db_path)
         checkpointer = AsyncSqliteSaver(conn)
         _server = RollbackAgentServer(
-            agent=lambda ctx: build_agent(ctx, checkpointer),
+            agent=lambda ctx, agent_name=None: build_agent(ctx, checkpointer, agent_name=agent_name),
             load_sessions=True,
         )
         _server_conn = TimerConn()
@@ -205,10 +205,12 @@ def _make_user_msg(text: str) -> dict[str, Any]:
     }
 
 
-def _make_assistant_msg(final_text: str, status: str, started_at: int) -> dict[str, Any]:
+def _make_assistant_msg(
+    final_text: str, status: str, started_at: int, msg_id: str | None = None
+) -> dict[str, Any]:
     completed_at = _now_ms()
     return {
-        "id": uuid.uuid4().hex,
+        "id": msg_id or uuid.uuid4().hex,
         "role": "assistant",
         "finalText": final_text,
         "status": status,
@@ -274,8 +276,14 @@ def append_timer_start(cid: str, title: str, trigger_text: str) -> None:
     upsert_conversation(conv)
 
 
-def append_timer_end(cid: str, final_text: str, status: str) -> None:
-    """写「结束」：用最终文本覆盖最后一条 assistant 占位。"""
+def append_timer_end(
+    cid: str, final_text: str, status: str, assistant_message_id: str | None = None
+) -> None:
+    """写「结束」：用最终文本覆盖最后一条 assistant 占位。
+
+    `assistant_message_id` 透传给消息 id，使 runHistory 的
+    `assistantMessageId` 与会话消息 id 一致（前端执行记录可跳转到消息）。
+    """
     conv = get_conversation(cid)
     if conv is None:
         return
@@ -288,9 +296,9 @@ def append_timer_end(cid: str, final_text: str, status: str) -> None:
             idx = i
             break
     if idx >= 0:
-        msgs[idx] = _make_assistant_msg(final_text, status, msgs[idx]["createdAt"])
+        msgs[idx] = _make_assistant_msg(final_text, status, msgs[idx]["createdAt"], assistant_message_id)
     else:
-        msgs.append(_make_assistant_msg(final_text, status, _now_ms()))
+        msgs.append(_make_assistant_msg(final_text, status, _now_ms(), assistant_message_id))
     conv["messages"] = msgs
     conv["updatedAt"] = _now_ms()
     upsert_conversation(conv)
@@ -318,10 +326,12 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
     session_id = task.get("agentSessionId") or task.get("id")
     cid = task.get("sessionId") or ""
     started_at = _now_ms()
+    assistant_message_id = uuid.uuid4().hex
     run: dict[str, Any] = {
         "id": f"run_{uuid.uuid4().hex[:8]}",
         "startedAt": started_at,
         "status": "running",
+        "assistantMessageId": assistant_message_id,
     }
 
     if cid:
@@ -334,6 +344,10 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
     # 注册 session 元数据（_session_config 依赖 _session_cwds）
     server._session_cwds[session_id] = str(_PROJECT_ROOT)  # noqa: SLF001
     server._session_modes[session_id] = "auto"  # noqa: SLF001
+    # 按任务指定 agent（build_agent 的 agent_name 覆盖；未指定则 default）
+    agent_name = (task.get("agent") or "default").strip() or "default"
+    server._session_agents[session_id] = agent_name  # noqa: SLF001
+    logger.info("[timers] run task=%s agent=%s session=%s", task.get("id"), agent_name, session_id)
     conn.permission_denied = False
 
     final_text = ""
@@ -372,13 +386,17 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
             "finishedAt": finished_at,
             "status": status,
             "outputSummary": (final_text or "")[:500],
-            "assistantMessageId": uuid.uuid4().hex,
         }
     )
 
     if cid:
         try:
-            append_timer_end(cid, final_text, "completed" if status == "success" else "failed")
+            append_timer_end(
+                cid,
+                final_text,
+                "completed" if status == "success" else "failed",
+                assistant_message_id=assistant_message_id,
+            )
         except Exception:  # noqa: BLE001 - history write must never fail the run
             logger.exception("[timers] write end to session failed cid=%s", cid)
 
@@ -395,15 +413,37 @@ async def run_timer_task(task: dict[str, Any], trigger_text: str) -> dict[str, A
 
 
 # ---- 调度 ----
+def _normalize_cron(expr: str) -> str:
+    """把用户可能粘贴的 Quartz 风格表达式转成标准 5 段 cron（croniter 用）。
+
+    - Quartz 6 段（秒 分 时 日 月 周，如 `0 30 16 * * ?`）：丢弃秒段 → 5 段；
+    - `?` / `*?`（无特定值，Quartz 的 day-of-month/day-of-week）等价 `*`：
+      逐段去掉 `?`，空段按 `*` 处理。
+    """
+    parts = expr.strip().split()
+    if len(parts) == 6:
+        parts = parts[1:]
+    norm = [(p.replace("?", "") or "*") for p in parts]
+    return " ".join(norm)
+
+
+def next_run_ms(schedule: str, now: datetime) -> int | None:
+    """计算下次触发时间（毫秒）；非法表达式返回 None。"""
+    try:
+        return int(croniter(_normalize_cron(schedule), now).get_next(datetime).timestamp() * 1000)
+    except Exception:  # noqa: BLE001 - invalid cron is surfaced as None
+        return None
+
+
 def _is_due(task: dict[str, Any], now: datetime, tick_seconds: int) -> bool:
     schedule = (task.get("schedule") or "").strip()
     interval = task.get("intervalMinutes")
     last = task.get("lastRunAt")
     if schedule:
         try:
-            prev = croniter(schedule, now).get_prev(datetime)
+            prev = croniter(_normalize_cron(schedule), now).get_prev(datetime)
         except Exception:  # noqa: BLE001 - malformed cron never breaks the tick
-            logger.exception("[timers] bad cron %r task=%s", schedule, task.get("id"))
+            logger.warning("[timers] invalid cron %r task=%s (5-field standard cron expected)", schedule, task.get("id"))
             return False
         window = now - timedelta(seconds=max(tick_seconds * 2, 30))
         return prev >= window and (last is None or last < int(prev.timestamp() * 1000))
