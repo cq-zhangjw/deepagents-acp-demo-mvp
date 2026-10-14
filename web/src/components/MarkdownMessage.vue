@@ -38,11 +38,14 @@ async function getMermaid() {
 // 渲染结果缓存：流式期间 DOM 会被反复重建，相同源码的图直接复用 SVG，避免重复渲染
 const mermaidCache = new Map<string, string>()
 
-// 附件占位解析：AI 回复中的 [图片: <file_id>] 被解析为后端附件接口的图片。
-// 附件实际存储在 MooFile 附件库（db_attachments_*），这里只消耗一个短 ID，
-// 不会把图片 base64 塞进会话文本（token 友好）。
+// 附件占位解析：AI 回复中的 [图片: <file_id>] 被解析为后端附件接口的图片，
+// [文件: <file_id>] 被解析为可下载的附件链接。附件实际存储在 MooFile 附件库
+// （db_attachments_*），这里只消耗一个短 ID，不会把图片 base64 塞进会话文本
+// （token 友好）。
 function resolveAttachments(content: string): string {
-  return content.replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![图片](/api/attachments/${id})`)
+  return content
+    .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![图片](/api/attachments/${id})`)
+    .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 附件](/api/attachments/${id})`)
 }
 
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS

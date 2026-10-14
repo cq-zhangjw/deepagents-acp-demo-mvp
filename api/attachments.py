@@ -43,6 +43,9 @@ def _public(record: dict) -> dict:
         "height": record.get("height"),
         "alt_text": record.get("alt_text"),
         "url": f"/api/attachments/{record.get('file_id')}",
+        # Absolute filesystem path for local Agent tools (same convention as
+        # browser_screenshot): the model can read the file directly.
+        "path": str(store.resolve_abs(record)),
         "created_at": record.get("created_at"),
     }
 

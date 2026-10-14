@@ -71,6 +71,11 @@ interface AttachmentRef {
   kind?: 'file' | 'image'
   data?: string
   previewUrl?: string
+  // MooFile attachment-store refs (filled after upload / present on replay)
+  file_id?: string
+  url?: string
+  // In-memory only: the raw File queued for upload on send (never persisted)
+  file?: File
 }
 
 interface AnalysisEntry {
@@ -1479,7 +1484,8 @@ async function sendAgentPrompt(
   resources: AttachmentRef[],
   assistantMessage: AssistantMessage,
   isNewConversation: boolean,
-  retry = false
+  retry = false,
+  userMessage?: UserMessage
 ) {
   // Reset the cancel flag on every prompt path (submit & retry), otherwise a
   // previous cancel would skip the completed status and leave the stop button stuck.
@@ -1494,22 +1500,46 @@ async function sendAgentPrompt(
     await connect()
     await initialize()
     await ensureAgentSession(conversation, isNewConversation)
-    const fileAttachmentContext = resources
-      .filter((resource) => resource.kind !== 'image')
-      .map((resource) => `附件虚拟路径：${resource.path ?? resource.uri}\n请直接使用本地文件工具读取该路径；不要转换为 Windows 路径或 HTTP 地址。`)
-      .join('\n\n')
-    const promptText = [text, fileAttachmentContext].filter(Boolean).join('\n\n')
+    const sessionId = conversation.agentSessionId ?? conversation.id
+
+    // Upload every queued attachment into the MooFile attachment store and
+    // keep only a lightweight placeholder in the prompt, so the conversation
+    // never balloons with base64 / raw bytes. Replays (retry) already carry
+    // file_id + path and are reused as-is.
+    const uploaded: AttachmentRef[] = []
+    for (const resource of resources) {
+      uploaded.push(await uploadResource(resource, sessionId))
+    }
+    // Back-fill the persisted user message with the lightweight refs (drop the
+    // in-memory base64/file fields) before saveConversation runs.
+    if (userMessage) {
+      const stored = conversation.messages.find((m) => m.id === userMessage.id)
+      if (stored && stored.role === 'user') {
+        stored.attachments = uploaded.map(({ file_id, url, path, name, mimeType, kind }) =>
+          ({ file_id, url, path, name, mimeType, kind }))
+      }
+    }
+
+    const promptLines: string[] = []
+    if (text) promptLines.push(text)
+    for (const resource of uploaded) {
+      if (resource.file_id) {
+        const pathHint = resource.path ? `（附件路径：${resource.path}）` : ''
+        if (resource.kind === 'image') {
+          promptLines.push(`[图片: ${resource.file_id}]${pathHint}\n如需要分析图片内容，请使用本地文件工具读取该路径。`)
+        } else {
+          promptLines.push(`[文件: ${resource.file_id}]${pathHint}\n请直接使用本地文件工具读取该路径；不要转换为 Windows 路径或 HTTP 地址。`)
+        }
+      } else if (resource.path || resource.uri) {
+        // Legacy attachments (pre attachment-store): keep the old virtual-path hint.
+        promptLines.push(`附件虚拟路径：${resource.path ?? resource.uri}\n请直接使用本地文件工具读取该路径；不要转换为 Windows 路径或 HTTP 地址。`)
+      }
+    }
+    const promptText = promptLines.filter(Boolean).join('\n\n')
     const content: Array<Record<string, unknown>> = []
-    if (promptText || !resources.some((resource) => resource.kind === 'image')) {
+    if (promptText) {
       content.push({ type: 'text', text: promptText })
     }
-    resources
-      .filter((resource) => resource.kind === 'image' && resource.data)
-      .forEach((resource) => content.push({
-        type: 'image',
-        data: resource.data,
-        mimeType: resource.mimeType ?? 'image/png'
-      }))
     cancelRequested = false // reset the cancel flag for a new run
     // retry re-sends the same user text with _meta.retry so the backend rolls the
     // checkpoint back by one turn before re-answering (no stitching on the old reply)
@@ -1554,7 +1584,15 @@ async function submitPrompt() {
   errorText.value = ''
   contextOverride.value = null // a new prompt resets to the local estimate
   const resources = [...attachments.value]
-  const userMessage: UserMessage = { id: createId('user'), role: 'user', text, attachments: resources, createdAt: Date.now() }
+  // Persist only the lightweight view (no base64 / raw File); file_id/url/path
+  // are back-filled by sendAgentPrompt once the uploads complete.
+  const userMessage: UserMessage = {
+    id: createId('user'),
+    role: 'user',
+    text,
+    attachments: resources.map(({ name, mimeType, kind }) => ({ name, mimeType, kind })),
+    createdAt: Date.now()
+  }
   const assistantMessage: AssistantMessage = {
     id: createId('assistant'),
     role: 'assistant',
@@ -1572,7 +1610,7 @@ async function submitPrompt() {
   attachments.value = []
   void saveConversation(conversation)
   await nextTick(scrollToBottom)
-  await sendAgentPrompt(conversation, text, resources, assistantMessage, isNewConversation)
+  await sendAgentPrompt(conversation, text, resources, assistantMessage, isNewConversation, false, userMessage)
 }
 
 function assistantSourceMessage(assistant: AssistantMessage) {
@@ -1824,6 +1862,45 @@ function fileToDataUrl(file: File) {
   })
 }
 
+/**
+ * Upload one attachment into the MooFile attachment store (db_attachments_*)
+ * and return its lightweight ref (file_id + url + absolute path). Resources
+ * that already carry a file_id (replayed/retried messages) are returned
+ * untouched. Legacy base64 images are converted back to a File and uploaded,
+ * so replaying an old conversation migrates it onto the unified store.
+ */
+async function uploadResource(resource: AttachmentRef, sessionId: string): Promise<AttachmentRef> {
+  if (resource.file_id) return resource
+  let file = resource.file
+  if (!file && resource.data && resource.kind === 'image') {
+    try {
+      const raw = atob(resource.data)
+      const bytes = new Uint8Array(raw.length)
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+      file = new File([bytes], resource.name || `image-${Date.now()}.png`, { type: resource.mimeType ?? 'image/png' })
+    } catch {
+      file = undefined
+    }
+  }
+  if (!file) return resource
+  const form = new FormData()
+  form.append('file', file)
+  form.append('session_id', sessionId)
+  form.append('kind', resource.kind ?? 'file')
+  form.append('alt_text', resource.name)
+  const response = await fetch('/api/attachments', { method: 'POST', body: form })
+  if (!response.ok) throw new Error(t('uploadFailed'))
+  const body = await response.json()
+  return {
+    file_id: body.file_id,
+    url: body.url,
+    path: body.attachment?.path,
+    name: body.attachment?.filename ?? resource.name,
+    mimeType: body.attachment?.mime ?? resource.mimeType,
+    kind: resource.kind ?? 'file'
+  }
+}
+
 async function addFiles(files: Iterable<File>) {
   const selectedFiles = Array.from(files)
   if (!selectedFiles.length) return
@@ -1837,15 +1914,20 @@ async function addFiles(files: Iterable<File>) {
           mimeType: file.type,
           kind: 'image',
           data: previewUrl.slice(previewUrl.indexOf(',') + 1),
-          previewUrl
+          previewUrl,
+          file
         })
         continue
       }
-      const form = new FormData()
-      form.append('file', file)
-      const response = await fetch('/upload', { method: 'POST', body: form })
-      if (!response.ok) throw new Error(t('uploadFailed'))
-      attachments.value.push({ ...(await response.json()), kind: 'file' })
+      // Non-image files are also queued and uploaded to the MooFile attachment
+      // store on send (unified with images; the conversation only keeps a
+      // lightweight placeholder, never base64 or the raw bytes).
+      attachments.value.push({
+        name: file.name,
+        mimeType: file.type,
+        kind: 'file',
+        file
+      })
     }
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('uploadFailed'), { duration: 3000 })
@@ -1931,7 +2013,8 @@ async function captureScreenAttachment() {
       mimeType: file.type,
       kind: 'image',
       data: previewUrl.slice(previewUrl.indexOf(',') + 1),
-      previewUrl
+      previewUrl,
+      file
     })
   } catch {
     // ignore capture failures
@@ -2000,14 +2083,16 @@ function openAttachment(attachment: AttachmentRef) {
     // in-page overlay instead of window.open (which blocks data: URLs).
     const url = attachment.previewUrl
       ?? (attachment.data ? `data:${attachment.mimeType ?? 'image/png'};base64,${attachment.data}` : undefined)
+      ?? attachment.url
       ?? attachment.path
       ?? attachment.uri
     if (url) previewImage.value = url
     return
   }
-  // Uploaded files: resolve the virtual path against the current origin so the
-  // download anchor always points at a real, absolute URL.
-  const url = attachment.path ?? attachment.uri ?? attachment.previewUrl
+  // Files live in the MooFile attachment store (serve URL) or, for legacy
+  // uploads, under the virtual /uploads path. Resolve against the current
+  // origin so the download anchor always points at a real, absolute URL.
+  const url = attachment.url ?? attachment.path ?? attachment.uri ?? attachment.previewUrl
   if (!url) return
   const absolute = new URL(url, window.location.origin).href
   const anchor = document.createElement('a')
@@ -2339,7 +2424,7 @@ onBeforeUnmount(() => {
                 <MarkdownMessage v-if="item.text" class="user-content" variant="user" :content="item.text" />
                 <div v-if="item.attachments.length" class="attachment-list">
                   <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }" role="button" :aria-label="attachment.kind === 'image' ? t('previewAttachment') : t('downloadAttachment')" @click="openAttachment(attachment)">
-                    <img v-if="attachment.kind === 'image' && attachment.previewUrl" :src="attachment.previewUrl" :alt="attachment.name" class="attachment-preview" />
+                    <img v-if="attachment.kind === 'image' && (attachment.previewUrl || attachment.url)" :src="attachment.previewUrl ?? attachment.url" :alt="attachment.name" class="attachment-preview" />
                     <NIcon :component="AttachOutline" /><span class="attachment-name">{{ attachment.name }}</span>
                   </span>
                 </div>
