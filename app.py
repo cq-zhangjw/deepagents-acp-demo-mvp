@@ -21,6 +21,7 @@ from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from api.chat_voice.chat_voice import router as chat_voice_router
+from api.attachments import router as attachments_router
 from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
@@ -91,6 +92,8 @@ app.include_router(knowledge_router)
 app.include_router(manage_router)
 # context compaction sub-router: /api/context/compact
 app.include_router(context_router)
+# attachment (image/file) sub-router: /api/attachments (MooFile-backed)
+app.include_router(attachments_router)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 

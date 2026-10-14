@@ -82,6 +82,11 @@
             "default": true,
             "type": "boolean",
             "description": "Whether to capture the full scrollable page (True) or only\nthe visible viewport (False)."
+          },
+          "session_id": {
+            "default": null,
+            "type": "string",
+            "description": "Optional owning conversation id. When provided the PNG is\npersisted into the MooFile attachment store (db_attachments_*) and\nthe returned file_id can be rendered in the conversation with the\nplaceholder ``[图片: <file_id>]``. When omitted the screenshot is\nsaved under ./screenshots and the absolute path is returned\n(legacy behaviour, usable with a file-read tool)."
           }
         },
         "type": "object",

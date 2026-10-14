@@ -1,11 +1,32 @@
 import asyncio
 import json
 import os
+import sys
 import time
 import traceback
+from pathlib import Path
 from fastmcp import FastMCP
 
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
+
+# Make the project root importable: this MCP server runs as a standalone
+# subprocess whose sys.path contains only this directory, but it needs the
+# shared utils package (attachment_store) to persist screenshots into the
+# MooFile attachment store.
+def _find_project_root() -> Path:
+    p = Path(__file__).resolve().parent
+    for _ in range(8):
+        if (p / "utils" / "attachment_store.py").is_file():
+            return p
+        p = p.parent
+    return p
+
+_PROJECT_ROOT = _find_project_root()
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import utils.attachment_store as attachment_store
+
 script_path = os.path.dirname(__file__)
 
 browser: BrowserContext = None
@@ -429,24 +450,55 @@ async def browser_goto_url(
 
 
 @mcp.tool()
-async def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
+async def browser_screenshot(
+    page_index: int = -1,
+    full_page: bool = True,
+    session_id: str = None,
+) -> str:
     """Capture a screenshot of the current (most recently opened) page.
 
     Args:
         page_index: Which page to capture. -1 means the most recent page.
         full_page: Whether to capture the full scrollable page (True) or only
             the visible viewport (False).
+        session_id: Optional owning conversation id. When provided the PNG is
+            persisted into the MooFile attachment store (db_attachments_*) and
+            the returned file_id can be rendered in the conversation with the
+            placeholder ``[图片: <file_id>]``. When omitted the screenshot is
+            saved under ./screenshots and the absolute path is returned
+            (legacy behaviour, usable with a file-read tool).
 
     Returns:
-        The absolute path of the saved PNG. Use a file-read tool to view it.
+        The absolute path of the saved PNG, or the attachment file_id plus its
+        absolute path.
     """
     try:
         page = await _active_page(page_index)
         if page is None:
             return "Error: no page is open. Please run do_automation_by_script or open a URL first."
+        name = f"shot_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000) % 1000}.png"
+        if session_id:
+            data = await page.screenshot(full_page=full_page)
+            record = await asyncio.to_thread(
+                attachment_store.register,
+                data,
+                name,
+                session_id,
+                None,
+                "image",
+                "image/png",
+                f"Browser screenshot: {page.url}",
+            )
+            abs_path = attachment_store.resolve_abs(record)
+            return (
+                f"Screenshot saved: {record['file_id']} "
+                f"(path: {abs_path}). Mention it in your reply with the "
+                f"placeholder [图片: {record['file_id']}] so it renders in the "
+                f"conversation."
+            )
+        # Legacy path: save under screenshots/ and return the absolute path.
         shot_dir = os.path.join(SCRIPT_PATH, "screenshots")
         os.makedirs(shot_dir, exist_ok=True)
-        name = f"shot_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000) % 1000}.png"
         path = os.path.join(shot_dir, name)
         await page.screenshot(path=path, full_page=full_page)
         return f"Screenshot saved: {os.path.abspath(path)}"

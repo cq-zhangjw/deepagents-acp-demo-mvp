@@ -38,6 +38,13 @@ async function getMermaid() {
 // 渲染结果缓存：流式期间 DOM 会被反复重建，相同源码的图直接复用 SVG，避免重复渲染
 const mermaidCache = new Map<string, string>()
 
+// 附件占位解析：AI 回复中的 [图片: <file_id>] 被解析为后端附件接口的图片。
+// 附件实际存储在 MooFile 附件库（db_attachments_*），这里只消耗一个短 ID，
+// 不会把图片 base64 塞进会话文本（token 友好）。
+function resolveAttachments(content: string): string {
+  return content.replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![图片](/api/attachments/${id})`)
+}
+
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS
 const md = new MarkdownIt({ html: true, linkify: true })
 const defaultLinkRender = md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
@@ -46,7 +53,7 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   tokens[idx].attrSet('rel', 'noopener noreferrer')
   return defaultLinkRender(tokens, idx, options, env, self)
 }
-const safeHtml = computed(() => DOMPurify.sanitize(md.render(props.content)))
+const safeHtml = computed(() => DOMPurify.sanitize(md.render(resolveAttachments(props.content))))
 
 function languageOf(block: HTMLElement) {
   return Array.from(block.classList)
@@ -174,6 +181,7 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 
 <style scoped>
 .markdown-message { color: #1d2733; font-size: 15px; line-height: 1.75; overflow-wrap: anywhere; }
+.markdown-message :deep(img) { display: block; max-width: 100%; height: auto; margin: 12px 0; border-radius: 8px; border: 1px solid #e4e8ee; }
 .markdown-message :deep(p) { margin: 0 0 12px; } .markdown-message :deep(p:last-child) { margin-bottom: 0; }
 .markdown-message :deep(h1),.markdown-message :deep(h2),.markdown-message :deep(h3) { margin: 20px 0 10px; line-height: 1.35; } .markdown-message :deep(h1) { font-size: 20px; } .markdown-message :deep(h2) { font-size: 17px; } .markdown-message :deep(h3) { font-size: 15px; }
 .markdown-message :deep(ul),.markdown-message :deep(ol) { padding-left: 22px; margin: 8px 0 12px; } .markdown-message :deep(table) { display:block; max-width:100%; overflow:auto; border-collapse:collapse; margin:12px 0; } .markdown-message :deep(th),.markdown-message :deep(td) { padding:7px 10px; border:1px solid #e4e8ee; text-align:left; } .markdown-message :deep(th) { background:#f1f4f8; }

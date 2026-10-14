@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -285,6 +286,8 @@ def update_message(session_id: str, message_json: dict) -> bool:
 
     The session's sqlite checkpoint mirror is invalidated afterwards so no
     stale copy survives; the next prompt rebuilds it from the table.
+    Attachments whose ``[图片: id]`` placeholders disappeared in the edit are
+    cascade-deleted from the attachment store.
     """
     with _LOCK:
         _acquire_file_lock()
@@ -298,6 +301,7 @@ def update_message(session_id: str, message_json: dict) -> bool:
             target_id = _msg_id(message_json)
             for i, m in enumerate(messages):
                 if _msg_id(m) == target_id:
+                    _cascade_removed_images(session_id, m, message_json)
                     messages[i] = message_json
                     util.update_data(
                         DB_NAME,
@@ -321,6 +325,8 @@ def delete_message(session_id: str, message_id: str) -> bool:
 
     The session's sqlite checkpoint mirror is invalidated afterwards so no
     stale copy survives; the next prompt rebuilds it from the table.
+    Attachments bound to the removed message are cascade-deleted from the
+    attachment store.
     """
     with _LOCK:
         _acquire_file_lock()
@@ -345,6 +351,7 @@ def delete_message(session_id: str, message_id: str) -> bool:
                 _INDEXES,
             )
             _delete_checkpoint_thread(session_id)
+            _cascade_message_attachments(session_id, message_id)
             return True
         finally:
             _release_file_lock()
@@ -353,10 +360,11 @@ def delete_message(session_id: str, message_id: str) -> bool:
 def delete_session(session_id: str) -> bool:
     """Delete a session everywhere it is persisted.
 
-    Removes the record from the context table AND deletes the session's
-    langgraph checkpoint thread from agent_state.sqlite, so no stale state
-    survives a session deletion. Idempotent: returns True if anything was
-    actually removed.
+    Removes the record from the context table, deletes the session's
+    langgraph checkpoint thread from agent_state.sqlite, and cascade-deletes
+    the session's attachments (records + blobs) from the attachment store, so
+    no stale state survives a session deletion. Idempotent: returns True if
+    anything was actually removed.
     """
     removed_any = False
     with _LOCK:
@@ -373,6 +381,9 @@ def delete_session(session_id: str) -> bool:
     # Delete the langgraph checkpoint thread. sqlite is written by the gateway
     # and the agent subprocesses, so it lives outside the bson file lock.
     if _delete_checkpoint_thread(session_id):
+        removed_any = True
+    # Cascade-delete the session's attachments (records + blobs).
+    if _cascade_session_attachments(session_id):
         removed_any = True
     return removed_any
 
@@ -432,3 +443,62 @@ def _msg_id(message: dict) -> str | None:
     """Extract the message id from a to_json payload (lives under kwargs.id)."""
     kwargs = message.get("kwargs") if isinstance(message, dict) else {}
     return kwargs.get("id") if isinstance(kwargs, dict) else None
+
+
+# --- Attachment cascade helpers ---------------------------------------------
+# Attachments (images / files) are persisted in the separate MooFile store
+# utils/attachment_store (db/db_attachments_*). Deletion of a session or a
+# message must also clear the associated attachments so no orphaned blob or
+# metadata record survives. Imports are kept function-local so this module
+# stays side-effect free at import time (it is loaded by the acp_agent
+# subprocess too).
+
+_IMAGE_PLACEHOLDER_RE = re.compile(r"\[图片:\s*([a-zA-Z0-9_-]+)\]")
+
+
+def _message_text(message: dict) -> str:
+    """Best-effort extraction of a message's plain-text content."""
+    kwargs = message.get("kwargs") if isinstance(message, dict) else {}
+    if isinstance(kwargs, dict):
+        content = kwargs.get("content")
+        if isinstance(content, str):
+            return content
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def _extract_image_ids(content: str) -> set[str]:
+    return set(_IMAGE_PLACEHOLDER_RE.findall(content or ""))
+
+
+def _cascade_session_attachments(session_id: str) -> bool:
+    """Delete all attachments of a session; returns True if any was removed."""
+    try:
+        from utils.attachment_store import delete_by_session
+        return delete_by_session(session_id) > 0
+    except Exception:  # noqa: BLE001 - cascade must never break the deletion
+        return False
+
+
+def _cascade_message_attachments(session_id: str, message_id: str) -> bool:
+    """Delete attachments bound to one message; returns True if any removed."""
+    try:
+        from utils.attachment_store import delete_by_message
+        return delete_by_message(session_id, message_id) > 0
+    except Exception:  # noqa: BLE001 - cascade must never break the deletion
+        return False
+
+
+def _cascade_removed_images(session_id: str, old_message: dict, new_message: dict) -> None:
+    """Delete attachments whose ``[图片: id]`` placeholders disappeared in an edit."""
+    try:
+        old_ids = _extract_image_ids(_message_text(old_message))
+        new_ids = _extract_image_ids(_message_text(new_message))
+        removed = old_ids - new_ids
+        if not removed:
+            return
+        from utils.attachment_store import delete
+        for fid in removed:
+            delete(fid)
+    except Exception:  # noqa: BLE001 - cascade must never break the edit
+        pass

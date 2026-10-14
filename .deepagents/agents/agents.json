@@ -727,6 +727,59 @@
           },
           "tools": [
             {
+              "name": "browser_goto_url",
+              "title": "Browser Goto Url",
+              "description": "Open a URL in a new page with configurable waiting.",
+              "inputSchema": {
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "The URL to navigate to."
+                  },
+                  "timeout": {
+                    "default": 30000,
+                    "type": "integer",
+                    "description": "Maximum time in milliseconds to wait for the page to load\n(default 30000)."
+                  },
+                  "wait_selector": {
+                    "default": null,
+                    "type": "string",
+                    "description": "Optional CSS selector to wait for after navigation,\ne.g. a container that must finish rendering. Use it when the page\nloads content asynchronously."
+                  },
+                  "wait_timeout": {
+                    "default": null,
+                    "type": "integer",
+                    "description": "Maximum time in milliseconds to wait for the selector\n(defaults to ``timeout``)."
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "type": "object",
+                "additionalProperties": false
+              },
+              "execution": null,
+              "outputSchema": {
+                "properties": {
+                  "result": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "type": "object",
+                "x-fastmcp-wrap-result": true
+              },
+              "icons": null,
+              "annotations": null,
+              "_meta": {
+                "fastmcp": {
+                  "tags": []
+                }
+              }
+            },
+            {
               "name": "browser_screenshot",
               "title": "Browser Screenshot",
               "description": "Capture a screenshot of the current (most recently opened) page.",
@@ -841,49 +894,6 @@
                 },
                 "required": [
                   "script"
-                ],
-                "type": "object",
-                "additionalProperties": false
-              },
-              "execution": null,
-              "outputSchema": {
-                "properties": {
-                  "result": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "result"
-                ],
-                "type": "object",
-                "x-fastmcp-wrap-result": true
-              },
-              "icons": null,
-              "annotations": null,
-              "_meta": {
-                "fastmcp": {
-                  "tags": []
-                }
-              }
-            },
-            {
-              "name": "do_automation_by_script",
-              "title": "Do Automation By Script",
-              "description": "Execute browser automation steps from a JSON script file.\n\nThe JSON file must contain a list of step lists. Each step list is passed to\nthe browser automation runner, which supports navigation, interaction,\nwaiting, text extraction, and screenshots. ``wait_user`` controls\nvisibility: True shows the browser window, False runs it headless.\n\nThe browser stays resident after the call on purpose, so later tool calls\n(browser_screenshot / browser_get_content / further automation) reuse the\nsame instance instead of relaunching Edge. It is torn down when this MCP\nprocess exits.",
-              "inputSchema": {
-                "properties": {
-                  "script_param_file": {
-                    "type": "string",
-                    "description": "Path to the UTF-8 encoded JSON automation script. Sample file placed in the ./samples folder."
-                  },
-                  "wait_user": {
-                    "default": true,
-                    "type": "boolean",
-                    "description": "Whether to show the browser window (True) or run headless (False)."
-                  }
-                },
-                "required": [
-                  "script_param_file"
                 ],
                 "type": "object",
                 "additionalProperties": false
