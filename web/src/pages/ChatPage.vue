@@ -1900,8 +1900,25 @@ async function uploadResource(resource: AttachmentRef, sessionId: string): Promi
   form.append('kind', resource.kind ?? 'file')
   form.append('alt_text', resource.name)
   const response = await fetch('/api/attachments', { method: 'POST', body: form })
-  if (!response.ok) throw new Error(t('uploadFailed'))
+  if (!response.ok) {
+    // Carry the backend detail (which keeps the full stack trace on a 500) so
+    // the user sees the real reason instead of a bare "upload failed".
+    let detail = ''
+    try {
+      const body = await response.json()
+      if (typeof body?.detail === 'string') detail = body.detail
+      else if (body?.detail) detail = JSON.stringify(body.detail)
+    } catch { /* non-JSON error body */ }
+    const reason = detail ? `${response.status}: ${detail}` : `HTTP ${response.status} ${response.statusText}`
+    console.error('[uploadResource] upload failed:', reason)
+    throw new Error(reason)
+  }
   const body = await response.json()
+  if (!body?.ok) {
+    const reason = body?.detail ? `server: ${body.detail}` : 'server returned ok=false'
+    console.error('[uploadResource] upload rejected:', reason)
+    throw new Error(reason)
+  }
   return {
     file_id: body.file_id,
     url: body.url,

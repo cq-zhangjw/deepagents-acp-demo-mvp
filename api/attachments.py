@@ -18,6 +18,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import traceback
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -84,7 +85,12 @@ async def upload_attachment(
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("upload attachment failed session=%s", session_id)
-        raise HTTPException(status_code=500, detail=f"store failed: {e}") from e
+        # Keep the full stack trace in the response so the client can diagnose
+        # storage failures instead of a bare "upload failed" message.
+        raise HTTPException(
+            status_code=500,
+            detail=f"store failed: {e}\n{traceback.format_exc()}",
+        ) from e
     return {
         "ok": True,
         "file_id": record["file_id"],
