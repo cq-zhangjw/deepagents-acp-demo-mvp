@@ -1,10 +1,11 @@
+import asyncio
 import json
 import os
 import time
 import traceback
 from fastmcp import FastMCP
 
-from playwright.sync_api import sync_playwright, BrowserContext, Playwright, Page
+from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 script_path = os.path.dirname(__file__)
 
 browser: BrowserContext = None
@@ -75,11 +76,12 @@ _XML_TREE_JS = r"""
 mcp = FastMCP("browser mcp server")
 SCRIPT_PATH = os.path.dirname(__file__)
 
-def init_browser(
+
+async def init_browser(
         user_data_dir=None,
         headless=False
 ):
-    """Launch a persistent Microsoft Edge browser context.
+    """Launch a persistent Microsoft Edge browser context (async).
 
     Args:
         user_data_dir: Optional directory for the persistent browser profile.
@@ -91,31 +93,42 @@ def init_browser(
     global browser, playwright
     if user_data_dir is not None:
         user_data_dir = os.path.abspath(user_data_dir)
-    playwright = sync_playwright().start()
-    browser = playwright.chromium.launch_persistent_context(
-        user_data_dir=user_data_dir,
-        accept_downloads=True,
-        headless=headless,
-        slow_mo=100 if not headless else 0,
-        channel="msedge",
-        # Keep the OS sandbox on: without it Edge shows the
-        # "unsupported command-line flag --no-sandbox" infobar.
-        chromium_sandbox=True,
-        args=[
-            '--start-maximized',
-            # Suppress the "unsupported command-line flag" infobar for the
-            # automation flags below (Chromium skips it when --test-type is set).
-            '--test-type',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-infobars',
-            '--disable-features=TranslateUI',
-        ],
-        ignore_default_args=['--enable-automation'],
-        no_viewport=True
-    )
+    playwright = await async_playwright().start()
+    try:
+        browser = await playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            accept_downloads=True,
+            headless=headless,
+            slow_mo=100 if not headless else 0,
+            channel="msedge",
+            # Keep the OS sandbox on: without it Edge shows the
+            # "unsupported command-line flag --no-sandbox" infobar.
+            chromium_sandbox=True,
+            args=[
+                '--start-maximized',
+                # Suppress the "unsupported command-line flag" infobar for the
+                # automation flags below (Chromium skips it when --test-type is set).
+                '--test-type',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--disable-features=TranslateUI',
+            ],
+            ignore_default_args=['--enable-automation'],
+            no_viewport=True
+        )
+    except Exception:
+        # Always stop the driver subprocess, otherwise its transport is
+        # finalized after the loop closes and emits a scary-but-harmless
+        # "Event loop is closed" warning on shutdown.
+        try:
+            await playwright.stop()
+        except Exception:  # noqa: BLE001 - best effort cleanup
+            pass
+        raise
+    return browser
 
 
-def close_browser():
+async def close_browser():
     """Close the global browser context and stop the Playwright instance.
 
     Returns:
@@ -123,32 +136,38 @@ def close_browser():
     """
     global playwright, browser
     if browser:
-        browser.close()
+        try:
+            await browser.close()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
     if playwright:
-        playwright.stop()
+        try:
+            await playwright.stop()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
 
     # 重置全局变量
     playwright = browser = None
 
 
-def _ensure_browser(headless=False):
+async def _ensure_browser(headless=False):
     """Lazily initialise the persistent browser context if not running."""
     global browser, playwright
     if playwright is None or browser is None:
-        init_browser(headless=headless)
+        await init_browser(headless=headless)
     return browser
 
 
-def _active_page(page_index=-1):
+async def _active_page(page_index=-1):
     """Return the currently usable page (default: the most recently opened)."""
     global browser
-    _ensure_browser()
+    await _ensure_browser()
     if browser is None or not browser.pages:
         return None
     return browser.pages[page_index]
 
 
-def go_to_url(url: str, css_flag: str = None, max_retry: int = 1) -> Page:
+async def go_to_url(url: str, css_flag: str = None, max_retry: int = 1) -> Page:
     """Open a URL in a new page and optionally wait for a SharePoint element.
 
     Args:
@@ -164,16 +183,16 @@ def go_to_url(url: str, css_flag: str = None, max_retry: int = 1) -> Page:
     """
     global browser, playwright
     if playwright is None and browser is None:
-        init_browser()
+        await init_browser()
     count = 1
     while True:
-        page = browser.new_page()
+        page = await browser.new_page()
 
         try:
-            page.goto(url, wait_until="networkidle", timeout=GLOBAL_TIMEOUT)
+            await page.goto(url, wait_until="networkidle", timeout=GLOBAL_TIMEOUT)
 
             if css_flag is not None:
-                page.wait_for_selector("#O365_SuiteBranding_container", timeout=GLOBAL_TIMEOUT)
+                await page.wait_for_selector("#O365_SuiteBranding_container", timeout=GLOBAL_TIMEOUT)
             break
         except:
             count += 1
@@ -200,7 +219,7 @@ def get_element(page, selector, iframe_selector=None):
         return page.locator(selector).first
 
 
-def wait_for_element(page, selector, iframe_selector=None, timeout=GLOBAL_TIMEOUT, state="visible"):
+async def wait_for_element(page, selector, iframe_selector=None, timeout=GLOBAL_TIMEOUT, state="visible"):
     """Wait for an element to reach the requested state.
 
     Args:
@@ -220,12 +239,12 @@ def wait_for_element(page, selector, iframe_selector=None, timeout=GLOBAL_TIMEOU
 
     if iframe_selector:
         frame = page.frame_locator(iframe_selector)
-        frame.locator(selector).wait_for(state=state, timeout=timeout)
+        await frame.locator(selector).wait_for(state=state, timeout=timeout)
     else:
-        page.locator(selector).wait_for(state=state, timeout=timeout)
+        await page.locator(selector).wait_for(state=state, timeout=timeout)
 
 
-def run_automation(steps: list, wait_user: bool=True):
+async def run_automation(steps: list, wait_user: bool=True):
     """Run a sequence of browser actions in a new page.
 
     Each step is a dictionary that may contain ``action``, ``element_selector``,
@@ -251,11 +270,11 @@ def run_automation(steps: list, wait_user: bool=True):
 
     headless = False if wait_user else True
     if browser is None:
-        init_browser(headless=headless)
+        await init_browser(headless=headless)
 
     def on_page_close(page_obj: Page):
         pass
-    page = browser.new_page()
+    page = await browser.new_page()
     page.on("close", on_page_close)
 
     # logger.info(f"📋 Start action，total steps: {len(steps)} ...")
@@ -288,17 +307,17 @@ def run_automation(steps: list, wait_user: bool=True):
 
                 # 等待 wait_selector 出现（如果配置了）
                 if wait_selector is not None:
-                    wait_for_element(page, wait_selector, wait_iframe, timeout)
+                    await wait_for_element(page, wait_selector, wait_iframe, timeout)
 
                 if action is not None:
                     if action == "goto":
-                        page.goto(resolved_value, wait_until="networkidle", timeout=timeout)
+                        await page.goto(resolved_value, wait_until="networkidle", timeout=timeout)
 
                     elif action == "click":
                         if element_selector:
                             element = get_element(page, element_selector, element_iframe)
                             if element:
-                                element.click(timeout=timeout)
+                                await element.click(timeout=timeout)
 
                     elif action == "fill":
                         if not element_selector:
@@ -306,14 +325,14 @@ def run_automation(steps: list, wait_user: bool=True):
                             return f"Error: ❌ action 'fill', must set the 'element_selector'"
                         element = get_element(page, element_selector, element_iframe)
                         if element:
-                            element.fill(resolved_value, timeout=timeout)
+                            await element.fill(resolved_value, timeout=timeout)
 
                     elif action == "wait":
                         if resolved_value:
-                            page.wait_for_timeout(float(resolved_value))
+                            await page.wait_for_timeout(float(resolved_value))
                         elif wait_selector:
                             # 如果 wait 动作没有指定 value，但有 wait_selector，则等待该元素
-                            wait_for_element(page, wait_selector, wait_iframe, timeout)
+                            await wait_for_element(page, wait_selector, wait_iframe, timeout)
 
                     elif action == "extract":
                         if not element_selector:
@@ -322,7 +341,7 @@ def run_automation(steps: list, wait_user: bool=True):
                             return f"Error: ❌ action 'extract', must set the 'element_selector' as extraction source!"
                         element = get_element(page, element_selector, element_iframe)
                         if element:
-                            text = element.inner_text()
+                            text = await element.inner_text()
                             if save_as:
                                 storage[save_as] = text.strip()
                                 # logger.info(f"💾 extract success: {save_as} = '{storage[save_as]}'")
@@ -330,13 +349,13 @@ def run_automation(steps: list, wait_user: bool=True):
 
                     elif action == "screenshot":
                         path = resolved_value if resolved_value else f"screenshot_{int(time.time())}.png"
-                        page.screenshot(path=path)
+                        await page.screenshot(path=path)
 
                     elif action == "hover":
                         if element_selector:
                             element = get_element(page, element_selector, element_iframe)
                             if element:
-                                element.hover(timeout=timeout)
+                                await element.hover(timeout=timeout)
 
                     elif action == "select":
                         if not element_selector:
@@ -344,15 +363,15 @@ def run_automation(steps: list, wait_user: bool=True):
                             return f"Error: ❌ action 'select', must set the 'element_selector'"
                         element = get_element(page, element_selector, element_iframe)
                         if element:
-                            element.select_option(resolved_value, timeout=timeout)
+                            await element.select_option(resolved_value, timeout=timeout)
 
                     elif action == "press":
                         if not element_selector:
-                            page.keyboard.press(resolved_value)
+                            await page.keyboard.press(resolved_value)
                         else:
                             element = get_element(page, element_selector, element_iframe)
                             if element:
-                                element.press(resolved_value)
+                                await element.press(resolved_value)
 
                     else:
                         # raise ValueError(f"❌ Unknown action type: {action}")
@@ -363,18 +382,19 @@ def run_automation(steps: list, wait_user: bool=True):
                 attempt += 1
                 if attempt > max_retry:
                     error_img = f"{SCRIPT_PATH}/error_step_{index + 1}_{int(time.time())}.png"
-                    page.screenshot(path=error_img)
+                    await page.screenshot(path=error_img)
                     # logger.info(f"❌ Step {index + 1} failed after {max_retry} retries. Screenshot saved: {error_img}")
                     # raise e
                     return f"Error: ❌ Step {index + 1} failed after {max_retry} retries. Screenshot saved: {error_img}. Traceback: {traceback.format_exc()}"
                 else:
                     # logger.info(f"⏳ Retry {attempt}/{max_retry} after error: {str(e)}")
-                    time.sleep(2)
+                    await asyncio.sleep(2)
 
     return page
 
+
 @mcp.tool()
-def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
+async def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
     """Capture a screenshot of the current (most recently opened) page.
 
     Args:
@@ -386,21 +406,21 @@ def browser_screenshot(page_index: int = -1, full_page: bool = True) -> str:
         The absolute path of the saved PNG. Use a file-read tool to view it.
     """
     try:
-        page = _active_page(page_index)
+        page = await _active_page(page_index)
         if page is None:
             return "Error: no page is open. Please run do_automation_by_script or open a URL first."
         shot_dir = os.path.join(SCRIPT_PATH, "screenshots")
         os.makedirs(shot_dir, exist_ok=True)
         name = f"shot_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000) % 1000}.png"
         path = os.path.join(shot_dir, name)
-        page.screenshot(path=path, full_page=full_page)
+        await page.screenshot(path=path, full_page=full_page)
         return f"Screenshot saved: {os.path.abspath(path)}"
     except Exception:
         return f"Error: {traceback.format_exc()}"
 
 
 @mcp.tool()
-def browser_get_content(
+async def browser_get_content(
     format: str = "text",
     max_length: int = 20000,
     max_depth: int = 8,
@@ -423,12 +443,12 @@ def browser_get_content(
         The extracted content (truncated with a marker when over the limit).
     """
     try:
-        page = _active_page(page_index)
+        page = await _active_page(page_index)
         if page is None:
             return "Error: no page is open. Please run do_automation_by_script or open a URL first."
         fmt = (format or "text").strip().lower()
         if fmt == "html":
-            html = page.content()
+            html = await page.content()
             if len(html) > max_length:
                 return html[:max_length] + "\n...(truncated)"
             return html
@@ -438,12 +458,12 @@ def browser_get_content(
                 f"window.__PW_MAX_DEPTH={int(max_depth)};"
                 + _XML_TREE_JS
             )
-            tree = page.evaluate(code)
+            tree = await page.evaluate(code)
             if len(tree) > max_length:
                 return tree[:max_length] + "\n...(truncated)"
             return tree
         # default: readable text
-        text = page.locator("body").inner_text(timeout=GLOBAL_TIMEOUT)
+        text = await page.locator("body").inner_text(timeout=GLOBAL_TIMEOUT)
         if len(text) > max_length:
             return text[:max_length] + "\n...(truncated)"
         return text
@@ -452,7 +472,7 @@ def browser_get_content(
 
 
 @mcp.tool()
-def browser_execute_js(script: str, page_index: int = -1) -> str:
+async def browser_execute_js(script: str, page_index: int = -1) -> str:
     """Execute JavaScript in the current page and return its result.
 
     Use this to verify elements before acting on them: check that a selector
@@ -471,10 +491,10 @@ def browser_execute_js(script: str, page_index: int = -1) -> str:
         The evaluated result as a string (JSON for dicts/lists).
     """
     try:
-        page = _active_page(page_index)
+        page = await _active_page(page_index)
         if page is None:
             return "Error: no page is open. Please run do_automation_by_script or open a URL first."
-        result = page.evaluate(script)
+        result = await page.evaluate(script)
         if isinstance(result, (dict, list)):
             return json.dumps(result, ensure_ascii=False, default=str)
         if isinstance(result, bool):
@@ -487,7 +507,7 @@ def browser_execute_js(script: str, page_index: int = -1) -> str:
 
 
 @mcp.tool()
-def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> str:
+async def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> str:
     """Execute browser automation steps from a JSON script file.
 
     The JSON file must contain a list of step lists. Each step list is passed to
@@ -511,7 +531,7 @@ def do_automation_by_script(script_param_file: str, wait_user: bool = True) -> s
         pages = []
         scripts_list = json.load(open(script_param_file, encoding="utf-8"))
         for steps in scripts_list:
-            page = run_automation(steps, wait_user=wait_user)
+            page = await run_automation(steps, wait_user=wait_user)
             pages.append(page)
         return f"Do automation completed. {len(pages)} page(s) open."
     except:
