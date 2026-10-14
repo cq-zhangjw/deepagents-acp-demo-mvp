@@ -343,7 +343,11 @@ function migrateConversations(saved: unknown): Conversation[] {
       // status saved during an interrupted run would otherwise keep the stop
       // button active forever after reload.
       if (item.status === 'pending' || item.status === 'streaming' || item.status === 'waiting_permission') {
-        item = { ...item, status: 'completed' }
+        // 定时任务会话的 pending 是真实运行中（执行期间 5s 轮询能拉到），
+        // 必须保留 loading 态；普通会话的历史中断态则统一归为 completed。
+        if (!String(conversation.id).startsWith('timer-')) {
+          item = { ...item, status: 'completed' }
+        }
       }
       const hasNewSegments = Array.isArray(item.segments)
         && item.segments.some((segment) => segment.type === 'thought' || segment.type === 'tool' || segment.type === 'plan')
@@ -916,6 +920,20 @@ async function loadTimers() {
     timers.value = await res.json()
   } catch (e: any) {
     message.error(e.message || String(e))
+  }
+}
+
+/** 面板主动刷新：拉取任务最新状态；若正处于定时任务会话，同时静默刷新履历。 */
+const timersRefreshing = ref(false)
+async function refreshTimerPanel() {
+  timersRefreshing.value = true
+  try {
+    await loadTimers()
+    if (activeConversationId.value && String(activeConversationId.value).startsWith('timer-')) {
+      await refreshTimerSessionQuiet(activeConversationId.value)
+    }
+  } finally {
+    timersRefreshing.value = false
   }
 }
 
@@ -2675,6 +2693,7 @@ watch(activeConversationId, (id) => {
     timerRefreshInterval = window.setInterval(() => {
       if (activeConversationId.value === id) {
         void refreshTimerSessionQuiet(id)
+        void loadTimers() // 执行履历 / 状态同步刷新
       } else if (timerRefreshInterval !== undefined) {
         window.clearInterval(timerRefreshInterval)
         timerRefreshInterval = undefined
@@ -3152,9 +3171,14 @@ onBeforeUnmount(() => {
     <aside class="right-panel" :class="{ 'right-panel--open': rightPanelVisible }">
       <div class="right-panel-header">
         <strong>{{ rightPanelTitle }}</strong>
-        <NButton quaternary circle size="tiny" :aria-label="actionLabels.closePanel" @click.capture="rightPanelVisible = false">
-          <template #icon><NIcon :component="CloseOutline" /></template>
-        </NButton>
+        <div class="right-panel-header-actions">
+          <NButton v-if="rightPanelTab === 'timers'" quaternary circle size="tiny" :aria-label="t('timers.refresh')" :loading="timersRefreshing" @click="refreshTimerPanel">
+            <template #icon><NIcon :component="RefreshOutline" /></template>
+          </NButton>
+          <NButton quaternary circle size="tiny" :aria-label="actionLabels.closePanel" @click.capture="rightPanelVisible = false">
+            <template #icon><NIcon :component="CloseOutline" /></template>
+          </NButton>
+        </div>
       </div>
       <div class="right-panel-body">
         <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge'" class="panel-search">
@@ -3291,14 +3315,14 @@ onBeforeUnmount(() => {
             </NButton>
           </div>
           <div v-if="!panelTimers.length" class="panel-placeholder"><p>{{ t('timers.noTasks') }}</p></div>
-          <div v-for="task in panelTimers" :key="task.id" class="manage-card" :class="{ 'manage-card--disabled': !task.enabled, 'manage-card--active': activeConversationId === task.sessionId }">
+          <div v-for="task in panelTimers" :key="task.id" class="manage-card" :class="{ 'manage-card--disabled': !task.enabled, 'manage-card--active': activeConversationId === task.sessionId, 'manage-card--clickable': !!task.sessionId }" @click="task.sessionId && selectConversation(task.sessionId)">
             <div class="manage-card-head">
-              <button type="button" class="manage-card-title-btn" :class="{ 'manage-card-title-btn--active': activeConversationId === task.sessionId }" :title="task.sessionId ? t('timers.openSession') : undefined" :disabled="!task.sessionId" @click="task.sessionId && selectConversation(task.sessionId)">
+              <button type="button" class="manage-card-title-btn" :class="{ 'manage-card-title-btn--active': activeConversationId === task.sessionId }" :title="task.sessionId ? t('timers.openSession') : undefined" :disabled="!task.sessionId" @click.stop="task.sessionId && selectConversation(task.sessionId)">
                 <strong class="manage-card-title">{{ task.name }}</strong>
               </button>
               <div class="manage-card-head-right">
                 <span class="timer-run-badge">{{ t('timers.ranTimes', { count: (task.runHistory || []).length }) }}</span>
-                <NSwitch size="small" :value="task.enabled" @update:value="toggleTimer(task)" />
+                <NSwitch size="small" :value="task.enabled" @click.stop @update:value="toggleTimer(task)" />
               </div>
             </div>
             <p class="manage-card-desc" :title="task.prompt">{{ task.prompt }}</p>
@@ -3310,13 +3334,13 @@ onBeforeUnmount(() => {
               <span v-else-if="task.nextRunAt" class="timer-next-run">{{ t('timers.nextRun') }}: {{ formatTimerTime(task.nextRunAt) }}</span>
               <span v-if="task.lastRunAt" class="timer-last-run">{{ t('timers.lastRun') }}: {{ formatTimerTime(task.lastRunAt) }}</span>
             </div>
-            <div class="manage-card-actions">
+            <div class="manage-card-actions" @click.stop>
               <NButton quaternary size="tiny" :loading="timerBusyId === task.id" :disabled="!!timerBusyId" @click="runTimer(task)">{{ t('timers.run') }}</NButton>
               <NButton quaternary size="tiny" @click="openTimerEdit(task)">{{ actionLabels.edit }}</NButton>
               <NButton quaternary size="tiny" type="error" @click="timerDeleteTarget = task">{{ actionLabels.delete }}</NButton>
             </div>
             <!-- 执行记录常开（最新在前）；一览模式（timersScopeAll）下隐藏 -->
-            <div v-if="!timersScopeAll" class="timer-runs">
+            <div v-if="!timersScopeAll" class="timer-runs" @click.stop>
               <div
                 v-for="run in sortedRuns(task)"
                 :key="run.id"
@@ -3581,7 +3605,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
-.sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; }
+.sidebar { width:264px; flex:0 0 264px; display:flex; flex-direction:column; padding:22px 14px 16px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar * { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 23px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:16px; } .conversation-search { padding:0 2px 8px; } .conversation-label { padding:0 10px 8px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
@@ -3602,7 +3626,7 @@ onBeforeUnmount(() => {
 .hidden-action { display:inline-flex; }
 .agent-pill { max-width:130px; overflow:hidden; text-overflow:ellipsis; }
 .panel-placeholder { display:flex; flex-direction:column; align-items:center; gap:10px; padding:44px 10px; color:var(--subtle); font-size:13px; text-align:center; } .panel-placeholder .n-icon { font-size:22px; } .panel-section { display:flex; flex-direction:column; gap:6px; padding:4px 2px 14px; } .panel-section label { color:var(--subtle); font-size:12px; }
-.right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+.right-panel { display:none; flex:0 0 368px; width:368px; flex-direction:column; background:var(--surface); border-left:1px solid var(--border); } .right-panel--open { display:flex; } .right-panel-header { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 10px 0 16px; border-bottom:1px solid var(--border); } .right-panel-header strong { font-size:14px; } .right-panel-header-actions { display:flex; align-items:center; gap:2px; } .right-panel-body { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
 .panel-search { position:sticky; top:0; z-index:2; background:var(--surface); padding-bottom:6px; }
 .panel-section-actions { display:flex; align-items:center; gap:8px; }
 .panel-section-actions .panel-search-input { flex:1; }
@@ -3642,7 +3666,7 @@ onBeforeUnmount(() => {
 .panel-group-count { font-size:10px; color:var(--subtle); background:var(--canvas); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
 .manage-card { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--canvas); display:flex; flex-direction:column; gap:6px; transition:box-shadow .15s ease; }
 .manage-card:hover { box-shadow:0 2px 8px rgba(29,39,51,.06); }
-.manage-card--disabled { opacity:.55; } .manage-card--active { border-color:#2563eb; box-shadow:0 0 0 1px rgba(37,99,235,.35); }
+.manage-card--disabled { opacity:.55; } .manage-card--active { border-color:#2563eb; box-shadow:0 0 0 1px rgba(37,99,235,.35); } .manage-card--clickable { cursor:pointer; }
 .manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .manage-card-head-right { display:flex; align-items:center; gap:8px; }
 .timer-run-badge { font-size:12px; color:var(--subtle); white-space:nowrap; }

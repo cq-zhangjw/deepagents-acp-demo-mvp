@@ -123,6 +123,7 @@ export default {
     deleteConfirmTitle: 'Delete scheduled task?',
     deleteConfirmBody: 'The task will be removed; its session is kept.',
     history: 'Run History',
+    refresh: 'Refresh status',
     ranTimes: 'Ran {count} times',
     noRuns: 'No runs yet',
     lastRun: 'Last Run',
