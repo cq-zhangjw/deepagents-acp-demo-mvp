@@ -314,8 +314,12 @@ def append_timer_start(
         conv["agentSessionId"] = agent_session_id
     msgs = conv.get("messages") or []
     started_at = _now_ms()
-    # 任务会话不带累积履历：每次执行独立，先清空旧消息只保留本次执行
-    msgs = [_make_timer_user_msg(task, trigger_text)]
+    # 清理上次中断残留的 pending 占位（正常流程 append_timer_end 会覆盖）
+    while msgs and msgs[-1].get("role") == "assistant" and msgs[-1].get("status") in ("pending", "running"):
+        msgs.pop()
+    # 消息履历完整保留：每次执行【追加】而非清空，前端可见完整历史；
+    # AI 上下文在发消息时裁切（run_timer_task 每次独立 agentSessionId，仅携带本次 Prompt）
+    msgs = list(msgs) + [_make_timer_user_msg(task, trigger_text)]
     msgs.append(
         {
             "id": uuid.uuid4().hex,
