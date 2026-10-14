@@ -419,10 +419,8 @@ async function loadHistory() {
   }
   localStorage.removeItem(STORE_KEY)
   if (conversations.value.length) {
-    activeConversationId.value = conversations.value[0]?.id ?? ''
-    // initial page load does not go through selectConversation, so fetch the
-    // real model-side usage for the first conversation here as well
-    void refreshContextUsage()
+    // 默认进入新建会话：不选中任何历史会话（用户明确要求）
+    activeConversationId.value = ''
   }
 }
 
@@ -480,12 +478,16 @@ function selectConversation(id: string) {
   attachments.value = []
   sidebarVisible.value = false
   errorText.value = ''
-  // 切换会话时自动展开对应分组；进入具体定时任务会话时，右侧面板只保留该任务
+  // 切换会话时自动展开对应分组；进入具体定时任务会话时，右侧面板只保留该任务；
+  // 点击普通会话则关闭定时任务面板
   if (String(id).startsWith('timer-')) {
     timerCollapsed.value = false
     timersScopeAll.value = false
+    rightPanelTab.value = 'timers'
+    rightPanelVisible.value = true
   } else {
     normalCollapsed.value = false
+    rightPanelVisible.value = false
   }
   // Keep the in-memory state of a running conversation local so history cannot
   // roll the stream back
@@ -688,7 +690,8 @@ function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'time
   rightPanelVisible.value = true
   panelQuery.value = ''
   if (tab === 'timers') {
-    // 点击「定时任务」导航：展开侧栏分组并显示所有定时器（不按会话过滤）
+    // 点击「定时任务」导航：切到新建会话（不选中）+ 显示所有定时器一览（不带执行记录）
+    activeConversationId.value = ''
     timerCollapsed.value = false
     timersScopeAll.value = true
   }
@@ -3312,8 +3315,8 @@ onBeforeUnmount(() => {
               <NButton quaternary size="tiny" @click="openTimerEdit(task)">{{ actionLabels.edit }}</NButton>
               <NButton quaternary size="tiny" type="error" @click="timerDeleteTarget = task">{{ actionLabels.delete }}</NButton>
             </div>
-            <!-- 执行记录常开（最新在前） -->
-            <div class="timer-runs">
+            <!-- 执行记录常开（最新在前）；一览模式（timersScopeAll）下隐藏 -->
+            <div v-if="!timersScopeAll" class="timer-runs">
               <div
                 v-for="run in sortedRuns(task)"
                 :key="run.id"
