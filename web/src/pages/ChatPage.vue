@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { cleanSpeechText, getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
@@ -285,6 +285,8 @@ const actionLabels = computed(() => ({
   available: locale.value === 'zh' ? '待选' : locale.value === 'ja' ? '未選択' : 'Available',
   selected: locale.value === 'zh' ? '已选' : locale.value === 'ja' ? '選択済み' : 'Selected',
   taskDetail: locale.value === 'zh' ? '任务详情' : locale.value === 'ja' ? 'タスク詳細' : 'Task details',
+  agentNameLabel: locale.value === 'zh' ? 'Agent 名' : locale.value === 'ja' ? 'エージェント名' : 'Agent name',
+  agentDescriptionLabel: locale.value === 'zh' ? 'Agent 概要' : locale.value === 'ja' ? 'エージェント概要' : 'Agent summary',
   skillName: locale.value === 'zh' ? '技能名' : locale.value === 'ja' ? 'スキル名' : 'Skill name',
   skillDescription: locale.value === 'zh' ? '技能描述' : locale.value === 'ja' ? 'スキル説明' : 'Skill description',
   skillBody: locale.value === 'zh' ? '技能正文' : locale.value === 'ja' ? 'スキル本文' : 'Skill body',
@@ -3642,7 +3644,7 @@ onBeforeUnmount(() => {
 
     <!-- 技能新建/编辑弹窗 -->
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
-      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal" role="dialog">
+      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
         <div class="manage-form skill-edit-form">
           <label class="manage-form-label">{{ actionLabels.skillName }}</label>
           <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" :disabled="!!skillForm.name" />
@@ -3673,7 +3675,7 @@ onBeforeUnmount(() => {
 
     <!-- 工具新建/编辑弹窗 -->
     <NModal :show="toolModalVisible" :mask-closable="false" @after-leave="toolModalVisible = false">
-      <NCard :title="toolForm.name ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal" role="dialog">
+      <NCard :title="toolForm.name ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
         <div class="manage-form">
           <NInput v-if="!toolForm.name" v-model:value="toolForm.name" size="small" :placeholder="'name'" />
           <NInput v-model:value="toolForm.description" size="small" :placeholder="'description'" />
@@ -3693,10 +3695,12 @@ onBeforeUnmount(() => {
 
     <!-- Agent 新建/编辑弹窗 -->
     <NModal :show="agentModalVisible" :mask-closable="false" @after-leave="agentModalVisible = false">
-      <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal" role="dialog">
+      <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
         <div class="manage-form manage-form-split">
           <div class="manage-form-left">
-            <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
+            <label class="manage-form-label">{{ actionLabels.agentNameLabel }}</label>
+            <NInput v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" :disabled="!!agentForm.name" />
+            <label class="manage-form-label">{{ actionLabels.agentDescriptionLabel }}</label>
             <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
             <label class="manage-form-label">{{ actionLabels.taskDetail }}</label>
             <NInput v-model:value="agentForm.body" type="textarea" :placeholder="actionLabels.taskDetail" />
@@ -3900,9 +3904,10 @@ onBeforeUnmount(() => {
 .tool-item-desc { font-size:11px; color:var(--subtle); margin:0; line-height:1.5; word-break:break-word; max-height:3em; overflow:hidden; }
 .agent-current { font-size:10px; color:#2563eb; border:1px solid rgba(37,99,235,.4); border-radius:99px; padding:1px 7px; }
 .manage-modal { width:min(520px, calc(100vw - 32px)); }
+.manage-modal--wide { width:min(80vw, 1200px); }
+.manage-modal--large { width:min(85vw, 1400px); height:min(85vh, 920px); display:flex; flex-direction:column; }
+.manage-modal--large :deep(.n-card__content) { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; }
 .manage-form { display:flex; flex-direction:column; gap:10px; }
-.manage-modal { width:min(85vw, 1400px); height:min(85vh, 920px); display:flex; flex-direction:column; }
-.manage-modal :deep(.n-card__content) { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; }
 .manage-form-split { display:grid; grid-template-columns:0.95fr 1.05fr; gap:20px; width:100%; height:100%; }
 .manage-form-left { display:flex; flex-direction:column; gap:10px; min-width:0; }
 .manage-form-left :deep(.n-input--textarea) { flex:1; }
@@ -3915,8 +3920,8 @@ onBeforeUnmount(() => {
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
-.manage-modal :deep(.n-transfer-list) { height:100%; }
-.manage-modal :deep(.n-transfer-list-body) { height:calc(100% - 38px); }
+.manage-modal--large :deep(.n-transfer-list) { height:100%; }
+.manage-modal--large :deep(.n-transfer-list-body) { height:calc(100% - 38px); }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
