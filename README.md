@@ -13,6 +13,7 @@ This project is a runnable ACP (Agent Client Protocol) web integration example: 
 - **Attachments**: upload or paste images/files, inline preview, download on click; context usage (used / `CONTENT_SIZE`) shown as percentage with hover detail.
 - **Error handling**: ACP error details are returned to the frontend, displayed as the AI message content plus a red error block; the stop button always recovers to send after failures or disconnects.
 - **Multi-language**: UI supports Simplified Chinese / Japanese / English (i18n locale files under `web/src/locales/`).
+- **Scheduled tasks**: cron / fixed-interval schedulers run DeepAgents tasks unattended against a moofile-backed store (`db/db_timer_tasks_*`); every run gets a fresh agent session (independent context), the conversation keeps the full run history (appended, AI context trimmed only at send time), and a right-hand panel lists tasks with per-run status (start time + duration).
 - **Voice call** (2.0): a top-bar call icon opens a dedicated voice-call window (`#/voice`, dark theme) that stays separate from the chat UI. It captures your speech with the browser Web Speech API (STT), synchronizes the recognized text into the main window's input box, and auto-sends it on pause through a `window.opener` bridge (`chatBridge`) so it runs as a normal session message; when the AI reply finishes, the call window fetches local TTS (`/api/chat_voice/tts`, genie-tts local ONNX in `models/`, in-memory WAV, 32 kHz) and speaks it aloud, then resumes listening. Preset voices are `zh` / `en` / `jp` / `auto`; `auto` splits mixed text by language segment (CJK hanzi → Chinese character `feibi`, kana → Japanese `mika`, Latin → English `thirtyseven`) and concatenates each language's audio with a short gap, so a mixed-language reply is read naturally. Long text is synthesized in one shot (no token-context truncation). Playback mode is chosen by `TTS_MODE` (default `file`, non-streaming full WAV; `stream` uses `/tts_stream` — with genie the whole audio is returned as a single PCM chunk, kept for compatibility). The TTS engine is selected by `TTS_ENGINE`: `genie` (default, local ONNX) · `edge_tts` (Microsoft Edge online voices — MP3 decoded to 24 kHz PCM via PyAV, no local model; configure `EDGE_TTS_VOICE_ZH` / `EDGE_TTS_VOICE_JA` / `EDGE_TTS_VOICE_EN` defaults, optional `EDGE_TTS_RATE` / `EDGE_TTS_VOLUME` / `EDGE_TTS_PITCH` prosody, and `EDGE_TTS_PROXY` for restricted networks) · `sapi` (Windows built-in speech voices via win32com, always available on Windows). With `TTS_FALLBACK=true` (default) a primary-engine failure (e.g. Edge service unreachable) automatically falls back to the Windows SAPI voices, so playback never goes silent; per-language SAPI voice fragments can be pinned with `SAPI_VOICE_ZH` / `SAPI_VOICE_JA` / `SAPI_VOICE_EN`. The main window keeps a reply-speak toggle next to the call icon plus a screen-share toggle (when on, sending a message auto-captures the screen as an image attachment), and message action bars have a speak button for any plain-text message.
 - **Knowledge base** (2.0): the right-hand panel adds a *Knowledge* tab backed by the external **moofile_base** project (RAG backend on `:8888`, fully separate repo/venv). The gateway exposes `/api/knowledge/config` (liveness probe + base URL), `/api/knowledge/databases` (vector knowledge-base list with per-agent enabled flag) and `/api/knowledge/start` (launch moofile_base from the UI when offline); the panel toggle enable/disable is a single source of truth with the tools panel — it adds/removes the `knowledge_server` MCP entry in `agents.json`, and the AI queries the knowledge base through that MCP server's `retrieve_knowledge` tool whenever it is available. When the backend is unreachable its MCP tools are skipped at assembly time (no hanging calls) and the panel shows an offline hint with a start button. The two projects share one `db/` directory (`MOOFILE_DB_DIR` points to this repo's `db`), so knowledge data and chat history live together. `start-all.ps1` / `stop-all.ps1` bring both services up/down in order (8888 → 8000); the moofile_base location is configured via `MOOFILE_BASE_ROOT_DIR` in `.env` (absolute, or relative to this project; default = sibling directory).
 - **Local run**: `start.ps1` / `stop.ps1` manage the gateway and agent processes; all runtime knobs are configured via `.env`.
@@ -184,6 +185,29 @@ http://127.0.0.1:8000/
 ```
 
 The root path serves the built Vue SPA (`web/dist`).
+
+## Scheduled tasks
+
+Timer tasks run DeepAgents agents on a schedule and record every run into a regular conversation:
+
+- **Schedules**: a cron expression or a fixed interval in minutes. The cron input is validated client-side (illegal expressions are rejected on save); an AI-generated natural-language explanation, preset chips and a `?` tooltip help with the syntax.
+- **Task fields**: name, one-line description, prompt, execution agent, enabled flag. When a run starts, the generated user message looks like:
+
+  ```text
+  任务名称：<name>・<type>・<schedule>
+  任务描述：<description>
+
+  触发方式：自动触发/手动触发
+
+  执行代理：<agent>
+
+  Prompt：<prompt>
+  ```
+
+- **Independent context per run**: each execution spins up a fresh agent session (new UUID `agentSessionId`), so the AI does not remember previous runs; the conversation message history, however, is fully appended and kept, and the AI context is only trimmed at send time.
+- **Run history**: a record is persisted as `running` before execution and updated to `success` / `failed` / `cancelled` afterwards; the panel shows start time + duration per run (newest first). A scheduler-wide lock prevents overlapping executions.
+- **Frontend**: the left sidebar groups timer conversations under "Scheduled Tasks"; the right panel shows the task list (card title shows the task description), per-task run records and a "Run Now" trigger. Viewing a timer session polls every 5 s silently (history + run records, without re-rendering the viewport); switching away stops the poll. Creating a task auto-switches to its conversation; deleting a task removes its conversation and vice versa (bidirectional cascade).
+- **API**: `/api/timers` (create / list / update), `/api/timers/{id}/run` (manual trigger), `/api/timers/{id}` (delete), `/api/timers/explain-cron` (natural-language explanation).
 
 ## Frontend interaction flow
 

@@ -218,3 +218,47 @@ TIMER_TICK_SECONDS=30
 
 - 定时任务专用会话（`timer-*`）由后端直接写入 history，前端展示为只读履历；发送端验证时该会话因无真实 ACP session 会提示 `unverifiable session kept`（非致命，lazy-recreated 仅在用户手动发送时触发）。
 - 任务名/触发文本中的中文在 PowerShell 直传 JSON 时会因终端编码损坏为 `??`（服务端 UTF-8 数据正常）；通过 Python / 前端 UI 写入无此问题。
+
+
+---
+
+## 最新实施状态（2026-10-15，多轮迭代后的最终形态）
+
+### 功能迭代（对比 4.x 方案，均已上线）
+
+- **任务描述字段**：新建 / 编辑表单新增「任务描述」（可选），面板卡片标题下方显示描述（无描述时回退显示 Prompt）。
+- **用户消息新格式**（`_make_timer_user_msg`，不带时间）：
+
+  ```text
+  任务名称：<名称>・<类型>・<周期>
+  任务描述：<描述>
+
+  触发方式：自动触发/手动触发
+
+  执行代理：<Agent>
+
+  Prompt：<提示词>
+  ```
+
+- **执行履历**：记录为 `running` → `success/failed/cancelled`；面板最新在前，单行显示「开始时间・耗时」（耗时 `Xs` / `XmYs`）。
+- **新建任务自动切会话**：保存后立即刷新会话履历并切换到对应会话。
+- **双向删除联动**：删除任务联动删除其会话；删除会话联动删除任务（防递归）。
+- **每 5s 静默轮询**：进入定时任务会话后仅更新履历与执行记录（不重渲染画面、不滚动），切换会话 / 关闭面板 / 删除任务即停止。
+- **per-agent 提示词生效**：`get_system_prompt(agent_name)` 按 agent 读取 `.deepagents/agents/<name>.agent.md`，`build_agent` 已改用该函数（修复固定 SYSTEM_PROMPT 问题）。
+- **cron 友好化**：输入时调用 AI 解释为自然语言（`/api/timers/explain-cron`），非法表达式保存时拦截，提供预设备选与 `?` 帮助浮层。
+- **i18n**：定时任务相关 UI（面板、表单、执行记录耗时、空会话标题、头像等）zh / en / ja 三语补齐。
+
+### 关键代码位置
+
+- 引擎：`api/timers_engine.py`（`_run_lock` 全局互斥、`run_timer_task`、`append_timer_start/end`、`_make_timer_user_msg`、`save_task` 自动补 `recordType`）。
+- API：`api/timers.py`（`TimerPayload/TimerUpdate` 含 `description`；create / update / run / delete / explain-cron）。
+- 前端：`web/src/pages/ChatPage.vue`（`timerDraft.description`、`saveTimer()` 新建后 `selectConversation(saved.sessionId)`、`formatDuration()`、`startTimerPolling/stopTimerPolling`、`displayTitle()`）。
+- 存储：`db/db_timer_tasks_<hash8>/db.bson`（moofile 规范，recordType=record）。
+
+### 验收状态（2026-10-15）
+
+- [x] 任务描述字段端到端（API 读写 + 表单 + 卡片显示）
+- [x] 用户消息新格式（任务名称・类型・周期 / 描述 / 触发方式 / 执行代理 / Prompt）
+- [x] 执行记录「开始时间・耗时」单行显示（实测 `2026/10/14 23:07:12・耗时 4s`）
+- [x] 新建任务自动切换会话（UI 实测当前标题变为任务名）
+- [x] i18n：英文界面 `New conversation` / `You` / `duration`；日文界面 `新しい会話` / `あなた` / `所要時間`
