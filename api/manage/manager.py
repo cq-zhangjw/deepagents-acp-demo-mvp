@@ -870,6 +870,7 @@ def _agent_entry(name: str, data: dict) -> dict:
     return {
         "name": name,
         "description": (data.get("description") or ""),
+        "longDescription": (data.get("longDescription") or ""),
         "enabled": data.get("enabled", True),
         "model": data.get("model"),
         "system_prompt": data.get("system_prompt"),
@@ -988,6 +989,7 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
     """Whitelist fields: keep only the known AgentDef keys."""
     def_data = {
         "description": (payload.get("description") or "").strip(),
+        "longDescription": (payload.get("longDescription") or "").strip(),
         "enabled": bool(payload.get("enabled", True)),
     }
     model = payload.get("model")

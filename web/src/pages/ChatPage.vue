@@ -284,6 +284,7 @@ const actionLabels = computed(() => ({
   close: locale.value === 'zh' ? '关闭' : locale.value === 'ja' ? '閉じる' : 'Close',
   available: locale.value === 'zh' ? '待选' : locale.value === 'ja' ? '未選択' : 'Available',
   selected: locale.value === 'zh' ? '已选' : locale.value === 'ja' ? '選択済み' : 'Selected',
+  longDescription: locale.value === 'zh' ? '详细描述' : locale.value === 'ja' ? '詳細説明' : 'Detailed description',
   searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
   noMatch: locale.value === 'zh' ? '无匹配结果' : locale.value === 'ja' ? '一致する結果がありません' : 'No matches',
   mcpServers: locale.value === 'zh' ? 'MCP 服务' : locale.value === 'ja' ? 'MCP サーバー' : 'MCP Servers',
@@ -1472,7 +1473,7 @@ async function submitTool() {
 
 // new agent modal
 const agentModalVisible = ref(false)
-const agentForm = ref({ name: '', description: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
+const agentForm = ref({ name: '', description: '', longDescription: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
   skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
 )
@@ -1493,7 +1494,7 @@ async function submitAgent() {
       await apiManage('/api/manage/agents', 'POST', agentForm.value)
     }
     agentModalVisible.value = false
-    agentForm.value = { name: '', description: '', subagents: [], skills: [], tools: [] }
+    agentForm.value = { name: '', description: '', longDescription: '', subagents: [], skills: [], tools: [] }
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -1504,12 +1505,13 @@ function openAgentEdit(item?: any) {
     ? {
         name: item.name,
         description: item.description || '',
+        longDescription: item.longDescription || '',
         subagents: item.subagents || [],
         skills: item.skills || [],
         // tools new structure: extract the linked MCP server directory names
         tools: (item.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
       }
-    : { name: '', description: '', subagents: [], skills: [], tools: [] }
+    : { name: '', description: '', longDescription: '', subagents: [], skills: [], tools: [] }
   agentModalVisible.value = true
 }
 
@@ -3651,15 +3653,27 @@ onBeforeUnmount(() => {
     <!-- Agent 新建/编辑弹窗 -->
     <NModal :show="agentModalVisible" :mask-closable="false" @after-leave="agentModalVisible = false">
       <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal" role="dialog">
-        <div class="manage-form">
-          <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
-          <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
-          <label class="manage-form-label">{{ actionLabels.linkedSubagents }}</label>
-          <NTransfer v-model:value="agentForm.subagents" :options="agentSubagentOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
-          <label class="manage-form-label">{{ actionLabels.linkedSkills }}</label>
-          <NTransfer v-model:value="agentForm.skills" :options="agentSkillOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
-          <label class="manage-form-label">{{ actionLabels.linkedTools }}</label>
-          <NTransfer v-model:value="agentForm.tools" :options="agentToolOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+        <div class="manage-form manage-form-split">
+          <div class="manage-form-left">
+            <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
+            <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
+            <label class="manage-form-label">{{ actionLabels.longDescription }}</label>
+            <NInput v-model:value="agentForm.longDescription" type="textarea" :placeholder="actionLabels.longDescription" />
+          </div>
+          <div class="manage-form-right">
+            <div class="manage-form-field">
+              <label class="manage-form-label">{{ actionLabels.linkedSubagents }}</label>
+              <NTransfer v-model:value="agentForm.subagents" :options="agentSubagentOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+            </div>
+            <div class="manage-form-field">
+              <label class="manage-form-label">{{ actionLabels.linkedSkills }}</label>
+              <NTransfer v-model:value="agentForm.skills" :options="agentSkillOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+            </div>
+            <div class="manage-form-field">
+              <label class="manage-form-label">{{ actionLabels.linkedTools }}</label>
+              <NTransfer v-model:value="agentForm.tools" :options="agentToolOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+            </div>
+          </div>
         </div>
         <template #footer>
           <div class="manage-form-actions">
@@ -3844,14 +3858,23 @@ onBeforeUnmount(() => {
 .agent-current { font-size:10px; color:#2563eb; border:1px solid rgba(37,99,235,.4); border-radius:99px; padding:1px 7px; }
 .manage-modal { width:min(520px, calc(100vw - 32px)); }
 .manage-form { display:flex; flex-direction:column; gap:10px; }
+.manage-modal { width:min(85vw, 1400px); height:min(85vh, 920px); display:flex; flex-direction:column; }
+.manage-modal .n-card__content { flex:1; overflow:auto; display:flex; }
+.manage-form-split { display:grid; grid-template-columns:0.95fr 1.05fr; gap:20px; width:100%; height:100%; }
+.manage-form-left { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.manage-form-left .n-input--textarea { flex:1; }
+.manage-form-left .n-input--textarea .n-input__textarea-el { height:100% !important; }
+.manage-form-right { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.manage-form-field { display:flex; flex-direction:column; flex:1; min-height:0; }
+.manage-form-field .manage-form-label { margin:0 0 4px; }
+.manage-form-field .n-transfer { flex:1; height:auto; min-height:0; }
 .manage-form-code :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:12px; line-height:1.6; }
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
 .agent-option-sub { display:inline-flex; align-items:center; gap:2px; margin-left:6px; padding:1px 6px; border-radius:8px; background:rgba(255, 170, 0, 0.14); color:#b45309; font-size:11px; }
-.manage-modal .n-transfer { height: 150px; }
-.manage-modal .n-transfer-list { height: 100%; }
-.manage-modal .n-transfer-list-body { height: calc(100% - 38px); }
+.manage-modal .n-transfer-list { height:100%; }
+.manage-modal .n-transfer-list-body { height:calc(100% - 38px); }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
