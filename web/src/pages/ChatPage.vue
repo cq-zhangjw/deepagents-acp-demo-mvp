@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { cleanSpeechText, getTtsConfig, playTtsStream, stopTtsStream } from '../api/ttsStream'
@@ -3644,10 +3644,8 @@ onBeforeUnmount(() => {
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
       <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal" role="dialog">
         <div class="manage-form skill-edit-form">
-          <template v-if="!skillForm.name">
-            <label class="manage-form-label">{{ actionLabels.skillName }}</label>
-            <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" />
-          </template>
+          <label class="manage-form-label">{{ actionLabels.skillName }}</label>
+          <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" :disabled="!!skillForm.name" />
           <label class="manage-form-label">{{ actionLabels.skillDescription }}</label>
           <NInput v-model:value="skillForm.description" size="small" :placeholder="'description'" />
           <div class="skill-edit-split">
@@ -3841,7 +3839,7 @@ onBeforeUnmount(() => {
 .timer-schedule-mode { margin:12px 0 2px; }
 .manage-form-row { display:flex; align-items:center; gap:8px; margin-top:14px; color:var(--subtle); font-size:13px; }
 .cron-input-row { display:flex; align-items:center; gap:6px; }
-.cron-input-row .n-input { flex:1; }
+.cron-input-row :deep(.n-input) { flex:1; }
 .cron-help-btn { flex-shrink:0; }
 .cron-preview { margin:6px 0 0; color:var(--subtle); font-size:12px; } .cron-preview--invalid { color:#d03050; font-weight:600; } .cron-preview--ok { color:#1a7f37; }
 .cron-help { max-width: 280px; }
@@ -3868,7 +3866,7 @@ onBeforeUnmount(() => {
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section-note { font-size:12px; color:var(--subtle); padding:2px 2px 0; }
 .manage-card--sub-linked { border-color:rgba(255,170,0,.5); background:rgba(255,170,0,.06); cursor:pointer; }
-.panel-section > .n-button { align-self:flex-start; }
+.panel-section > :deep(.n-button) { align-self:flex-start; }
 .panel-group-head { display:flex; align-items:center; gap:6px; margin-top:2px; }
 .panel-group-head--mcp { margin-top:6px; padding-top:8px; border-top:1px dashed var(--border); }
 .panel-group-label { font-size:12px; font-weight:600; color:var(--text); }
@@ -3904,11 +3902,11 @@ onBeforeUnmount(() => {
 .manage-modal { width:min(520px, calc(100vw - 32px)); }
 .manage-form { display:flex; flex-direction:column; gap:10px; }
 .manage-modal { width:min(85vw, 1400px); height:min(85vh, 920px); display:flex; flex-direction:column; }
-.manage-modal .n-card__content { flex:1; overflow:auto; display:flex; }
+.manage-modal :deep(.n-card__content) { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; }
 .manage-form-split { display:grid; grid-template-columns:0.95fr 1.05fr; gap:20px; width:100%; height:100%; }
 .manage-form-left { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.manage-form-left .n-input--textarea { flex:1; }
-.manage-form-left .n-input--textarea .n-input__textarea-el { height:100% !important; }
+.manage-form-left :deep(.n-input--textarea) { flex:1; }
+.manage-form-left :deep(.n-input--textarea .n-input__textarea-el) { height:100% !important; }
 .manage-form-right { display:flex; flex-direction:column; gap:12px; min-width:0; }
 .manage-form-field { display:flex; flex-direction:column; flex:1; min-height:0; }
 .manage-form-field .manage-form-label { margin:0 0 4px; }
@@ -3917,8 +3915,8 @@ onBeforeUnmount(() => {
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
-.manage-modal .n-transfer-list { height:100%; }
-.manage-modal .n-transfer-list-body { height:calc(100% - 38px); }
+.manage-modal :deep(.n-transfer-list) { height:100%; }
+.manage-modal :deep(.n-transfer-list-body) { height:calc(100% - 38px); }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
@@ -3937,8 +3935,8 @@ onBeforeUnmount(() => {
 .skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; min-width:0; }
 .skill-edit-label { color:var(--subtle); font-size:12px; }
 .skill-edit-editor :deep(textarea) { font:12px/1.5 "Cascadia Code",Consolas,monospace !important; }
-.skill-edit-col .n-input--textarea { flex:1; min-height:0; }
-.skill-edit-col .n-input--textarea .n-input__textarea-el { height:100% !important; }
+.skill-edit-col :deep(.n-input--textarea) { flex:1; min-height:0; }
+.skill-edit-col :deep(.n-input--textarea .n-input__textarea-el) { height:100% !important; overflow-y:auto; }
 .skill-edit-preview-body { flex:1; min-height:0; overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
 .skill-edit-preview-empty { color:var(--subtle); font-size:12px; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
