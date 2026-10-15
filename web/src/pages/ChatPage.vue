@@ -28,6 +28,7 @@ import {
   RefreshOutline,
   SearchOutline,
   SparklesOutline,
+  GitNetworkOutline,
   StopCircleOutline,
   TrashOutline,
   TimeOutline,
@@ -57,6 +58,7 @@ import {
   NTabPane,
   NTooltip,
   NPopover,
+  NTransfer,
   useMessage
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
@@ -278,6 +280,10 @@ const actionLabels = computed(() => ({
   linkedSubagents: locale.value === 'zh' ? '关联子 Agent' : locale.value === 'ja' ? '連携サブエージェント' : 'Linked subagents',
   linkedTools: locale.value === 'zh' ? '关联工具' : locale.value === 'ja' ? '連携ツール' : 'Linked tools',
   currentAgent: locale.value === 'zh' ? '当前使用' : locale.value === 'ja' ? '現在使用中' : 'In use',
+  subagents: locale.value === 'zh' ? '子 Agent' : locale.value === 'ja' ? 'サブエージェント' : 'Subagents',
+  close: locale.value === 'zh' ? '关闭' : locale.value === 'ja' ? '閉じる' : 'Close',
+  available: locale.value === 'zh' ? '待选' : locale.value === 'ja' ? '未選択' : 'Available',
+  selected: locale.value === 'zh' ? '已选' : locale.value === 'ja' ? '選択済み' : 'Selected',
   searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
   noMatch: locale.value === 'zh' ? '无匹配结果' : locale.value === 'ja' ? '一致する結果がありません' : 'No matches',
   mcpServers: locale.value === 'zh' ? 'MCP 服务' : locale.value === 'ja' ? 'MCP サーバー' : 'MCP Servers',
@@ -1261,6 +1267,28 @@ const agentDropdownOptions = computed(() =>
         ])
     }))
 )
+
+/** 子 Agent 面板：列出所有已启用 agent，当前 agent 配置的 subagents 带「已关联」标记。 */
+const subagentPanelOptions = computed(() => {
+  const current = currentAgentName.value
+  const subs = agentList.value.find((a) => a.name === current)?.subagents || []
+  return agentList.value
+    .filter((a) => a.enabled !== false)
+    .map((a) => ({
+      key: a.name,
+      label: () =>
+        h('div', { class: 'agent-option-name' }, [
+          h(NIcon, { component: SparklesOutline, class: 'agent-option-icon' }),
+          h('span', displayAgentName(a.name)),
+          subs.includes(a.name)
+            ? h('span', { class: 'agent-option-sub' }, [
+              h(NIcon, { component: GitNetworkOutline }),
+              ' ' + actionLabels.value.subagents
+            ])
+            : null
+        ])
+    }))
+})
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
@@ -3203,6 +3231,11 @@ onBeforeUnmount(() => {
                     <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
+                <NDropdown :options="subagentPanelOptions" trigger="click" @select="selectAgent">
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents">
+                    <template #icon><NIcon :component="GitNetworkOutline" /></template>
+                  </NButton>
+                </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
                   <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
@@ -3275,9 +3308,12 @@ onBeforeUnmount(() => {
     <aside class="right-panel" :class="{ 'right-panel--open': rightPanelVisible }">
       <div class="right-panel-header">
         <strong>{{ rightPanelTitle }}</strong>
+        <NButton v-if="rightPanelTab !== 'timers'" quaternary circle size="small" :aria-label="actionLabels.close" :title="actionLabels.close" @click="rightPanelVisible = false">
+          <template #icon><NIcon :component="CloseOutline" /></template>
+        </NButton>
       </div>
       <div class="right-panel-body">
-        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge' || rightPanelTab === 'agents'" class="panel-search">
+        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge'" class="panel-search">
           <NInput v-model:value="panelQuery" size="small" clearable :placeholder="actionLabels.searchPlaceholder">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
@@ -3352,6 +3388,9 @@ onBeforeUnmount(() => {
         <!-- Agent 管理 -->
         <div v-else-if="rightPanelTab === 'agents'" class="panel-section">
           <div class="panel-section-actions">
+            <NInput v-model:value="panelQuery" size="small" clearable :placeholder="actionLabels.searchPlaceholder" class="panel-search-input">
+              <template #prefix><NIcon :component="SearchOutline" /></template>
+            </NInput>
             <NButton size="small" type="primary" @click="openAgentEdit()">
               <template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newAgent }}
             </NButton>
@@ -3615,9 +3654,12 @@ onBeforeUnmount(() => {
         <div class="manage-form">
           <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
           <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
-          <NSelect v-model:value="agentForm.subagents" multiple size="small" :options="agentSubagentOptions" :placeholder="actionLabels.linkedSubagents" />
-<NSelect v-model:value="agentForm.skills" multiple size="small" :options="agentSkillOptions" :placeholder="actionLabels.linkedSkills" />
-          <NSelect v-model:value="agentForm.tools" multiple size="small" :options="agentToolOptions" :placeholder="actionLabels.linkedTools" />
+          <label class="manage-form-label">{{ actionLabels.linkedSubagents }}</label>
+          <NTransfer v-model:value="agentForm.subagents" :options="agentSubagentOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+          <label class="manage-form-label">{{ actionLabels.linkedSkills }}</label>
+          <NTransfer v-model:value="agentForm.skills" :options="agentSkillOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
+          <label class="manage-form-label">{{ actionLabels.linkedTools }}</label>
+          <NTransfer v-model:value="agentForm.tools" :options="agentToolOptions" size="small" :titles="[actionLabels.available, actionLabels.selected]" />
         </div>
         <template #footer>
           <div class="manage-form-actions">
@@ -3806,6 +3848,10 @@ onBeforeUnmount(() => {
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
+.agent-option-sub { display:inline-flex; align-items:center; gap:2px; margin-left:6px; padding:1px 6px; border-radius:8px; background:rgba(255, 170, 0, 0.14); color:#b45309; font-size:11px; }
+.manage-modal .n-transfer { height: 150px; }
+.manage-modal .n-transfer-list { height: 100%; }
+.manage-modal .n-transfer-list-body { height: calc(100% - 38px); }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
 .quick-action-item { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; font-size:13px; cursor:pointer; color:var(--text); }
 .quick-action-item:hover, .quick-action-item--active { background:rgba(37,99,235,.08); }
