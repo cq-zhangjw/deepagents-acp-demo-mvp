@@ -1010,7 +1010,9 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
     # (must exist on disk / in agents.json and cannot reference itself)
     if isinstance(payload.get("subagents"), list):
         known = set(_scan_agent_files())
-        subs = [s for s in payload["subagents"] if isinstance(s, str) and _valid_name(s)
+        # agent names may contain capitals (e.g. languageLearning); `known`
+        # already guarantees they are real agent names, so no _valid_name here
+        subs = [s for s in payload["subagents"] if isinstance(s, str)
                 and s != (payload.get("name") or "") and s in known]
         if subs:
             def_data["subagents"] = subs

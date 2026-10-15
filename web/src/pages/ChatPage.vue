@@ -1277,6 +1277,42 @@ function isSubagentOfCurrent(name: string): boolean {
   const subs = agentList.value.find((a) => a.name === current)?.subagents || []
   return subs.includes(name)
 }
+/** 保存当前 agent 的 subagents 列表（PUT 全字段，避免后端整体替换丢字段）。 */
+async function saveSubagents(subs: string[]) {
+  const current = currentAgentName.value
+  const a = agentList.value.find((x) => x.name === current)
+  if (!current || !a) return
+  await apiManage(`/api/manage/agents/${current}`, 'PUT', {
+    name: current,
+    description: a.description || '',
+    subagents: subs,
+    skills: a.skills || [],
+    tools: (a.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
+  })
+  await fetchManageData()
+}
+/** 子 Agent 面板开关：将 agent 加入/移出当前 agent 的 subagents。 */
+async function toggleSubagent(agent: any, v: boolean) {
+  try {
+    const current = currentAgentName.value
+    const a = agentList.value.find((x) => x.name === current)
+    const subs = a?.subagents || []
+    await saveSubagents(v ? (subs.includes(agent.name) ? subs : [...subs, agent.name]) : subs.filter((s) => s !== agent.name))
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+/** 子 Agent 面板删除：将 agent 移出当前 agent 的 subagents（不删除 agent 本身）。 */
+async function removeSubagent(agent: any) {
+  try {
+    const current = currentAgentName.value
+    const a = agentList.value.find((x) => x.name === current)
+    const next = (a?.subagents || []).filter((s) => s !== agent.name)
+    await saveSubagents(next)
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
@@ -3414,13 +3450,20 @@ onBeforeUnmount(() => {
           <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': agent.enabled === false, 'manage-card--sub-linked': isSubagentOfCurrent(agent.name) }" role="button" tabindex="0" @click="selectAgent(agent.name)">
             <div class="manage-card-head">
               <strong>{{ displayAgentName(agent.name) }}</strong>
-              <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
-              <NTag v-if="isSubagentOfCurrent(agent.name)" size="small" type="warning">{{ actionLabels.subagents }}</NTag>
+              <span class="manage-card-head-right">
+                <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
+                <NTag v-if="isSubagentOfCurrent(agent.name)" size="small" type="warning">{{ actionLabels.subagents }}</NTag>
+                <NSwitch size="small" :value="isSubagentOfCurrent(agent.name)" :disabled="agent.name === currentAgentName" @update:value="(v) => toggleSubagent(agent, v)" @click.stop />
+              </span>
             </div>
             <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
             <div v-if="(agent.subagents || []).length" class="manage-card-chips">
               <span class="manage-chip-label">{{ actionLabels.linkedSubagents }}</span>
               <NTag v-for="s in agent.subagents" :key="s" size="small" type="warning">{{ displayAgentName(s) }}</NTag>
+            </div>
+            <div class="manage-card-actions">
+              <NButton quaternary size="tiny" @click.stop="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
+              <NButton quaternary size="tiny" type="error" :disabled="agent.name === currentAgentName" @click.stop="removeSubagent(agent)">{{ actionLabels.delete }}</NButton>
             </div>
           </div>
         </div>
