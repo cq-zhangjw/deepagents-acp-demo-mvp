@@ -285,6 +285,9 @@ const actionLabels = computed(() => ({
   available: locale.value === 'zh' ? '待选' : locale.value === 'ja' ? '未選択' : 'Available',
   selected: locale.value === 'zh' ? '已选' : locale.value === 'ja' ? '選択済み' : 'Selected',
   taskDetail: locale.value === 'zh' ? '任务详情' : locale.value === 'ja' ? 'タスク詳細' : 'Task details',
+  skillName: locale.value === 'zh' ? '技能名' : locale.value === 'ja' ? 'スキル名' : 'Skill name',
+  skillDescription: locale.value === 'zh' ? '技能描述' : locale.value === 'ja' ? 'スキル説明' : 'Skill description',
+  skillBody: locale.value === 'zh' ? '技能正文' : locale.value === 'ja' ? 'スキル本文' : 'Skill body',
   searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
   noMatch: locale.value === 'zh' ? '无匹配结果' : locale.value === 'ja' ? '一致する結果がありません' : 'No matches',
   mcpServers: locale.value === 'zh' ? 'MCP 服务' : locale.value === 'ja' ? 'MCP サーバー' : 'MCP Servers',
@@ -3639,14 +3642,18 @@ onBeforeUnmount(() => {
 
     <!-- 技能新建/编辑弹窗 -->
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
-      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
-        <div class="manage-form">
-          <NInput v-if="!skillForm.name" v-model:value="skillForm.name" size="small" :placeholder="'name'" />
+      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal" role="dialog">
+        <div class="manage-form skill-edit-form">
+          <template v-if="!skillForm.name">
+            <label class="manage-form-label">{{ actionLabels.skillName }}</label>
+            <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" />
+          </template>
+          <label class="manage-form-label">{{ actionLabels.skillDescription }}</label>
           <NInput v-model:value="skillForm.description" size="small" :placeholder="'description'" />
           <div class="skill-edit-split">
             <div class="skill-edit-col">
-              <label class="skill-edit-label">SKILL.md (markdown)</label>
-              <NInput v-model:value="skillForm.content" type="textarea" :autosize="{ minRows: 8, maxRows: 20 }" :placeholder="'SKILL.md content (markdown)'" class="manage-form-code skill-edit-editor" />
+              <label class="skill-edit-label">{{ actionLabels.skillBody }}</label>
+              <NInput v-model:value="skillForm.content" type="textarea" :placeholder="'SKILL.md content (markdown)'" class="manage-form-code skill-edit-editor" />
             </div>
             <div class="skill-edit-col skill-edit-preview">
               <label class="skill-edit-label">Preview</label>
@@ -3925,13 +3932,15 @@ onBeforeUnmount(() => {
 .builtin-tool-chip--active { background:rgba(37,99,235,.14); border-color:rgba(37,99,235,.55); }
 .builtin-tool-chip--active code { color:#2563eb; font-weight:600; }
 .builtin-tool-chip:not(.builtin-tool-chip--active) { opacity:.62; }
-.skill-edit-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin-top:10px; }
+.skill-edit-form { flex:1; min-height:0; }
+.skill-edit-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; flex:1; min-height:0; }
 .skill-edit-col { display:flex; flex-direction:column; gap:6px; min-height:0; min-width:0; }
 .skill-edit-label { color:var(--subtle); font-size:12px; }
 .skill-edit-editor :deep(textarea) { font:12px/1.5 "Cascadia Code",Consolas,monospace !important; }
-.skill-edit-preview-body { flex:1; min-height:280px; max-height:min(60vh, 560px); overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
+.skill-edit-col .n-input--textarea { flex:1; min-height:0; }
+.skill-edit-col .n-input--textarea .n-input__textarea-el { height:100% !important; }
+.skill-edit-preview-body { flex:1; min-height:0; overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
 .skill-edit-preview-empty { color:var(--subtle); font-size:12px; }
-.manage-modal--wide { width:80vw; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
