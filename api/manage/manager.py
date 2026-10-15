@@ -248,13 +248,18 @@ def _agent_mcp_entry(server: str, tools: list[dict]) -> dict:
     }
 
 
-def _agent_md_template(name: str, data: dict) -> str:
-    """Default .agent.md body for a new agent."""
+def _agent_md_front(name: str, data: dict) -> str:
+    """YAML front-matter (name + description) header of a `.agent.md` file."""
     description = (data.get("description") or "").strip()
     front = "---\nname: {0}\n".format(name)
     if description:
         front += "description: {0}\n".format(description)
-    return front + "---\n\n# {0}\n\nDefine the agent behavior here (system prompt / instructions).\n".format(name)
+    return front + "---\n\n"
+
+
+def _agent_md_template(name: str, data: dict) -> str:
+    """Default .agent.md body for a new agent."""
+    return _agent_md_front(name, data) + "# {0}\n\nDefine the agent behavior here (system prompt / instructions).\n".format(name)
 
 
 def _agent_md_path(name: str) -> Path:
@@ -856,13 +861,20 @@ def _remove_agent_ref(kind: str, name: str) -> None:
 
 
 def _agent_md_body(name: str) -> str:
+    """Markdown body of a `.agent.md` file, i.e. everything after the YAML
+    front-matter (the part the edit form's "Task details" textarea edits)."""
     md = _agent_md_path(name)
-    if md.exists():
-        try:
-            return md.read_text(encoding="utf-8")
-        except OSError:
-            return ""
-    return ""
+    if not md.exists():
+        return ""
+    try:
+        text = md.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4:].lstrip("\n")
+    return text
 
 
 def _agent_entry(name: str, data: dict) -> dict:
@@ -948,6 +960,8 @@ async def create_agent(payload: dict):
         _write_agents(agents)
         if not body:
             body = _agent_md_template(name, defn)
+        else:
+            body = _agent_md_front(name, defn) + body
         _agent_md_path(name).write_text(body, encoding="utf-8")
     return _agent_entry(name, agents[name])
 
@@ -964,7 +978,7 @@ async def update_agent(name: str, payload: dict):
         _write_agents(agents)
         body = (payload.get("body") or "").strip()
         if body:
-            _agent_md_path(name).write_text(body, encoding="utf-8")
+            _agent_md_path(name).write_text(_agent_md_front(name, defn) + body, encoding="utf-8")
         elif not _agent_md_path(name).exists():
             _agent_md_path(name).write_text(_agent_md_template(name, defn), encoding="utf-8")
     return _agent_entry(name, agents[name])
@@ -972,14 +986,22 @@ async def update_agent(name: str, payload: dict):
 
 @router.delete("/agents/{name}")
 async def delete_agent(name: str):
-    """Delete an agent: remove `*.agent.md` and the agents.json key."""
+    """Delete an agent: remove `*.agent.md`, the agents.json key, and every
+    other agent's subagents reference to it. The `default` agent is protected."""
     name = _ensure_agent(name)
+    if name == "default":
+        raise HTTPException(status_code=409, detail="default agent cannot be deleted")
     async with _agents_lock:
         agents = _read_agents()
         md = _agent_md_path(name)
         if not (md.exists() or name in agents):
             raise HTTPException(status_code=404, detail=f"agent not found: {name}")
         agents.pop(name, None)
+        # clean up references: remove this agent from every other agent's subagents
+        for key in agents:
+            subs = agents[key].get("subagents") or []
+            if name in subs:
+                agents[key]["subagents"] = [s for s in subs if s != name]
         _write_agents(agents)
         md.unlink(missing_ok=True)
     return {"ok": True}

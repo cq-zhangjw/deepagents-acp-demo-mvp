@@ -284,7 +284,7 @@ const actionLabels = computed(() => ({
   close: locale.value === 'zh' ? '关闭' : locale.value === 'ja' ? '閉じる' : 'Close',
   available: locale.value === 'zh' ? '待选' : locale.value === 'ja' ? '未選択' : 'Available',
   selected: locale.value === 'zh' ? '已选' : locale.value === 'ja' ? '選択済み' : 'Selected',
-  longDescription: locale.value === 'zh' ? '详细描述' : locale.value === 'ja' ? '詳細説明' : 'Detailed description',
+  taskDetail: locale.value === 'zh' ? '任务详情' : locale.value === 'ja' ? 'タスク詳細' : 'Task details',
   searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
   noMatch: locale.value === 'zh' ? '无匹配结果' : locale.value === 'ja' ? '一致する結果がありません' : 'No matches',
   mcpServers: locale.value === 'zh' ? 'MCP 服务' : locale.value === 'ja' ? 'MCP サーバー' : 'MCP Servers',
@@ -1291,17 +1291,6 @@ async function saveSubagents(subs: string[]) {
   })
   await fetchManageData()
 }
-/** 子 Agent 面板开关：将 agent 加入/移出当前 agent 的 subagents。 */
-async function toggleSubagent(agent: any, v: boolean) {
-  try {
-    const current = currentAgentName.value
-    const a = agentList.value.find((x) => x.name === current)
-    const subs = a?.subagents || []
-    await saveSubagents(v ? (subs.includes(agent.name) ? subs : [...subs, agent.name]) : subs.filter((s) => s !== agent.name))
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
 /** 子 Agent 面板删除：将 agent 移出当前 agent 的 subagents（不删除 agent 本身）。 */
 async function removeSubagent(agent: any) {
   try {
@@ -1309,6 +1298,23 @@ async function removeSubagent(agent: any) {
     const a = agentList.value.find((x) => x.name === current)
     const next = (a?.subagents || []).filter((s) => s !== agent.name)
     await saveSubagents(next)
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+/** Sub-agent panel list: exclude the active agent itself and the protected default. */
+const subagentList = computed(() =>
+  agentList.value.filter((a) => a.enabled !== false && a.name !== currentAgentName.value && a.name !== 'default')
+)
+/** Delete an agent (md file + agents.json entry + references). default is protected. */
+async function deleteAgent(agent: any) {
+  try {
+    await apiManage(`/api/manage/agents/${agent.name}`, 'DELETE')
+    if (currentAgentName.value === agent.name) {
+      currentAgentName.value = 'default'
+      localStorage.setItem(AGENT_STORAGE_KEY, 'default')
+    }
+    await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
   }
@@ -1421,18 +1427,6 @@ async function toggleInnerTool(name: string) {
     message.error(e.message)
   }
 }
-async function setAgentEnabled(agent: any) {
-  try {
-    await apiManage(`/api/manage/agents/${agent.name}`, 'PUT', {
-      ...agent,
-      enabled: !(agent.enabled !== false)
-    })
-    await fetchManageData()
-  } catch (e: any) {
-    message.error(e.message)
-  }
-}
-
 // new skill modal
 const skillModalVisible = ref(false)
 const skillForm = ref({ name: '', description: '', content: '' })
@@ -1496,7 +1490,7 @@ async function submitTool() {
 
 // new agent modal
 const agentModalVisible = ref(false)
-const agentForm = ref({ name: '', description: '', longDescription: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
+const agentForm = ref({ name: '', description: '', body: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
   skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
 )
@@ -1517,7 +1511,7 @@ async function submitAgent() {
       await apiManage('/api/manage/agents', 'POST', agentForm.value)
     }
     agentModalVisible.value = false
-    agentForm.value = { name: '', description: '', longDescription: '', subagents: [], skills: [], tools: [] }
+    agentForm.value = { name: '', description: '', body: '', subagents: [], skills: [], tools: [] }
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -1528,13 +1522,13 @@ function openAgentEdit(item?: any) {
     ? {
         name: item.name,
         description: item.description || '',
-        longDescription: item.longDescription || '',
+        body: item.body || '',
         subagents: item.subagents || [],
         skills: item.skills || [],
         // tools new structure: extract the linked MCP server directory names
         tools: (item.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
       }
-    : { name: '', description: '', longDescription: '', subagents: [], skills: [], tools: [] }
+    : { name: '', description: '', body: '', subagents: [], skills: [], tools: [] }
   agentModalVisible.value = true
 }
 
@@ -3257,7 +3251,7 @@ onBeforeUnmount(() => {
                   </NButton>
                 </NDropdown>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
-                  <template #icon><NIcon :component="GitNetworkOutline" /></template>
+                  <template #icon><NIcon :component="GitNetworkOutline" /></template>{{ actionLabels.subagents }}
                 </NButton>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
                   <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
@@ -3423,7 +3417,6 @@ onBeforeUnmount(() => {
             <div class="manage-card-head">
               <strong>{{ displayAgentName(agent.name) }}</strong>
               <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
-              <NSwitch size="small" :value="agent.enabled !== false" @update:value="setAgentEnabled(agent)" />
             </div>
             <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
             <div v-if="(agent.subagents || []).length" class="manage-card-chips">
@@ -3440,6 +3433,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
+              <NButton quaternary size="tiny" type="error" :disabled="agent.name === 'default'" @click="deleteAgent(agent)">{{ actionLabels.delete }}</NButton>
             </div>
           </div>
         </div>
@@ -3447,13 +3441,11 @@ onBeforeUnmount(() => {
         <div v-else-if="rightPanelTab === 'subagents'" class="panel-section">
           <div class="panel-section-note">{{ actionLabels.currentAgent }}：{{ displayAgentName(currentAgentName) || actionLabels.agent }}</div>
           <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
-          <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': agent.enabled === false, 'manage-card--sub-linked': isSubagentOfCurrent(agent.name) }" role="button" tabindex="0" @click="selectAgent(agent.name)">
+          <div v-for="agent in subagentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--sub-linked': isSubagentOfCurrent(agent.name) }" role="button" tabindex="0" @click="selectAgent(agent.name)">
             <div class="manage-card-head">
               <strong>{{ displayAgentName(agent.name) }}</strong>
               <span class="manage-card-head-right">
-                <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
                 <NTag v-if="isSubagentOfCurrent(agent.name)" size="small" type="warning">{{ actionLabels.subagents }}</NTag>
-                <NSwitch size="small" :value="isSubagentOfCurrent(agent.name)" :disabled="agent.name === currentAgentName" @update:value="(v) => toggleSubagent(agent, v)" @click.stop />
               </span>
             </div>
             <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
@@ -3462,7 +3454,6 @@ onBeforeUnmount(() => {
               <NTag v-for="s in agent.subagents" :key="s" size="small" type="warning">{{ displayAgentName(s) }}</NTag>
             </div>
             <div class="manage-card-actions">
-              <NButton quaternary size="tiny" @click.stop="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
               <NButton quaternary size="tiny" type="error" :disabled="agent.name === currentAgentName" @click.stop="removeSubagent(agent)">{{ actionLabels.delete }}</NButton>
             </div>
           </div>
@@ -3702,8 +3693,8 @@ onBeforeUnmount(() => {
           <div class="manage-form-left">
             <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
             <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
-            <label class="manage-form-label">{{ actionLabels.longDescription }}</label>
-            <NInput v-model:value="agentForm.longDescription" type="textarea" :placeholder="actionLabels.longDescription" />
+            <label class="manage-form-label">{{ actionLabels.taskDetail }}</label>
+            <NInput v-model:value="agentForm.body" type="textarea" :placeholder="actionLabels.taskDetail" />
           </div>
           <div class="manage-form-right">
             <div class="manage-form-field">
