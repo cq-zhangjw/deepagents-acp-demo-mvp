@@ -111,5 +111,6 @@ function statusText(status: string) {
 .tool-pane { padding:12px 0 4px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .tool-pane :deep(pre), .tool-pane :deep(code) { white-space:pre; }
 .tool-pane--params :deep(.markdown-message) { font-size:13px; }
+.tool-pane--output { max-height:300px; overflow-y:auto; }
 .tool-pane--output :deep(.markdown-message) { font-size:13px; }
 </style>
