@@ -1196,6 +1196,17 @@ const filteredSkills = computed(() => {
   return [...list].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0))
 })
 
+/** Agents: filter by name / description (same pattern as skills). */
+const filteredAgents = computed(() => {
+  const q = panelQuery.value.trim().toLowerCase()
+  const list = agentList.value.filter((a) =>
+    !q
+      || a.name?.toLowerCase().includes(q)
+      || (a.description || '').toLowerCase().includes(q)
+  )
+  return [...list].sort((a, b) => (b.enabled !== false ? 1 : 0) - (a.enabled !== false ? 1 : 0))
+})
+
 /** Built-in tools: filter by name. */
 const filteredBuiltinTools = computed(() => {
   const q = panelQuery.value.trim().toLowerCase()
@@ -2842,6 +2853,9 @@ onBeforeUnmount(() => {
         <button type="button" class="sidebar-nav-item" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
           <NIcon :component="TimeOutline" /><span>{{ t('timers.panelTitle') }}</span>
         </button>
+        <button type="button" class="sidebar-nav-item" :aria-label="actionLabels.agents" @click="openRightPanel('agents')">
+          <NIcon :component="SparklesOutline" /><span>{{ actionLabels.agents }}</span>
+        </button>
       </div>
 
       <div class="conversation-search">
@@ -3255,7 +3269,7 @@ onBeforeUnmount(() => {
         <strong>{{ rightPanelTitle }}</strong>
       </div>
       <div class="right-panel-body">
-        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge'" class="panel-search">
+        <div v-if="rightPanelTab === 'skills' || rightPanelTab === 'tools' || rightPanelTab === 'knowledge' || rightPanelTab === 'agents'" class="panel-search">
           <NInput v-model:value="panelQuery" size="small" clearable :placeholder="actionLabels.searchPlaceholder">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
@@ -3329,9 +3343,13 @@ onBeforeUnmount(() => {
         </div>
         <!-- Agent 管理 -->
         <div v-else-if="rightPanelTab === 'agents'" class="panel-section">
-          <NButton size="small" @click="openAgentEdit()"><template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newAgent }}</NButton>
-          <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
-          <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': !agent.enabled }">
+          <div class="panel-section-actions">
+            <NButton size="small" type="primary" @click="openAgentEdit()">
+              <template #icon><NIcon :component="AddOutline" /></template>{{ actionLabels.newAgent }}
+            </NButton>
+          </div>
+          <div v-if="!filteredAgents.length" class="panel-placeholder"><p>{{ panelQuery ? actionLabels.noMatch : actionLabels.emptyList }}</p></div>
+          <div v-for="agent in filteredAgents" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': !agent.enabled }">
             <div class="manage-card-head">
               <strong>{{ displayAgentName(agent.name) }}</strong>
               <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
@@ -3583,8 +3601,8 @@ onBeforeUnmount(() => {
     <NModal :show="agentModalVisible" :mask-closable="false" @after-leave="agentModalVisible = false">
       <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal" role="dialog">
         <div class="manage-form">
-          <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="'name'" />
-          <NInput v-model:value="agentForm.description" size="small" :placeholder="'description'" />
+          <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
+          <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
           <NSelect v-model:value="agentForm.skills" multiple size="small" :options="agentSkillOptions" :placeholder="actionLabels.linkedSkills" />
           <NSelect v-model:value="agentForm.tools" multiple size="small" :options="agentToolOptions" :placeholder="actionLabels.linkedTools" />
         </div>

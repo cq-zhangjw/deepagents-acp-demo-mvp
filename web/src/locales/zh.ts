@@ -23,6 +23,8 @@ export default {
   upload: '上传附件',
   removeAttachment: '移除附件',
   deleteSession: '删除会话',
+  agentName: 'Agent 名称',
+  agentDescription: 'Agent 描述',
   inputPlaceholder: '输入任务，Enter 发送，Shift + Enter 换行',
   loading: '加载中...',
   loadEarlier: '加载更早的消息',

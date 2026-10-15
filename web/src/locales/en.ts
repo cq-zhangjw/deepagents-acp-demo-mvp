@@ -23,6 +23,8 @@ export default {
   upload: 'Upload attachment',
   removeAttachment: 'Remove attachment',
   deleteSession: 'Delete conversation',
+  agentName: 'Agent name',
+  agentDescription: 'Agent description',
   inputPlaceholder: 'Enter a task. Enter to send, Shift + Enter for a new line',
   loading: 'Loading...',
   loadEarlier: 'Load earlier messages',

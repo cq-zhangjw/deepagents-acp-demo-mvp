@@ -23,6 +23,8 @@ export default {
   upload: '添付をアップロード',
   removeAttachment: '添付を削除',
   deleteSession: '会話を削除',
+  agentName: 'エージェント名',
+  agentDescription: 'エージェント説明',
   inputPlaceholder: 'タスクを入力。Enter で送信、Shift + Enter で改行',
   loading: '読み込み中...',
   loadEarlier: '以前のメッセージを読み込む',
