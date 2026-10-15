@@ -707,16 +707,17 @@ async function loadContextSize() {
 
 const sidebarCollapsed = ref(false)
 const rightPanelVisible = ref(false)
-const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings'>('skills')
+const rightPanelTab = ref<'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings' | 'subagents'>('skills')
 const rightPanelTitle = computed(() =>
   rightPanelTab.value === 'skills' ? actionLabels.value.skills
     : rightPanelTab.value === 'tools' ? actionLabels.value.tools
       : rightPanelTab.value === 'agents' ? actionLabels.value.agents
         : rightPanelTab.value === 'knowledge' ? actionLabels.value.knowledge
           : rightPanelTab.value === 'timers' ? t('timers.panelTitle')
-            : actionLabels.value.settings
+            : rightPanelTab.value === 'subagents' ? actionLabels.value.subagents
+              : actionLabels.value.settings
 )
-function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings') {
+function openRightPanel(tab: 'skills' | 'tools' | 'agents' | 'knowledge' | 'timers' | 'settings' | 'subagents') {
   rightPanelTab.value = tab
   rightPanelVisible.value = true
   panelQuery.value = ''
@@ -1269,27 +1270,13 @@ const agentDropdownOptions = computed(() =>
     }))
 )
 
-/** 子 Agent 面板：列出所有已启用 agent，当前 agent 配置的 subagents 带「已关联」标记。 */
-const subagentPanelOptions = computed(() => {
+/** 当前 agent 的 subagents 是否包含指定 agent。 */
+function isSubagentOfCurrent(name: string): boolean {
   const current = currentAgentName.value
+  if (!current) return false
   const subs = agentList.value.find((a) => a.name === current)?.subagents || []
-  return agentList.value
-    .filter((a) => a.enabled !== false)
-    .map((a) => ({
-      key: a.name,
-      label: () =>
-        h('div', { class: 'agent-option-name' }, [
-          h(NIcon, { component: SparklesOutline, class: 'agent-option-icon' }),
-          h('span', displayAgentName(a.name)),
-          subs.includes(a.name)
-            ? h('span', { class: 'agent-option-sub' }, [
-              h(NIcon, { component: GitNetworkOutline }),
-              ' ' + actionLabels.value.subagents
-            ])
-            : null
-        ])
-    }))
-})
+  return subs.includes(name)
+}
 function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
@@ -3233,11 +3220,9 @@ onBeforeUnmount(() => {
                     <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
-                <NDropdown :options="subagentPanelOptions" trigger="click" @select="selectAgent">
-                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents">
-                    <template #icon><NIcon :component="GitNetworkOutline" /></template>
-                  </NButton>
-                </NDropdown>
+                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
+                  <template #icon><NIcon :component="GitNetworkOutline" /></template>
+                </NButton>
                 <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
                   <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
@@ -3419,6 +3404,23 @@ onBeforeUnmount(() => {
             </div>
             <div class="manage-card-actions">
               <NButton quaternary size="tiny" @click="openAgentEdit(agent)">{{ actionLabels.edit }}</NButton>
+            </div>
+          </div>
+        </div>
+        <!-- 子 Agent 面板 -->
+        <div v-else-if="rightPanelTab === 'subagents'" class="panel-section">
+          <div class="panel-section-note">{{ actionLabels.currentAgent }}：{{ displayAgentName(currentAgentName) || actionLabels.agent }}</div>
+          <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div v-for="agent in agentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--disabled': agent.enabled === false, 'manage-card--sub-linked': isSubagentOfCurrent(agent.name) }" role="button" tabindex="0" @click="selectAgent(agent.name)">
+            <div class="manage-card-head">
+              <strong>{{ displayAgentName(agent.name) }}</strong>
+              <span v-if="agent.name === currentAgentName" class="agent-current">{{ actionLabels.currentAgent }}</span>
+              <NTag v-if="isSubagentOfCurrent(agent.name)" size="small" type="warning">{{ actionLabels.subagents }}</NTag>
+            </div>
+            <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
+            <div v-if="(agent.subagents || []).length" class="manage-card-chips">
+              <span class="manage-chip-label">{{ actionLabels.linkedSubagents }}</span>
+              <NTag v-for="s in agent.subagents" :key="s" size="small" type="warning">{{ displayAgentName(s) }}</NTag>
             </div>
           </div>
         </div>
@@ -3823,6 +3825,8 @@ onBeforeUnmount(() => {
 .conversation-group-label { display:flex; align-items:center; gap:4px; margin:10px 2px 2px; padding:6px 6px; width:100%; text-align:left; color:#111; font-size:14px; font-weight:700; letter-spacing:.3px; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .conversation-group-label:hover { background:var(--muted); } .conversation-group-count { margin-left:auto; font-size:11px; font-weight:600; color:var(--subtle); background:var(--surface); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
 .message--highlight { outline:2px solid #2563eb; outline-offset:2px; border-radius:10px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
+.panel-section-note { font-size:12px; color:var(--subtle); padding:2px 2px 0; }
+.manage-card--sub-linked { border-color:rgba(255,170,0,.5); background:rgba(255,170,0,.06); cursor:pointer; }
 .panel-section > .n-button { align-self:flex-start; }
 .panel-group-head { display:flex; align-items:center; gap:6px; margin-top:2px; }
 .panel-group-head--mcp { margin-top:6px; padding-top:8px; border-top:1px dashed var(--border); }
@@ -3872,7 +3876,6 @@ onBeforeUnmount(() => {
 .manage-form-actions { display:flex; justify-content:flex-end; gap:8px; }
 .agent-option-name { display:flex; align-items:center; gap:6px; font-size:13px; }
 .agent-option-icon { font-size:15px; color:var(--accent, #2563eb); }
-.agent-option-sub { display:inline-flex; align-items:center; gap:2px; margin-left:6px; padding:1px 6px; border-radius:8px; background:rgba(255, 170, 0, 0.14); color:#b45309; font-size:11px; }
 .manage-modal .n-transfer-list { height:100%; }
 .manage-modal .n-transfer-list-body { height:calc(100% - 38px); }
 .quick-action-panel { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:30; max-height:220px; overflow-y:auto; padding:4px; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 24px rgba(29,39,51,.12); display:flex; flex-direction:column; gap:2px; }
