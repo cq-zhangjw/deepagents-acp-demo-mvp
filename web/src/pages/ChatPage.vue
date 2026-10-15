@@ -275,6 +275,7 @@ const actionLabels = computed(() => ({
   enabled: locale.value === 'zh' ? '已启用' : locale.value === 'ja' ? '有効' : 'Enabled',
   disabled: locale.value === 'zh' ? '已停用' : locale.value === 'ja' ? '無効' : 'Disabled',
   linkedSkills: locale.value === 'zh' ? '关联技能' : locale.value === 'ja' ? '連携スキル' : 'Linked skills',
+  linkedSubagents: locale.value === 'zh' ? '关联子 Agent' : locale.value === 'ja' ? '連携サブエージェント' : 'Linked subagents',
   linkedTools: locale.value === 'zh' ? '关联工具' : locale.value === 'ja' ? '連携ツール' : 'Linked tools',
   currentAgent: locale.value === 'zh' ? '当前使用' : locale.value === 'ja' ? '現在使用中' : 'In use',
   searchPlaceholder: locale.value === 'zh' ? '搜索…' : locale.value === 'ja' ? '検索…' : 'Search…',
@@ -1443,12 +1444,18 @@ async function submitTool() {
 
 // new agent modal
 const agentModalVisible = ref(false)
-const agentForm = ref({ name: '', description: '', skills: [] as string[], tools: [] as string[] })
+const agentForm = ref({ name: '', description: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
   skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
 )
 const agentToolOptions = computed(() =>
   toolList.value.map((t) => ({ label: t.name, value: t.name }))
+)
+/** Sub-agent options: other enabled agents (exclude the one being edited). */
+const agentSubagentOptions = computed(() =>
+  agentList.value
+    .filter((a) => a.enabled !== false && a.name !== agentForm.value.name)
+    .map((a) => ({ label: displayAgentName(a.name), value: a.name }))
 )
 async function submitAgent() {
   try {
@@ -1458,7 +1465,7 @@ async function submitAgent() {
       await apiManage('/api/manage/agents', 'POST', agentForm.value)
     }
     agentModalVisible.value = false
-    agentForm.value = { name: '', description: '', skills: [], tools: [] }
+    agentForm.value = { name: '', description: '', subagents: [], skills: [], tools: [] }
     await fetchManageData()
   } catch (e: any) {
     message.error(e.message)
@@ -1469,11 +1476,12 @@ function openAgentEdit(item?: any) {
     ? {
         name: item.name,
         description: item.description || '',
+        subagents: item.subagents || [],
         skills: item.skills || [],
         // tools new structure: extract the linked MCP server directory names
         tools: (item.tools?.mcp_tools || []).map((e: any) => e.server || e.serverInfo?.name).filter(Boolean)
       }
-    : { name: '', description: '', skills: [], tools: [] }
+    : { name: '', description: '', subagents: [], skills: [], tools: [] }
   agentModalVisible.value = true
 }
 
@@ -3356,7 +3364,11 @@ onBeforeUnmount(() => {
               <NSwitch size="small" :value="agent.enabled !== false" @update:value="setAgentEnabled(agent)" />
             </div>
             <p v-if="agent.description" class="manage-card-desc" :title="agent.description">{{ agent.description }}</p>
-            <div v-if="(agent.skills || []).length" class="manage-card-chips">
+            <div v-if="(agent.subagents || []).length" class="manage-card-chips">
+            <span class="manage-chip-label">{{ actionLabels.linkedSubagents }}</span>
+            <NTag v-for="s in agent.subagents" :key="s" size="small" type="warning">{{ displayAgentName(s) }}</NTag>
+          </div>
+          <div v-if="(agent.skills || []).length" class="manage-card-chips">
               <span class="manage-chip-label">{{ actionLabels.linkedSkills }}</span>
               <NTag v-for="s in agent.skills" :key="s" size="small" type="info">{{ s }}</NTag>
             </div>
@@ -3603,7 +3615,8 @@ onBeforeUnmount(() => {
         <div class="manage-form">
           <NInput v-if="!agentForm.name" v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" />
           <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
-          <NSelect v-model:value="agentForm.skills" multiple size="small" :options="agentSkillOptions" :placeholder="actionLabels.linkedSkills" />
+          <NSelect v-model:value="agentForm.subagents" multiple size="small" :options="agentSubagentOptions" :placeholder="actionLabels.linkedSubagents" />
+<NSelect v-model:value="agentForm.skills" multiple size="small" :options="agentSkillOptions" :placeholder="actionLabels.linkedSkills" />
           <NSelect v-model:value="agentForm.tools" multiple size="small" :options="agentToolOptions" :placeholder="actionLabels.linkedTools" />
         </div>
         <template #footer>

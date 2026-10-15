@@ -878,6 +878,7 @@ def _agent_entry(name: str, data: dict) -> dict:
         # (which would be saved back as [] = all disabled).
         "skills": skills if isinstance(skills, list) else _skill_names_on_disk(),
         "tools": _norm_agent_tools(data.get("tools")),
+        "subagents": data.get("subagents") or [],
         "file": name + AGENT_MD_SUFFIX,
         "body": _agent_md_body(name),
     }
@@ -1003,12 +1004,20 @@ def _normalize_agent_def(payload: dict, existing_tools: dict | None = None) -> d
         skills = [s for s in payload["skills"] if isinstance(s, str) and _valid_name(s)
                   and not _is_disabled(SKILLS_DIR / s)]
         def_data["skills"] = skills
+    # subagents: names of other agents this agent may recursively delegate to
+    # (must exist on disk / in agents.json and cannot reference itself)
+    if isinstance(payload.get("subagents"), list):
+        known = set(_scan_agent_files())
+        subs = [s for s in payload["subagents"] if isinstance(s, str) and _valid_name(s)
+                and s != (payload.get("name") or "") and s in known]
+        if subs:
+            def_data["subagents"] = subs
     tools = _norm_agent_tools(payload.get("tools"))
     # the agent form sends a server-name list; keep the existing per-agent
     # inner_tools state instead of resetting it to "all enabled"
     if isinstance(payload.get("tools"), list) and existing_tools:
         tools["inner_tools"] = _norm_inner_tools(existing_tools.get("inner_tools"))
     # omit the field when it equals the default (full inner set, no MCP tools)
-    if not (set(tools["inner_tools"]) == set(BUILTIN_TOOL_NAMES) and not tools["mcp_tools"]):
+    if not (set(tools.get("inner_tools") or []) == set(BUILTIN_TOOL_NAMES) and not tools.get("mcp_tools")):
         def_data["tools"] = tools
     return def_data
