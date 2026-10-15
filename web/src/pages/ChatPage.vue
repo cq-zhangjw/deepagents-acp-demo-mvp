@@ -1311,6 +1311,8 @@ async function removeSubagent(agent: any) {
 const subagentList = computed(() =>
   agentList.value.filter((a) => a.enabled !== false && a.name !== currentAgentName.value && a.name !== 'default')
 )
+/** 当前激活 Agent 的定义（子 Agent 面板顶部高亮卡片）。 */
+const currentAgentDef = computed(() => agentList.value.find((a) => a.name === currentAgentName.value))
 /** Delete an agent (md file + agents.json entry + references). default is protected. */
 async function deleteAgent(agent: any) {
   try {
@@ -3444,8 +3446,21 @@ onBeforeUnmount(() => {
         </div>
         <!-- 子 Agent 面板 -->
         <div v-else-if="rightPanelTab === 'subagents'" class="panel-section">
-          <div class="panel-section-note">{{ actionLabels.currentAgent }}：{{ displayAgentName(currentAgentName) || actionLabels.agent }}</div>
-          <div v-if="!agentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
+          <div class="panel-section-note">{{ actionLabels.currentAgent }}</div>
+          <div v-if="currentAgentDef" class="manage-card manage-card--active" role="button" tabindex="0">
+            <div class="manage-card-head">
+              <strong>{{ displayAgentName(currentAgentDef.name) }}</strong>
+              <span class="manage-card-head-right">
+                <NTag size="small" type="primary">{{ actionLabels.currentAgent }}</NTag>
+              </span>
+            </div>
+            <p v-if="currentAgentDef.description" class="manage-card-desc" :title="currentAgentDef.description">{{ currentAgentDef.description }}</p>
+            <div v-if="(currentAgentDef.subagents || []).length" class="manage-card-chips">
+              <span class="manage-chip-label">{{ actionLabels.linkedSubagents }}</span>
+              <NTag v-for="s in currentAgentDef.subagents" :key="s" size="small" type="warning">{{ displayAgentName(s) }}</NTag>
+            </div>
+          </div>
+          <div v-if="!subagentList.length" class="panel-placeholder"><p>{{ actionLabels.emptyList }}</p></div>
           <div v-for="agent in subagentList" :key="agent.name" class="manage-card" :class="{ 'manage-card--sub-linked': isSubagentOfCurrent(agent.name) }" role="button" tabindex="0" @click="selectAgent(agent.name)">
             <div class="manage-card-head">
               <strong>{{ displayAgentName(agent.name) }}</strong>
@@ -3877,7 +3892,7 @@ onBeforeUnmount(() => {
 .panel-group-count { font-size:10px; color:var(--subtle); background:var(--canvas); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
 .manage-card { border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--canvas); display:flex; flex-direction:column; gap:6px; transition:box-shadow .15s ease; }
 .manage-card:hover { box-shadow:0 2px 8px rgba(29,39,51,.06); }
-.manage-card--disabled { opacity:.55; } .manage-card--active { border-color:#2563eb; box-shadow:0 0 0 1px rgba(37,99,235,.35); } .manage-card--clickable { cursor:pointer; }
+.manage-card--disabled { opacity:.55; } .manage-card--active { border-color:#2563eb; box-shadow:0 0 0 1px rgba(37,99,235,.35); background:rgba(37,99,235,.06); } .manage-card--clickable { cursor:pointer; }
 .manage-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .manage-card-head-right { display:flex; align-items:center; gap:8px; }
 .timer-run-badge { font-size:12px; color:var(--subtle); white-space:nowrap; }
