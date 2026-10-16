@@ -1436,15 +1436,17 @@ async function toggleInnerTool(name: string) {
 }
 // new skill modal
 const skillModalVisible = ref(false)
+const skillEditing = ref(false)
 const skillForm = ref({ name: '', description: '', content: '' })
 async function submitSkill() {
   try {
-    if (skillForm.value.name) {
+    if (skillEditing.value) {
       await apiManage(`/api/manage/skills/${skillForm.value.name}`, 'PUT', skillForm.value)
     } else {
       await apiManage('/api/manage/skills', 'POST', skillForm.value)
     }
     skillModalVisible.value = false
+    skillEditing.value = false
     skillForm.value = { name: '', description: '', content: '' }
     await fetchManageData()
   } catch (e: any) {
@@ -1452,6 +1454,7 @@ async function submitSkill() {
   }
 }
 function openSkillEdit(item?: any) {
+  skillEditing.value = !!item
   skillForm.value = item
     ? { name: item.name, description: item.description, content: '' }
     : { name: '', description: '', content: '' }
@@ -1466,6 +1469,7 @@ function openSkillEdit(item?: any) {
 
 // new tool modal
 const toolModalVisible = ref(false)
+const toolEditing = ref(false)
 const toolForm = ref({ name: '', description: '', command: '', args: '', cwd: '', env: '' })
 async function submitTool() {
   try {
@@ -1482,12 +1486,13 @@ async function submitTool() {
         })
       )
     }
-    if (toolForm.value.name) {
+    if (toolEditing.value) {
       await apiManage(`/api/manage/tools/${toolForm.value.name}`, 'PUT', payload)
     } else {
       await apiManage('/api/manage/tools', 'POST', payload)
     }
     toolModalVisible.value = false
+    toolEditing.value = false
     toolForm.value = { name: '', description: '', command: '', args: '', cwd: '', env: '' }
     await fetchManageData()
   } catch (e: any) {
@@ -1497,6 +1502,7 @@ async function submitTool() {
 
 // new agent modal
 const agentModalVisible = ref(false)
+const agentEditing = ref(false)
 const agentForm = ref({ name: '', description: '', body: '', subagents: [] as string[], skills: [] as string[], tools: [] as string[] })
 const agentSkillOptions = computed(() =>
   skillList.value.filter((s) => s.enabled).map((s) => ({ label: s.name, value: s.name }))
@@ -1512,12 +1518,13 @@ const agentSubagentOptions = computed(() =>
 )
 async function submitAgent() {
   try {
-    if (agentForm.value.name) {
+    if (agentEditing.value) {
       await apiManage(`/api/manage/agents/${agentForm.value.name}`, 'PUT', agentForm.value)
     } else {
       await apiManage('/api/manage/agents', 'POST', agentForm.value)
     }
     agentModalVisible.value = false
+    agentEditing.value = false
     agentForm.value = { name: '', description: '', body: '', subagents: [], skills: [], tools: [] }
     await fetchManageData()
   } catch (e: any) {
@@ -1525,6 +1532,7 @@ async function submitAgent() {
   }
 }
 function openAgentEdit(item?: any) {
+  agentEditing.value = !!item
   agentForm.value = item
     ? {
         name: item.name,
@@ -3659,10 +3667,10 @@ onBeforeUnmount(() => {
 
     <!-- 技能新建/编辑弹窗 -->
     <NModal :show="skillModalVisible" :mask-closable="false" @after-leave="skillModalVisible = false">
-      <NCard :title="skillForm.name ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
+      <NCard :title="skillEditing ? actionLabels.edit : actionLabels.newSkill" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
         <div class="manage-form skill-edit-form">
           <label class="manage-form-label">{{ actionLabels.skillName }}</label>
-          <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" :disabled="!!skillForm.name" />
+          <NInput v-model:value="skillForm.name" size="small" :placeholder="'name'" :disabled="skillEditing" />
           <label class="manage-form-label">{{ actionLabels.skillDescription }}</label>
           <NInput v-model:value="skillForm.description" size="small" :placeholder="'description'" />
           <div class="skill-edit-split">
@@ -3690,7 +3698,7 @@ onBeforeUnmount(() => {
 
     <!-- 工具新建/编辑弹窗 -->
     <NModal :show="toolModalVisible" :mask-closable="false" @after-leave="toolModalVisible = false">
-      <NCard :title="toolForm.name ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
+      <NCard :title="toolEditing ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
         <div class="manage-form">
           <NInput v-if="!toolForm.name" v-model:value="toolForm.name" size="small" :placeholder="'name'" />
           <NInput v-model:value="toolForm.description" size="small" :placeholder="'description'" />
@@ -3710,11 +3718,11 @@ onBeforeUnmount(() => {
 
     <!-- Agent 新建/编辑弹窗 -->
     <NModal :show="agentModalVisible" :mask-closable="false" @after-leave="agentModalVisible = false">
-      <NCard :title="agentForm.name ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
+      <NCard :title="agentEditing ? actionLabels.edit : actionLabels.newAgent" :bordered="false" class="manage-modal manage-modal--large" role="dialog">
         <div class="manage-form manage-form-split">
           <div class="manage-form-left">
             <label class="manage-form-label">{{ actionLabels.agentNameLabel }}</label>
-            <NInput v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" :disabled="!!agentForm.name" />
+            <NInput v-model:value="agentForm.name" size="small" :placeholder="t('agentName')" :disabled="agentEditing" />
             <label class="manage-form-label">{{ actionLabels.agentDescriptionLabel }}</label>
             <NInput v-model:value="agentForm.description" size="small" :placeholder="t('agentDescription')" />
             <label class="manage-form-label">{{ actionLabels.taskDetail }}</label>
