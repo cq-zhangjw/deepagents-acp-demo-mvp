@@ -8,6 +8,7 @@ import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{ content: string; variant?: 'assistant' | 'user' }>()
+const emit = defineEmits<{ (e: 'open-file', path: string): void }>()
 const root = ref<HTMLElement | null>(null)
 const message = useMessage()
 const { t } = useI18n()
@@ -42,21 +43,52 @@ const mermaidCache = new Map<string, string>()
 // [文件: <file_id>] 被解析为可下载的附件链接。附件实际存储在 MooFile 附件库
 // （db_attachments_*），这里只消耗一个短 ID，不会把图片 base64 塞进会话文本
 // （token 友好）。
+// 绝对路径 → 可点击预览链接（链接文本只显示最后的文件名）。
+// 匹配 Windows 盘符路径（C:\... / D:/...）与常见 Unix 绝对路径（/home、/Users 等）。
+const ABS_PATH_RE = /(?:[A-Za-z]:[\\/][^\s，。；;、"'<>()\[\]{}`|*?]+|\/(?:home|Users|tmp|opt|var|etc|data|mnt|workspace|root|usr|srv|media)\/[^\s，。；;、"'<>()\[\]{}`|*?]+)/g
+function absPathToLink(match: string): string {
+  const path = match.trim().replace(/[，。；;、"'<>()\[\]{}`|*?\s]+$/, '')
+  if (!path) return match
+  const name = path.split(/[\\/]/).pop() || path
+  return `[${name}](/api/preview-file?path=${encodeURIComponent(path)})`
+}
+
 function resolveAttachments(content: string): string {
   return content
     .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![${t('attachmentImage')}](/api/attachments/${id})`)
     .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 ${t('attachmentFile')}](/api/attachments/${id})`)
+    .replace(ABS_PATH_RE, absPathToLink)
 }
 
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS
 const md = new MarkdownIt({ html: true, linkify: true })
 const defaultLinkRender = md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  const href = tokens[idx].attrGet('href') || ''
+  if (href.startsWith('/api/preview-file?')) {
+    try {
+      const u = new URL(href, window.location.origin)
+      tokens[idx].attrSet('data-file-path', u.searchParams.get('path') || '')
+      tokens[idx].attrSet('class', 'file-preview-link')
+    } catch {
+      /* ignore malformed urls */
+    }
+  }
   tokens[idx].attrSet('target', '_blank')
   tokens[idx].attrSet('rel', 'noopener noreferrer')
   return defaultLinkRender(tokens, idx, options, env, self)
 }
 const safeHtml = computed(() => DOMPurify.sanitize(md.render(resolveAttachments(props.content))))
+
+// 点击绝对路径预览链接 → 交给父组件打开应用内文件预览
+function onRootClick(e: MouseEvent) {
+  const target = (e.target as HTMLElement).closest?.('a[data-file-path]')
+  if (target) {
+    e.preventDefault()
+    const path = target.getAttribute('data-file-path') || ''
+    if (path) emit('open-file', path)
+  }
+}
 
 function languageOf(block: HTMLElement) {
   return Array.from(block.classList)
@@ -179,7 +211,7 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 </script>
 
 <template>
-  <div ref="root" :class="rootClass" v-html="safeHtml"></div>
+  <div ref="root" :class="rootClass" v-html="safeHtml" @click="onRootClick"></div>
 </template>
 
 <style scoped>
@@ -191,6 +223,8 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 .markdown-message :deep(pre) { position:relative; margin:12px 0; padding:38px 12px 12px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(pre code) { padding:0; color:#1d2733; background:transparent; font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.55; }
 .markdown-message :deep(code:not(pre code)) { padding:2px 6px; color:#174cb9; background:#e9eef6; border:1px solid #dbe4f0; border-radius:5px; font-family:"Cascadia Code",Consolas,monospace; font-size:0.9em; }
 .markdown-message--user :deep(code:not(pre code)) { color:#1d4ed8; background:#fff; border-color:#b9c9e8; box-shadow:0 1px 2px rgba(29,39,51,.08); }
+.markdown-message :deep(.file-preview-link) { color:#2563eb; text-decoration:underline dotted; cursor:pointer; }
+.markdown-message :deep(.file-preview-link:hover) { text-decoration:underline; background:rgba(37,99,235,.08); }
 .markdown-message :deep(.code-toolbar) { position:absolute; top:0; right:0; left:0; display:flex; justify-content:space-between; align-items:center; height:30px; padding:0 9px; color:#6b7785; background:#e9edf2; border-bottom:1px solid #dce2ea; font:11px "Cascadia Code",Consolas,monospace; } .markdown-message :deep(.code-toolbar button) { padding:2px 7px; color:#405166; background:#fff; border:1px solid #d3dae4; border-radius:4px; cursor:pointer; font:inherit; }
 .markdown-message :deep(.mermaid-block) { margin:12px 0; overflow:hidden; background:#fff; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(.mermaid-tabs) { display:flex; gap:2px; padding:6px 7px; background:#f1f4f8; border-bottom:1px solid #e4e8ee; } .markdown-message :deep(.mermaid-tabs button) { padding:4px 9px; color:#6b7785; background:transparent; border:0; border-radius:4px; cursor:pointer; font-size:12px; } .markdown-message :deep(.mermaid-tabs button.active) { color:#174cb9; background:#fff; box-shadow:0 1px 2px rgba(29,39,51,.08); } .markdown-message :deep(.mermaid-preview) { min-height:120px; padding:18px; overflow:auto; text-align:center; } .markdown-message :deep(.mermaid-preview svg) { max-width:100%; height:auto; } .markdown-message :deep(.mermaid-source) { position:relative; } .markdown-message :deep(.mermaid-source pre) { margin:0; border:0; border-radius:0; }
 </style>

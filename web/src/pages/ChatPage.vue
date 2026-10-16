@@ -1434,6 +1434,28 @@ async function toggleInnerTool(name: string) {
     message.error(e.message)
   }
 }
+// file preview modal (clickable absolute-path links in messages)
+const filePreviewVisible = ref(false)
+const filePreviewLoading = ref(false)
+const filePreview = ref<{ name: string; path: string; content: string } | null>(null)
+async function openFilePreview(path: string) {
+  filePreviewVisible.value = true
+  filePreviewLoading.value = true
+  filePreview.value = null
+  try {
+    const r = await fetch(`/api/preview-file?path=${encodeURIComponent(path)}`)
+    if (!r.ok) {
+      let detail = '预览失败'
+      try { detail = (await r.json()).detail || detail } catch { /* ignore */ }
+      throw new Error(detail)
+    }
+    filePreview.value = await r.json()
+  } catch (e: any) {
+    message.error(e.message)
+  } finally {
+    filePreviewLoading.value = false
+  }
+}
 // new skill modal
 const skillModalVisible = ref(false)
 const skillEditing = ref(false)
@@ -3090,7 +3112,7 @@ onBeforeUnmount(() => {
                 <span v-if="!isTimerSession || item.role === 'user'">{{ formatTime(item.createdAt) }}</span>
               </div>
               <div v-if="item.role === 'user'" class="message-bubble user-bubble">
-                <MarkdownMessage v-if="item.text" class="user-content" variant="user" :content="item.text" />
+                <MarkdownMessage v-if="item.text" class="user-content" variant="user" :content="item.text" @open-file="openFilePreview" />
                 <div v-if="item.attachments.length" class="attachment-list">
                   <span v-for="attachment in item.attachments" :key="attachment.path ?? attachment.uri ?? attachment.name" class="attachment-chip" :class="{ 'attachment-chip--image': attachment.kind === 'image' }" role="button" :aria-label="attachment.kind === 'image' ? t('previewAttachment') : t('downloadAttachment')" @click="openAttachment(attachment)">
                     <img v-if="attachment.kind === 'image' && (attachment.previewUrl || attachment.url)" :src="attachment.previewUrl ?? attachment.url" :alt="attachment.name" class="attachment-preview" />
@@ -3149,9 +3171,9 @@ onBeforeUnmount(() => {
               </div>
               <template v-else>
                 <template v-for="segment in item.segments" :key="segment.id">
-                  <MarkdownMessage v-if="segment.type === 'text' || segment.type === 'thought'" class="assistant-content" :content="segment.text" />
+                  <MarkdownMessage v-if="segment.type === 'text' || segment.type === 'thought'" class="assistant-content" :content="segment.text" @open-file="openFilePreview" />
                   <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
-                  <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" />
+                  <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" @open-file="openFilePreview" />
                 </template>
                 <span v-if="isAssistantRunning(item)" class="msg-loader" aria-label="loading" />
                 <div v-if="!isRunning && item.status !== 'pending'" class="message-actions">
@@ -3681,7 +3703,7 @@ onBeforeUnmount(() => {
             <div class="skill-edit-col skill-edit-preview">
               <label class="skill-edit-label">Preview</label>
               <div class="skill-edit-preview-body">
-                <MarkdownMessage v-if="skillForm.content" :content="skillForm.content" />
+                <MarkdownMessage v-if="skillForm.content" :content="skillForm.content" @open-file="openFilePreview" />
                 <p v-else class="skill-edit-preview-empty">No content</p>
               </div>
             </div>
@@ -3697,6 +3719,20 @@ onBeforeUnmount(() => {
     </NModal>
 
     <!-- 工具新建/编辑弹窗 -->
+    <!-- 文件预览弹窗（消息中绝对路径链接） -->
+    <NModal :show="filePreviewVisible" :mask-closable="true" @after-leave="filePreviewVisible = false">
+      <NCard :title="filePreview?.name || ''" :bordered="false" class="file-preview-modal" role="dialog">
+        <NSpin v-if="filePreviewLoading" style="display:flex;justify-content:center;padding:40px 0;" />
+        <pre v-else-if="filePreview" class="file-preview-content"><code>{{ filePreview.content }}</code></pre>
+        <p v-else class="file-preview-empty">{{ actionLabels.emptyList }}</p>
+        <template #footer>
+          <div class="manage-form-actions">
+            <NButton @click="filePreviewVisible = false">{{ actionLabels.close }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+
     <NModal :show="toolModalVisible" :mask-closable="false" @after-leave="toolModalVisible = false">
       <NCard :title="toolEditing ? actionLabels.edit : actionLabels.newTool" :bordered="false" class="manage-modal manage-modal--wide" role="dialog">
         <div class="manage-form">
@@ -3778,7 +3814,7 @@ onBeforeUnmount(() => {
           <div class="edit-preview">
             <div class="edit-preview-label">{{ actionLabels.preview }}</div>
             <div class="edit-preview-body">
-              <MarkdownMessage :content="editText" />
+              <MarkdownMessage :content="editText" @open-file="openFilePreview" />
             </div>
           </div>
         </div>
@@ -3967,6 +4003,9 @@ onBeforeUnmount(() => {
 .skill-edit-col :deep(.n-input--textarea .n-input__textarea-el) { height:100% !important; overflow-y:auto; }
 .skill-edit-preview-body { flex:1; min-height:0; overflow-y:auto; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--canvas); }
 .skill-edit-preview-empty { color:var(--subtle); font-size:12px; }
+.file-preview-modal { width:min(70vw, 1000px); }
+.file-preview-content { max-height:70vh; overflow:auto; margin:0; padding:12px 14px; background:#0f172a; color:#e2e8f0; border-radius:8px; font:12px/1.6 "Cascadia Code",Consolas,monospace; white-space:pre; word-break:normal; }
+.file-preview-empty { color:var(--subtle); font-size:13px; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
 @media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }

@@ -16,6 +16,7 @@ interface ToolCallEntry {
 }
 
 const props = defineProps<{ tool: ToolCallEntry }>()
+const emit = defineEmits<{ (e: 'open-file', path: string): void }>()
 const { t } = useI18n()
 
 // 内置工具名：title 与之相同则视为"只有工具名、无正文"
@@ -83,10 +84,10 @@ function statusText(status: string) {
       </template>
       <NTabs type="line" size="small" class="tool-tabs">
         <NTabPane name="input" :tab="t('parameters')">
-          <div class="tool-pane tool-pane--params"><MarkdownMessage :content="paramsMarkdown" /></div>
+          <div class="tool-pane tool-pane--params"><MarkdownMessage :content="paramsMarkdown" @open-file="(p) => emit('open-file', p)" /></div>
         </NTabPane>
         <NTabPane name="output" :tab="t('output')">
-          <div class="tool-pane tool-pane--output"><MarkdownMessage :content="outputMarkdown" /></div>
+          <div class="tool-pane tool-pane--output"><MarkdownMessage :content="outputMarkdown" @open-file="(p) => emit('open-file', p)" /></div>
         </NTabPane>
       </NTabs>
     </NCollapseItem>

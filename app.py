@@ -1,4 +1,4 @@
-"""FastAPI bridge gateway: Web frontend <-> DeepAgents ACP Agent (stdio subprocess).
+﻿"""FastAPI bridge gateway: Web frontend <-> DeepAgents ACP Agent (stdio subprocess).
 
 Responsibilities:
 1. POST /upload          —— frontend uploads images/files, saves them, and returns an accessible HTTP resource URL
@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.chat_voice.chat_voice import router as chat_voice_router
 from api.attachments import router as attachments_router
+from api.preview_file import router as preview_router
 from api.context import router as context_router
 from api.history import router as history_router
 from api.knowledge import router as knowledge_router
@@ -131,6 +132,7 @@ app.include_router(manage_router)
 app.include_router(context_router)
 # attachment (image/file) sub-router: /api/attachments (MooFile-backed)
 app.include_router(attachments_router)
+app.include_router(preview_router)
 # scheduled tasks sub-router: /api/timers (MooFile-backed, cron/interval)
 app.include_router(timers_router)
 
