@@ -3076,7 +3076,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="header-actions">
           <NDropdown :options="localeOptions" trigger="click" @select="onLocaleSelect">
-            <NButton quaternary circle size="small" :aria-label="t('language')" class="locale-trigger">
+            <NButton quaternary size="small" :aria-label="t('language')" class="locale-trigger">
               <template #icon><NIcon :component="LanguageOutline" /></template>
               <span class="locale-short">{{ localeShort }}</span>
             </NButton>

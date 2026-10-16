@@ -58,6 +58,10 @@ function resolveAttachments(content: string): string {
   return content
     .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![${t('attachmentImage')}](/api/attachments/${id})`)
     .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 ${t('attachmentFile')}](/api/attachments/${id})`)
+    // AI 常把路径写在反引号里（`E:\...`），若直接替换路径会生成
+    // `[name](/api/reveal-file?...)`，markdown-it 会优先解析成 inline code
+    // 导致链接显示为原文。这里先把「反引号+路径+反引号」整体替换为链接。
+    .replace(new RegExp('`(' + ABS_PATH_RE.source + ')`', 'g'), (_, p: string) => absPathToLink(p))
     .replace(ABS_PATH_RE, absPathToLink)
 }
 

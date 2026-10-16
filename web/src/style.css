@@ -11,6 +11,12 @@ body,
 	margin: 0;
 }
 
+/* 全屏应用：禁止文档级滚动条，滚动只发生在内部容器（消息区/列表/弹窗） */
+html,
+body {
+	overflow: hidden;
+}
+
 body {
 	overflow: hidden;
 	color: #1d2733;
