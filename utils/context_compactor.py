@@ -9,6 +9,14 @@ The compaction runs:
 - automatically: acp_agent.py subclasses AgentServerACP and checks before every
   session/prompt (threshold: CONTEXT_COMPACT_RATIO * CONTENT_SIZE);
 - manually: POST /api/context/compact in api/context.py forces a compaction.
+
+Optimization (see docs/context-compaction-optimization.md):
+- rolling summary: previous summaries are fully inherited, never rewritten from
+  scratch (no round-by-round information decay);
+- task-goal anchor: the earliest user message survives compaction verbatim;
+- structured summary template: forces target / progress / absolute paths /
+  decisions / open items to be listed explicitly;
+- chunked summarization replaces head+tail truncation when the input is long.
 """
 
 import os
@@ -20,17 +28,32 @@ from utils.model_util import MODEL
 # Context window size (tokens), same as the frontend display value.
 CONTENT_SIZE = int(os.getenv("CONTENT_SIZE") or 32768)
 # Compaction triggers when estimated tokens >= CONTENT_SIZE * RATIO.
-COMPACT_RATIO = float(os.getenv("CONTEXT_COMPACT_RATIO") or 0.85)
+COMPACT_RATIO = float(os.getenv("CONTEXT_COMPACT_RATIO") or 0.80)
 # Extra tokens not counted by the message estimator (system prompt, tool
 # schemas, images, ...). Keeps the check conservative.
 COMPACT_OVERHEAD = int(os.getenv("CONTEXT_COMPACT_OVERHEAD") or 6000)
 # Maximum tokens the summarizer may produce.
 SUMMARY_MAX_TOKENS = int(os.getenv("CONTEXT_COMPACT_SUMMARY_MAX_TOKENS") or 2048)
 # Keep the most recent N messages untouched; only earlier ones are summarized.
-KEEP_RECENT = int(os.getenv("CONTEXT_COMPACT_KEEP_RECENT") or 8)
+KEEP_RECENT = int(os.getenv("CONTEXT_COMPACT_KEEP_RECENT") or 12)
 # Summarizer input guard: at most ~this fraction of the window (in chars,
 # roughly tokens * 1.7) is sent to the model for summarizing.
 SUMMARY_INPUT_FRACTION = float(os.getenv("CONTEXT_COMPACT_SUMMARY_INPUT_FRACTION") or 0.6)
+
+# Marker for summary messages: metadata key + content prefix (dual signal so the
+# summary survives even if metadata is dropped by a storage layer).
+SUMMARY_ROLE = "__role__"
+SUMMARY_ROLE_VALUE = "context_summary"
+SUMMARY_PREFIX = "【历史上下文摘要】"
+
+
+def _is_summary(m: BaseMessage) -> bool:
+    """True if the message is a compaction summary (metadata or prefix)."""
+    meta = getattr(m, "metadata", None) or {}
+    if isinstance(meta, dict) and meta.get(SUMMARY_ROLE) == SUMMARY_ROLE_VALUE:
+        return True
+    text = _msg_text(m)
+    return bool(text and text.lstrip().startswith(SUMMARY_PREFIX))
 
 
 def estimate_tokens(messages: list[BaseMessage]) -> int:
@@ -82,29 +105,45 @@ def format_messages_for_summary(messages: list[BaseMessage]) -> str:
     return "\n\n".join(lines)
 
 
-async def build_summary(messages: list[BaseMessage]) -> str:
-    """Ask the model to summarize the given messages into a compact summary.
+def _summary_sections(is_first: bool) -> list[str]:
+    if is_first:
+        return [
+            "目标：",
+            "已完成：",
+            "当前进度：",
+            "关键事实与绝对路径：",
+            "已做决策：",
+            "待办与未解决：",
+        ]
+    return [
+        "新增关键事实与绝对路径：",
+        "新增已做决策：",
+        "待办与未解决：",
+    ]
 
-    The input text is guarded so the summarizer prompt itself stays well below
-    the context window. Returns the summary text.
-    """
-    text = format_messages_for_summary(messages)
-    max_chars = max(2000, int(CONTENT_SIZE * SUMMARY_INPUT_FRACTION * 1.7))
-    if len(text) > max_chars:
-        # Keep the head (task goal, early steps) and the tail (latest progress).
-        head = text[: max_chars // 2]
-        tail = text[-max_chars // 2:]
-        text = f"{head}\n\n[... omitted {len(text) - max_chars} chars ...]\n\n{tail}"
 
+def _build_prompt(text: str, prior_summary: str | None = None, is_first: bool = True) -> str:
+    sections = "\n".join(f"- {s}" for s in _summary_sections(is_first))
     prompt = (
         "You are compressing a long conversation history to fit the AI agent's context window. "
-        "Preserve: the original task goal, all important facts and decisions, completed steps and "
-        "their results, current progress, and any open questions or errors still being investigated. "
-        "Write a compact summary in the same language as the conversation. "
-        f"Do not exceed {SUMMARY_MAX_TOKENS} tokens.\n\n"
-        f"<conversation>\n{text}\n</conversation>"
+        "Output a compact summary with EXACTLY these sections (same language as the conversation):\n"
+        f"{sections}\n"
+        "- 关键事实与绝对路径 section MUST list every absolute path, file name, "
+        "data value and conclusion; omitting one is a failure.\n"
+        "- Do not exceed %d tokens.\n\n" % SUMMARY_MAX_TOKENS
     )
-    resp = await MODEL.ainvoke([HumanMessage(content=prompt)])
+    if prior_summary:
+        prompt += (
+            "CRITICAL: The following is the PREVIOUS summary of the earlier conversation. "
+            "You MUST fully preserve every point it contains — do not drop, rewrite or shorten it. "
+            "Only add new information from the new conversation chunk below.\n\n"
+            f"<previous-summary>\n{prior_summary}\n</previous-summary>\n\n"
+        )
+    prompt += f"<conversation>\n{text}\n</conversation>"
+    return prompt
+
+
+def _extract_text(resp) -> str:
     content = resp.content
     if isinstance(content, str):
         return content.strip()
@@ -113,16 +152,100 @@ async def build_summary(messages: list[BaseMessage]) -> str:
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
-        text = "\n".join(parts).strip()
-        return text or "[summary unavailable]"
-    return str(content).strip() or "[summary unavailable]"
+        return "\n".join(parts).strip()
+    return str(content).strip()
+
+
+def _split_text(text: str, max_chars: int) -> list[str]:
+    """Split long text into chunks of at most max_chars chars (on paragraph gaps)."""
+    if len(text) <= max_chars:
+        return [text] if text.strip() else []
+    chunks: list[str] = []
+    cur = ""
+    for para in text.split("\n\n"):
+        if len(cur) + len(para) + 2 > max_chars and cur:
+            chunks.append(cur.strip())
+            cur = para
+        else:
+            cur = (cur + "\n\n" + para if cur else para)
+        # 单个段落仍超限：硬切
+        while len(cur) > max_chars:
+            chunks.append(cur[:max_chars].strip())
+            cur = cur[max_chars:]
+    if cur.strip():
+        chunks.append(cur.strip())
+    return [c for c in chunks if c]
+
+
+async def build_summary(messages: list[BaseMessage], prior_summary: str | None = None) -> str:
+    """Ask the model to summarize the given messages into a compact summary.
+
+    The prior summary (if any) is passed verbatim and must be fully preserved
+    (rolling accumulation). Long inputs are chunked and summarized piecewise so
+    mid-conversation decisions are not truncated away. Returns the summary text.
+    """
+    text = format_messages_for_summary(messages)
+    max_chars = max(2000, int(CONTENT_SIZE * SUMMARY_INPUT_FRACTION * 1.7))
+    chunks: list[str] = []
+    if prior_summary:
+        chunks.append(f"[历史摘要]\n{prior_summary}")
+    chunks.extend(_split_text(text, max_chars))
+    if not chunks:
+        return "[summary unavailable]"
+
+    parts: list[str] = []
+    for i, chunk in enumerate(chunks):
+        is_first = i == 0
+        prompt = _build_prompt(chunk, prior_summary=prior_summary if is_first else None, is_first=is_first)
+        try:
+            resp = await MODEL.ainvoke([HumanMessage(content=prompt)])
+            part = _extract_text(resp)
+        except Exception:  # noqa: BLE001 - summarization must never break the prompt
+            part = ""
+        if part:
+            parts.append(part)
+    return "\n\n".join(parts).strip() or "[summary unavailable]"
+
+
+def _task_anchor(messages: list[BaseMessage]) -> BaseMessage | None:
+    """Earliest non-summary user message: the original task goal, kept verbatim."""
+    for m in messages:
+        if _is_summary(m):
+            continue
+        if isinstance(m, HumanMessage):
+            return m
+    return None
 
 
 def split_compact(messages: list[BaseMessage]):
-    """Split messages into (early-to-summarize, recent-to-keep)."""
-    if len(messages) <= KEEP_RECENT + 1:
+    """Split messages into (early-to-summarize, to-keep).
+
+    - summary messages are never removed (their content is inherited by the new
+      summary instead);
+    - the task-goal anchor (earliest user message) is never removed;
+    - the most recent KEEP_RECENT messages are kept untouched.
+    """
+    if not messages:
         return [], list(messages)
-    return list(messages[:-KEEP_RECENT]), list(messages[-KEEP_RECENT:])
+    summaries = [m for m in messages if _is_summary(m)]
+    others = [m for m in messages if not _is_summary(m)]
+    anchor = _task_anchor(others)
+
+    if len(others) <= KEEP_RECENT:
+        # 没有需要总结的早期消息：保留原样（含旧 summary）
+        return [], list(messages)
+
+    recent = others[-KEEP_RECENT:]
+    early = [m for m in others[:-KEEP_RECENT] if m is not anchor]
+    to_keep = summaries + ([anchor] if anchor is not None and anchor not in recent else []) + recent
+    return early, to_keep
+
+
+def _prior_summary_text(to_keep: list[BaseMessage]) -> str | None:
+    """Return the concatenated previous summary text (if any) from to_keep."""
+    texts = [_msg_text(m).replace(SUMMARY_PREFIX, "", 1).strip() for m in to_keep if _is_summary(m)]
+    texts = [t for t in texts if t]
+    return "\n\n".join(texts) if texts else None
 
 
 async def compact_messages_list(messages: list[BaseMessage]) -> tuple[list[BaseMessage], dict]:
@@ -134,7 +257,7 @@ async def compact_messages_list(messages: list[BaseMessage]) -> tuple[list[BaseM
     the same logic serves the table-authoritative flow and the legacy path.
     """
     before_tokens = estimate_tokens(messages)
-    early, recent = split_compact(messages)
+    early, to_keep = split_compact(messages)
     if not early:
         return list(messages), {
             "ok": False,
@@ -142,13 +265,19 @@ async def compact_messages_list(messages: list[BaseMessage]) -> tuple[list[BaseM
             "before_tokens": before_tokens,
         }
 
-    summary_text = await build_summary(early)
-    compacted = [HumanMessage(content=summary_text), *recent]
+    prior = _prior_summary_text(to_keep)
+    summary_text = await build_summary(early, prior_summary=prior)
+    summary_msg = HumanMessage(
+        content=f"{SUMMARY_PREFIX}\n{summary_text}",
+        metadata={SUMMARY_ROLE: SUMMARY_ROLE_VALUE},
+    )
+    # 旧 summary 已被新 summary 完整继承，避免重复
+    compacted = [summary_msg] + [m for m in to_keep if not _is_summary(m)]
     return compacted, {
         "ok": True,
         "summary": summary_text[:200],
         "removed": len(early),
-        "kept": len(recent),
+        "kept": len([m for m in compacted if not _is_summary(m)]),
         "before_tokens": before_tokens,
     }
 
