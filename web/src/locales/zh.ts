@@ -14,7 +14,7 @@ export default {
   startTask: '开始一个任务',
   startTaskHint: '描述目标，或附加图片与文件，让 Agent 帮你分步完成。',
   you: '你',
-  assistant: 'DeepAgents',
+  assistant: 'AI',
   viewProcess: '查看执行过程',
   steps: '步',
   seconds: '秒',

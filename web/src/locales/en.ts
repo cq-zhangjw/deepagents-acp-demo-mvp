@@ -14,7 +14,7 @@ export default {
   startTask: 'Start a task',
   startTaskHint: 'Describe a goal or attach an image or file for the Agent.',
   you: 'You',
-  assistant: 'Agent',
+  assistant: 'AI',
   viewProcess: 'View execution process',
   steps: 'steps',
   seconds: 'seconds',

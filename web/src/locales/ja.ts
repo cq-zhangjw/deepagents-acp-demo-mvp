@@ -14,7 +14,7 @@ export default {
   startTask: 'タスクを始める',
   startTaskHint: '目的を入力するか、画像やファイルを添付してください。',
   you: 'あなた',
-  assistant: 'DeepAgents',
+  assistant: 'AI',
   viewProcess: '実行プロセスを表示',
   steps: 'ステップ',
   seconds: '秒',
