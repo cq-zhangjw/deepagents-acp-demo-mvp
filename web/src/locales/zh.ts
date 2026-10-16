@@ -1,6 +1,7 @@
 // Simplified Chinese locale
 export default {
-  brandSubline: 'DeepAgents 工作台',
+  systemName: 'Agent Base',
+  brandSubline: 'Agents Workspace',
   language: '语言',
   newConversation: '新建会话',
   recentConversations: '最近会话',

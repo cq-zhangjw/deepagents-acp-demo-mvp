@@ -1,6 +1,7 @@
 // Japanese locale
 export default {
-  brandSubline: 'DeepAgents ワークスペース',
+  systemName: 'Agent Base',
+  brandSubline: 'Agents Workspace',
   language: '言語',
   newConversation: '新しい会話',
   recentConversations: '最近の会話',

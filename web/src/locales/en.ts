@@ -1,6 +1,7 @@
 // English locale
 export default {
-  brandSubline: 'DeepAgents Workspace',
+  systemName: 'Agent Base',
+  brandSubline: 'Agents Workspace',
   language: 'Language',
   newConversation: 'New conversation',
   recentConversations: 'Recent conversations',
@@ -13,7 +14,7 @@ export default {
   startTask: 'Start a task',
   startTaskHint: 'Describe a goal or attach an image or file for the Agent.',
   you: 'You',
-  assistant: 'DeepAgents',
+  assistant: 'Agent',
   viewProcess: 'View execution process',
   steps: 'steps',
   seconds: 'seconds',

@@ -2935,7 +2935,7 @@ onBeforeUnmount(() => {
       <div class="brand-row">
         <div class="brand-mark"><NIcon :component="CodeSlashOutline" /></div>
         <div>
-          <strong>ACP client base</strong>
+          <strong>{{ t('systemName') }}</strong>
           <span>{{ t('brandSubline') }}</span>
         </div>
         <NButton class="sidebar-collapse-btn" quaternary circle size="tiny" :aria-label="actionLabels.collapseSidebar" @click="sidebarCollapsed = true">
