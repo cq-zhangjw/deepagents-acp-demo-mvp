@@ -1330,9 +1330,6 @@ function selectAgent(key: string) {
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
   fetchManageData() // tools panel state follows the current agent
-  // Append a backticked `@agent-name` reference to the composer so the message
-  // carries the target agent (same convention as @file / /skill quick actions).
-  input.value = input.value + '`@' + key + '` '
   // Each agent maps to a separate ACP subprocess: drop the current connection
   // so the next send reconnects with the new agent name in the WS URL.
   if (ws.value) {
@@ -2831,6 +2828,13 @@ function submitOnEnter(event: KeyboardEvent) {
   }
 }
 
+// 上下键在 @ /skill /# 快速动作面板中循环移动选中项（回车选中由 submitOnEnter 处理）
+function onComposerArrow(event: KeyboardEvent, delta: number) {
+  if (!quickAction.value || !quickItems.value.length) return
+  event.preventDefault()
+  quickIndex.value = (quickIndex.value + delta + quickItems.value.length) % quickItems.value.length
+}
+
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
 
 // 定时任务会话自动刷新：进入 timer-* 会话时每 5s 静默更新履历（不滚动、不重置窗口），切换会话立即停止
@@ -2893,7 +2897,8 @@ onMounted(async () => {
   void loadTimers()
   try {
     await loadHistory()
-    if (!conversations.value.length) createConversation()
+    // 进入画面时自动新建会话（createConversation 会复用已有空会话，不会重复创建）
+    createConversation()
     const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && displayTitle(conversation.title) === t('newSessionTitle'))
     if (defaultEmpties.length > 1) {
       const keepId = defaultEmpties[0].id
@@ -3247,7 +3252,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="composer" :class="{ 'composer--dragging': dragActive }" @dragenter.prevent="dragActive = true" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="dropFiles" @paste="onComposerPaste">
             <input ref="fileInput" class="hidden-input" type="file" multiple @change="uploadFile" />
-            <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" @blur="onComposerBlur" />
+            <NInput v-model:value="input" class="composer-input" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('inputPlaceholder')" @keydown.enter.exact="submitOnEnter" @keydown.up="onComposerArrow($event, -1)" @keydown.down="onComposerArrow($event, 1)" @blur="onComposerBlur" />
             <div v-if="quickAction" class="quick-action-panel" @mousedown.prevent>
               <div v-if="quickLoading" class="quick-action-empty">{{ t('loading') }}</div>
               <div v-else-if="!quickItems.length" class="quick-action-empty">{{ t('noResults') }}</div>
