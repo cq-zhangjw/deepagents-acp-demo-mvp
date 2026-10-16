@@ -2969,13 +2969,13 @@ onBeforeUnmount(() => {
       </div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
         <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
-        <template v-if="normalConversations.length">
+        <div v-if="normalConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': normalCollapsed }">
           <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': normalCollapsed }" @click="normalCollapsed = !normalCollapsed">
             <NIcon :component="normalCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
             <span>{{ t('timers.timerGroupNormal') }}</span>
             <span class="conversation-group-count">{{ normalConversations.length }}</span>
           </button>
-          <template v-if="!normalCollapsed">
+          <div v-if="!normalCollapsed" class="conversation-group-list">
             <button
               v-for="conversation in normalConversations"
               :key="conversation.id"
@@ -2998,15 +2998,15 @@ onBeforeUnmount(() => {
                 <NIcon :component="TrashOutline" />
               </span>
             </button>
-          </template>
-        </template>
-        <template v-if="timerConversations.length">
+          </div>
+        </div>
+        <div v-if="timerConversations.length" class="conversation-group conversation-group--timers" :class="{ 'conversation-group--collapsed': timerCollapsed }">
           <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': timerCollapsed }" @click="timerCollapsed = !timerCollapsed">
             <NIcon :component="timerCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
             <span>{{ t('timers.timerGroupScheduled') }}</span>
             <span class="conversation-group-count">{{ timerConversations.length }}</span>
           </button>
-          <template v-if="!timerCollapsed">
+          <div v-if="!timerCollapsed" class="conversation-group-list">
             <button
               v-for="conversation in timerConversations"
               :key="conversation.id"
@@ -3029,8 +3029,8 @@ onBeforeUnmount(() => {
                 <NIcon :component="TrashOutline" />
               </span>
             </button>
-          </template>
-        </template>
+          </div>
+        </div>
       </nav>
     </aside>
 
@@ -3889,7 +3889,7 @@ onBeforeUnmount(() => {
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:12px; } .conversation-search { padding:0 2px 6px; } .conversation-label { padding:0 10px 6px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
  .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
-.conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow-y:auto; } .conversation-list::-webkit-scrollbar { width:6px; } .conversation-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
+.conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
@@ -3935,7 +3935,7 @@ onBeforeUnmount(() => {
 .timer-run--clickable:hover { background:#f2f6ff; }
 .timer-cron-invalid { color:#d03050; font-size:11px; font-weight:600; }
 .timer-next-run { color:var(--subtle); font-size:11px; }
-.conversation-group-label { display:flex; align-items:center; gap:4px; margin:10px 2px 2px; padding:6px 6px; width:100%; text-align:left; color:#111; font-size:14px; font-weight:700; letter-spacing:.3px; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .conversation-group-label:hover { background:var(--muted); } .conversation-group-count { margin-left:auto; font-size:11px; font-weight:600; color:var(--subtle); background:var(--surface); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
+.conversation-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:10px 2px 2px; padding:6px 6px; width:100%; text-align:left; color:#111; font-size:14px; font-weight:700; letter-spacing:.3px; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .conversation-group-label:hover { background:var(--muted); } .conversation-group-count { margin-left:auto; font-size:11px; font-weight:600; color:var(--subtle); background:var(--surface); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
 .message--highlight { outline:2px solid #2563eb; outline-offset:2px; border-radius:10px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section-note { font-size:12px; color:var(--subtle); padding:2px 2px 0; }
@@ -4018,8 +4018,9 @@ onBeforeUnmount(() => {
 .file-preview-content { max-height:70vh; overflow:auto; margin:0; padding:12px 14px; background:#0f172a; color:#e2e8f0; border-radius:8px; font:12px/1.6 "Cascadia Code",Consolas,monospace; white-space:pre; word-break:normal; }
 .file-preview-empty { color:var(--subtle); font-size:13px; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
-@media (min-width: 901px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
-@media (max-width: 900px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
+@media (min-width: 721px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
+@media (max-width: 720px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } }
+@media (max-width: 900px) { .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
 /* animated loading dots under a running assistant message */
 .msg-loader {
   --color-1: #9aa3b2;
