@@ -54,6 +54,7 @@ flowchart LR
 ./
 ├─ app.py                # FastAPI ゲートウェイ（/upload + /acp-ws、ルートパスで web/dist を配信）
 ├─ acp_agent.py          # DeepAgents ACP agent（stdio サービス）
+├─ launcher/             # C# (.NET 8) デスクトップランチャー（app.exe）：.venv 準備・ゲートウェイ起動・内蔵 WebView でページ表示
 ├─ utils/
 │  └─ model_util.py     # モデル初期化設定（OpenAI 互換 API）
 ├─ web/                  # Vue 3 + TypeScript ACP クライアント（Vite ビルド → web/dist）
@@ -72,6 +73,16 @@ flowchart LR
 ├─ README_JA.md
 └─ .venv/                # 任意のローカル仮想環境
 ```
+
+### デスクトップランチャー（launcher/）
+
+`launcher/` は **C# + Photino.NET** 製の軽量デスクトップランチャーで、自己完結型の `app.exe` として配布されます。実行すると：
+
+1. `.venv`（Python **3.12.x** が必要）を確認 / 作成し、必要に応じて `requirements.txt` をインストール（清華ミラーを使用）；
+2. `app.py`（`http://127.0.0.1:8000` で待機）を起動；
+3. ゲートウェイの準備完了を待って、内蔵の WebView2 / Edge ウィンドウでページを開き、ウィンドウを閉じると `app.py` プロセスを自動終了。
+
+使い方：`launcher/publish/app.exe` と `app.ico` を `app.py`・`requirements.txt` と同じ階層に置き、`app.exe` をダブルクリックするだけです。ビルド方法、アイコン再生成、ハードコードされた設定（ポート 8000、Python 3.12.x、TUNA pip ミラー）は `launcher/README.md` に記載されています。
 
 ## 現在の実装内容
 

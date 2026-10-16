@@ -85,6 +85,7 @@ flowchart LR
 │  ├─ knowledge.py       # Knowledge-base gateway sub-router (/api/knowledge; probes + lists moofile_base, toggles the MCP entry)
 │  └─ manage/manager.py  # Skills / tools (MCP) / agents / built-in tools / file-picker sub-router (/api/manage)
 ├─ acp_agent.py          # DeepAgents ACP agent (stdio service, assembles MCP tools + skills from agents.json)
+├─ launcher/             # C# (.NET 8) desktop launcher (app.exe): prepares .venv, starts the gateway, opens an embedded WebView window
 ├─ start-all.ps1         # Start both systems: moofile_base (:8888) then this gateway (:8000)
 ├─ stop-all.ps1          # Stop both systems (moofile_base first, then this gateway)
 ├─ utils/
@@ -113,6 +114,16 @@ flowchart LR
 ├─ README_JA.md
 └─ .venv/                # Optional local virtual environment
 ```
+
+### Desktop launcher (`launcher/`)
+
+`launcher/` is a lightweight **C# + Photino.NET** desktop launcher distributed as a self-contained `app.exe`. Running it:
+
+1. checks / creates `.venv` (requires Python **3.12.x**) and installs `requirements.txt` (Tsinghua mirror if missing);
+2. starts `app.py` (listening on `http://127.0.0.1:8000`);
+3. waits for the gateway to be ready, opens the page in an embedded WebView2 / Edge window, and terminates `app.py` when the window closes.
+
+To use it, put `launcher/publish/app.exe` and `app.ico` next to `app.py` (same directory as `requirements.txt`) and double-click `app.exe`. Build, icon regeneration and hardcoded config (port 8000, Python 3.12.x, TUNA pip mirror) are documented in `launcher/README.md`.
 
 ## Current implementation details
 

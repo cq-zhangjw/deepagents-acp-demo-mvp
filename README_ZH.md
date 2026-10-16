@@ -55,6 +55,7 @@ flowchart LR
 ./
 ├─ app.py                # FastAPI 网关（/upload + /acp-ws，根路径托管 web/dist）
 ├─ acp_agent.py          # DeepAgents ACP Agent（stdio 服务）
+├─ launcher/             # C# (.NET 8) 桌面启动器（app.exe）：准备 .venv、启动网关、内嵌 WebView 打开页面
 ├─ utils/
 │  └─ model_util.py     # 模型初始化配置（OpenAI 兼容接口）
 ├─ web/                  # Vue 3 + TypeScript ACP 客户端（Vite 构建 → web/dist）
@@ -73,6 +74,16 @@ flowchart LR
 ├─ README_JA.md
 └─ .venv/                # 可选：本地虚拟环境
 ```
+
+### 桌面启动器（launcher/）
+
+`launcher/` 是一个基于 **C# + Photino.NET** 的轻量级桌面启动器，以自包含 `app.exe` 形式发布。运行它会：
+
+1. 检查 / 创建 `.venv`（要求 Python **3.12.x**），必要时安装 `requirements.txt`（使用清华镜像）；
+2. 启动 `app.py`（监听 `http://127.0.0.1:8000`）；
+3. 等待网关就绪后，在内嵌的 WebView2 / Edge 窗口中打开页面；关闭窗口时自动结束 `app.py` 进程。
+
+使用方式：把 `launcher/publish/app.exe` 和 `app.ico` 放到与 `app.py`、`requirements.txt` 同级的位置，双击 `app.exe` 即可。构建方式、图标再生成与硬编码配置（端口 8000、Python 3.12.x、TUNA pip 镜像）详见 `launcher/README.md`。
 
 ## 当前实现说明
 
