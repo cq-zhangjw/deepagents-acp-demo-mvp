@@ -50,19 +50,22 @@ const ABS_PATH_RE = /(?:[A-Za-z]:[\\/][^\s，。；;、"'<>()\[\]{}`|*?]+|\/(?:h
 function absPathToLink(match: string): string {
   const path = match.trim().replace(/[，。；;、"'<>()\[\]{}`|*?\s]+$/, '')
   if (!path) return match
-  const name = path.split(/[\\/]/).pop() || path
-  return `[${name}](/api/reveal-file?path=${encodeURIComponent(path)})`
+  // 链接文字保留完整路径，一眼就能看出具体位置
+  return `[${path}](/api/reveal-file?path=${encodeURIComponent(path)})`
 }
 
+// 一次扫描同时处理「反引号包裹的路径」（AI 常见写法）与裸路径：
+// 用单个正则避免二次匹配（若先替换反引号场景，生成的链接文本里的路径
+// 会被第二个正则再次匹配，造成 `[path](url)` 嵌套）。
+const PATH_LINK_RE = new RegExp('`(' + ABS_PATH_RE.source + ')`|(' + ABS_PATH_RE.source + ')', 'g')
 function resolveAttachments(content: string): string {
   return content
     .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![${t('attachmentImage')}](/api/attachments/${id})`)
     .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 ${t('attachmentFile')}](/api/attachments/${id})`)
-    // AI 常把路径写在反引号里（`E:\...`），若直接替换路径会生成
-    // `[name](/api/reveal-file?...)`，markdown-it 会优先解析成 inline code
-    // 导致链接显示为原文。这里先把「反引号+路径+反引号」整体替换为链接。
-    .replace(new RegExp('`(' + ABS_PATH_RE.source + ')`', 'g'), (_, p: string) => absPathToLink(p))
-    .replace(ABS_PATH_RE, absPathToLink)
+    .replace(PATH_LINK_RE, (m: string, btPath?: string, barePath?: string) => {
+      const path = (btPath || barePath || '').trim().replace(/[，。；;、"'<>()\[\]{}`|*?\s]+$/, '')
+      return path ? absPathToLink(path) : m
+    })
 }
 
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS
@@ -86,7 +89,7 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 const safeHtml = computed(() => DOMPurify.sanitize(md.render(resolveAttachments(props.content))))
 
 // 点击绝对路径链接 → 调用后端 /api/reveal-file，在系统文件管理器中打开
-// （目录直接打开；文件打开所在目录并选中）。不再弹出应用内预览模态框。
+// （目录直接打开；文件打开所在目录并选中）。静默打开，不弹成功提示。
 function onRootClick(e: MouseEvent) {
   const target = (e.target as HTMLElement).closest?.('a[data-file-path]')
   if (target) {
@@ -96,7 +99,6 @@ function onRootClick(e: MouseEvent) {
     fetch(`/api/reveal-file?path=${encodeURIComponent(path)}`)
       .then((r) => {
         if (!r.ok) return r.json().then((j) => Promise.reject(j.detail || r.statusText))
-        message.success(t('fileOpenedInManager'))
       })
       .catch((err) => message.error(String(err?.detail ?? err) || t('fileOpenFailed')))
   }
@@ -201,6 +203,12 @@ async function enhanceMarkdown() {
   await nextTick()
   const element = root.value
   if (!element) return
+  // 统一绝对路径链接文字为完整路径（兼容历史消息：旧存储里链接文本可能是短文件名，
+  // 这里一律按 data-file-path 显示全路径，一眼看出具体位置）
+  for (const a of element.querySelectorAll<HTMLAnchorElement>('a.file-reveal-link')) {
+    const p = a.getAttribute('data-file-path')
+    if (p && a.textContent !== p) a.textContent = p
+  }
   const blocks = Array.from(element.querySelectorAll<HTMLElement>('pre code'))
   for (const block of blocks) {
     if (block.dataset.enhanced) continue
@@ -235,7 +243,7 @@ watch(safeHtml, enhanceMarkdown, { flush: 'post' })
 .markdown-message :deep(pre) { position:relative; margin:12px 0; padding:38px 12px 12px; overflow:auto; background:#f1f4f8; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(pre code) { padding:0; color:#1d2733; background:transparent; font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.55; }
 .markdown-message :deep(code:not(pre code)) { padding:2px 6px; color:#174cb9; background:#e9eef6; border:1px solid #dbe4f0; border-radius:5px; font-family:"Cascadia Code",Consolas,monospace; font-size:0.9em; }
 .markdown-message--user :deep(code:not(pre code)) { color:#1d4ed8; background:#fff; border-color:#b9c9e8; box-shadow:0 1px 2px rgba(29,39,51,.08); }
-.markdown-message :deep(a.file-reveal-link) { color:#2563eb; font-weight:600; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1.5px; cursor:pointer; white-space:nowrap; }
+.markdown-message :deep(a.file-reveal-link) { color:#2563eb; font-weight:600; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1.5px; cursor:pointer; word-break:break-all; }
 .markdown-message :deep(a.file-reveal-link:hover) { color:#1d4ed8; background:rgba(37,99,235,.07); border-radius:3px; }
 .markdown-message :deep(.code-toolbar) { position:absolute; top:0; right:0; left:0; display:flex; justify-content:space-between; align-items:center; height:30px; padding:0 9px; color:#6b7785; background:#e9edf2; border-bottom:1px solid #dce2ea; font:11px "Cascadia Code",Consolas,monospace; } .markdown-message :deep(.code-toolbar button) { padding:2px 7px; color:#405166; background:#fff; border:1px solid #d3dae4; border-radius:4px; cursor:pointer; font:inherit; }
 .markdown-message :deep(.mermaid-block) { margin:12px 0; overflow:hidden; background:#fff; border:1px solid #e4e8ee; border-radius:7px; } .markdown-message :deep(.mermaid-tabs) { display:flex; gap:2px; padding:6px 7px; background:#f1f4f8; border-bottom:1px solid #e4e8ee; } .markdown-message :deep(.mermaid-tabs button) { padding:4px 9px; color:#6b7785; background:transparent; border:0; border-radius:4px; cursor:pointer; font-size:12px; } .markdown-message :deep(.mermaid-tabs button.active) { color:#174cb9; background:#fff; box-shadow:0 1px 2px rgba(29,39,51,.08); } .markdown-message :deep(.mermaid-preview) { min-height:120px; padding:18px; overflow:auto; text-align:center; } .markdown-message :deep(.mermaid-preview svg) { max-width:100%; height:auto; } .markdown-message :deep(.mermaid-source) { position:relative; } .markdown-message :deep(.mermaid-source pre) { margin:0; border:0; border-radius:0; }
