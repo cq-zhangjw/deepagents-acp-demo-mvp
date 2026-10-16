@@ -156,5 +156,7 @@ export default {
     summary: '摘要',
     save: '保存',
     close: '关闭',
+    fileOpenedInManager: '已在文件管理器中打开',
+    fileOpenFailed: '无法在文件管理器中打开',
   },
 }

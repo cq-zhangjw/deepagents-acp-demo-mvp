@@ -156,5 +156,7 @@ export default {
     summary: '要約',
     save: '保存',
     close: '閉じる',
+    fileOpenedInManager: 'ファイルマネージャーで開きました',
+    fileOpenFailed: 'ファイルマネージャーで開けませんでした',
   },
 }

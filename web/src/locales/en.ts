@@ -156,5 +156,7 @@ export default {
     summary: 'Summary',
     save: 'Save',
     close: 'Close',
+    fileOpenedInManager: 'Opened in file manager',
+    fileOpenFailed: 'Could not open in file manager',
   },
 }
