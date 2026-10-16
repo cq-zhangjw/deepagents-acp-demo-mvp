@@ -68,3 +68,7 @@ rag-video/
 
 # Browser MCP screenshots (runtime artifacts, never commit)
 **/screenshots/
+
+**/**/bin/
+**/**/obj/
+**/**/publish/

@@ -7,9 +7,11 @@ fastmcp stdio Client per server.
 Conventions:
 - Agent config path: <project>/.deepagents/agents/agents.json
 - MCP server home: <project>/.deepagents/tools/mcp_servers/<server>
-- A server directory must contain a manifest.json (tool metadata) and exactly
-  one `.py` entry file (preferring server.py / main.py when present). The entry
-  is launched as `python <entry>` via the fastmcp stdio client.
+- A server directory must contain a manifest.json (tool metadata) and an entry
+  file resolved in this order: <server>_mcp_server.py, server.py / main.py, a
+  single *_mcp_server.py, otherwise the only `.py` file. This lets a server
+  keep helper modules alongside the entry. The entry is launched as
+  `python <entry>` via the fastmcp stdio client.
 - Connections are created lazily on first tool call and shared process-wide;
   call `close_mcp_clients()` once at shutdown.
 """
@@ -76,20 +78,32 @@ def clear_tools_cache() -> None:
 def _server_entry(server: str) -> Path:
     """Resolve the stdio entry script for an MCP server directory.
 
-    Prefer server.py / main.py, otherwise require exactly one .py entry file.
+    Resolution order: <server>_mcp_server.py, server.py / main.py, a single
+    *_mcp_server.py, otherwise the only .py file. This lets a server keep
+    helper modules next to the entry without the entry becoming ambiguous.
     """
     server_dir = MCP_SERVERS_DIR / server
     if not server_dir.is_dir():
         raise FileNotFoundError(f"MCP server directory not found: {server_dir}")
-    for preferred in ("server.py", "main.py"):
+    for preferred in (f"{server}_mcp_server.py", "server.py", "main.py"):
         candidate = server_dir / preferred
         if candidate.is_file():
             return candidate
+    mcp_entries = sorted(server_dir.glob("*_mcp_server.py"))
+    if len(mcp_entries) == 1:
+        return mcp_entries[0]
+    if len(mcp_entries) > 1:
+        raise FileNotFoundError(
+            f"MCP server '{server}' has multiple *_mcp_server.py files "
+            f"(got {len(mcp_entries)}); add server.py/main.py or "
+            f"{server}_mcp_server.py to disambiguate"
+        )
     py_files = sorted(server_dir.glob("*.py"))
     if len(py_files) != 1:
         raise FileNotFoundError(
             f"MCP server '{server}' must contain exactly one .py entry file "
-            f"(got {len(py_files)}); add server.py/main.py if ambiguous"
+            f"(got {len(py_files)}); add server.py/main.py or "
+            f"{server}_mcp_server.py if ambiguous"
         )
     return py_files[0]
 
