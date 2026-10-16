@@ -3032,11 +3032,6 @@ onBeforeUnmount(() => {
           </template>
         </template>
       </nav>
-
-      <div class="sidebar-footer">
-        <span class="connection-dot" :class="{ connected }" />
-        {{ connectionLabel }}
-      </div>
     </aside>
 
     <div

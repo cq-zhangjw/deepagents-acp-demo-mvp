@@ -62,6 +62,9 @@ function autoSend() {
   const value = accumulated
   accumulated = ''
   if (!value.trim() || !hasBridge) return
+  // 发送后立即停止录音识别：AI 回复朗读期间不再收音（避免朗读被误识别/误发送），
+  // 等朗读结束（speak 播放完成回调）再恢复识别。
+  stopListening()
   state.value = 'thinking'
   replyText.value = ''
   bridge.onReply?.((reply: string) => {
@@ -141,6 +144,8 @@ function stopPlayback() {
 
 async function speak(content: string) {
   stopPlayback()
+  // 双保险：朗读开始前确保识别已停止（覆盖手动开启识别等路径），朗读结束再恢复
+  stopListening()
   content = cleanSpeechText(content)
   if (!content.trim()) return
   // 按后端 TTS_MODE 分流：file 直接走非流式；stream 流式优先（首包低延迟），失败回退非流式
