@@ -782,6 +782,77 @@ function openDeleteFromMenu() {
   if (id) deleteTarget.value = id
 }
 
+// ---------- 右上角菜单：导出会话 / 帮助 ----------
+const helpVisible = ref(false)
+const headerMoreOptions = computed(() => [
+  { label: t('exportConversation'), key: 'export' },
+  { label: t('help'), key: 'help' },
+])
+function onHeaderMoreSelect(key: string) {
+  if (key === 'export') exportConversation()
+  else if (key === 'help') helpVisible.value = true
+}
+
+/** 导出当前会话为 Markdown：元数据头 + 按时间顺序的完整对话记录。 */
+function exportConversation() {
+  const conversation = conversations.value.find((c) => c.id === activeConversationId.value)
+  if (!conversation) return
+  try {
+    const lines: string[] = []
+    const title = displayTitle(conversation.title)
+    lines.push(`# ${title}`)
+    lines.push('')
+    lines.push(`- 会话 ID：${conversation.id}`)
+    lines.push(`- 更新时间：${new Date(conversation.updatedAt).toLocaleString()}`)
+    lines.push(`- 模式：${conversation.mode ?? 'task'}`)
+    const group = groups.value.find((g) => g.id === conversation.groupId)
+    if (group) lines.push(`- 分组：${group.name}`)
+    lines.push('')
+    for (const message of conversation.messages) {
+      const time = new Date(message.createdAt).toLocaleString()
+      if (message.role === 'user') {
+        lines.push(`## 用户 · ${time}`)
+        lines.push('')
+        lines.push(message.text || '（空消息）')
+        if (message.attachments && message.attachments.length) {
+          lines.push('')
+          lines.push('**附件：**')
+          for (const attachment of message.attachments) {
+            const name = attachment.name || attachment.path || attachment.uri || ''
+            lines.push(`- ${name}`)
+          }
+        }
+        lines.push('')
+      } else {
+        lines.push(`## AI · ${time} · ${message.status}`)
+        if (message.finalText) {
+          lines.push('')
+          lines.push(message.finalText)
+        }
+        const tools = message.process?.toolCalls ?? []
+        if (tools.length) {
+          lines.push('')
+          lines.push(`**工具调用（${tools.length}）：**`)
+          for (const tool of tools) lines.push(`- ${tool.name}（${tool.status}）`)
+        }
+        lines.push('')
+      }
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${title.replace(/[\\/:*?"<>|]/g, '_')}.md`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    message.success(t('exportSuccess'))
+  } catch {
+    message.error(t('exportFailed'))
+  }
+}
+
 // After a manual compaction the backend reports the real post-compaction
 // usage; show that instead of the (unchanged) local message estimate until
 // the next user message resets it.
@@ -3356,7 +3427,7 @@ onBeforeUnmount(() => {
             </template>
             {{ screenShareActive ? actionLabels.screenShareActive : actionLabels.screenShare }}
           </NTooltip>
-          <NDropdown :options="[{ label: t('newConversation'), key: 'new' }]" @select="createConversation">
+          <NDropdown :options="headerMoreOptions" trigger="click" @select="onHeaderMoreSelect">
             <NButton quaternary circle :aria-label="t('moreActions')">
               <template #icon><NIcon :component="EllipsisHorizontalOutline" /></template>
             </NButton>
@@ -4149,6 +4220,15 @@ onBeforeUnmount(() => {
       @update:show="(visible) => { if (!visible) groupDeleteTarget = null }"
     />
 
+    <!-- 帮助（内容待定） -->
+    <NModal :show="helpVisible" :mask-closable="true" @after-leave="helpVisible = false">
+      <NCard :title="t('help')" :bordered="false" class="rename-card" role="dialog">
+        <div class="help-body">
+          <p class="help-placeholder">{{ t('helpPlaceholder') }}</p>
+        </div>
+      </NCard>
+    </NModal>
+
     <!-- Centered delete-session confirmation (NPopconfirm drifted inside the
          scrolling conversation list, so this uses a centered dialog instead) -->
     <NModal
@@ -4231,7 +4311,7 @@ onBeforeUnmount(() => {
 .timer-cron-invalid { color:#d03050; font-size:11px; font-weight:600; }
 .timer-next-run { color:var(--subtle); font-size:11px; }
 .conversation-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:10px 2px 2px; padding:6px 6px; width:100%; text-align:left; color:#111; font-size:14px; font-weight:700; letter-spacing:.3px; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .conversation-group-label:hover { background:var(--muted); } .conversation-group-count { margin-left:auto; font-size:11px; font-weight:600; color:var(--subtle); background:var(--surface); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
-.conversation-group-head { display:flex; align-items:center; gap:2px; } .conversation-group-head .conversation-group-label { flex:1 1 auto; min-width:0; margin-right:0; } .group-add-btn { display:flex; align-items:center; justify-content:center; width:22px; height:22px; flex:0 0 auto; padding:0; color:var(--subtle); background:transparent; border:0; border-radius:6px; cursor:pointer; opacity:.65; } .group-add-btn:hover { background:var(--muted); opacity:1; } .sub-group { display:flex; flex-direction:column; min-height:0; } .sub-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:2px 2px; padding:4px 6px; width:100%; text-align:left; color:#405166; font-size:12px; font-weight:600; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .sub-group-label:hover { background:var(--muted); } .sub-group-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .sub-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; } .sub-group-list .conversation-item { padding-left:40px; } .rename-menu-sub { position:absolute; left:100%; top:-4px; z-index:71; display:none; flex-direction:column; min-width:140px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item--sub { position:relative; } .message-menu-item--sub:hover .rename-menu-sub { display:flex; }
+.conversation-group-head { display:flex; align-items:center; gap:2px; } .conversation-group-head .conversation-group-label { flex:1 1 auto; min-width:0; margin-right:0; } .group-add-btn { display:flex; align-items:center; justify-content:center; width:22px; height:22px; flex:0 0 auto; padding:0; color:var(--subtle); background:transparent; border:0; border-radius:6px; cursor:pointer; opacity:.65; } .group-add-btn:hover { background:var(--muted); opacity:1; } .sub-group { display:flex; flex-direction:column; min-height:0; } .sub-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:2px 2px; padding:4px 6px; width:100%; text-align:left; color:#405166; font-size:12px; font-weight:600; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .sub-group-label:hover { background:var(--muted); } .sub-group-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .sub-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; } .sub-group-list .conversation-item { padding-left:40px; } .rename-menu-sub { position:absolute; left:100%; top:-4px; z-index:71; display:none; flex-direction:column; min-width:140px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item--sub { position:relative; } .message-menu-item--sub:hover .rename-menu-sub { display:flex; } .help-body { padding:4px 2px; } .help-placeholder { margin:0; color:var(--subtle); font-size:13px; }
 .message--highlight { outline:2px solid #2563eb; outline-offset:2px; border-radius:10px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section-note { font-size:12px; color:var(--subtle); padding:2px 2px 0; }
