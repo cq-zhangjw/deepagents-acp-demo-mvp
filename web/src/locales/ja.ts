@@ -21,6 +21,7 @@ export default {
   you: 'あなた',
   assistant: 'AI',
   viewProcess: '実行プロセスを表示',
+  todoPanel: 'タスク手順',
   steps: 'ステップ',
   seconds: '秒',
   analysisStep: '分析ステップ',

@@ -21,6 +21,7 @@ export default {
   you: '你',
   assistant: 'AI',
   viewProcess: '查看执行过程',
+  todoPanel: '任务步骤',
   steps: '步',
   seconds: '秒',
   analysisStep: '分析步骤',

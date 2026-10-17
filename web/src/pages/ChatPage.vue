@@ -149,6 +149,7 @@ interface Conversation {
   messages: ChatMessage[]
   mode?: 'chat' | 'task'
   groupId?: string | null
+  todoId?: string
 }
 
 interface Group {
@@ -156,6 +157,15 @@ interface Group {
   name: string
   kind: 'chat' | 'task' | 'timer'
   createdAt: number
+}
+
+interface TodoItem {
+  index: number
+  title: string
+  description?: string | null
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked'
+  note?: string | null
+  updatedAt?: number
 }
 
 interface PermissionRequest {
@@ -210,6 +220,8 @@ const categories = computed(() => [
   { kind: 'timer' as const, label: t('groups.timer'), convs: timerConversations.value },
 ])
 const groups = ref<Group[]>([])
+// todo 分步清单：key = conversation.id（由 ACP toolCalls 事件重放构建）
+const todoStates = ref<Record<string, TodoItem[]>>({})
 // 折叠 key：类别 "__cat_<kind>"、自定义分组 "<gid>"、未分组 "__ung_<kind>"
 const collapsedGroups = ref<Set<string>>(new Set())
 // 分组新建/改名弹窗
@@ -605,6 +617,10 @@ function selectConversation(id: string) {
       }
     })()
   }
+  // todo 分步清单：从消息重放同步，本地缺失则按 todoId 从后端恢复
+  const target = conversations.value.find((conversation) => conversation.id === id)
+  syncTodoState(target)
+  if (target) void restoreTodoState(target)
   nextTick(scrollToBottom)
 }
 
@@ -780,6 +796,84 @@ function openDeleteFromMenu() {
   const id = renameMenu.value?.id
   closeRenameMenu()
   if (id) deleteTarget.value = id
+}
+
+// ---------- todo 分步清单（从 ACP toolCalls 事件重放构建） ----------
+function parseTodoRawInput(rawInput: unknown): Record<string, any> {
+  if (typeof rawInput === 'string') {
+    try { return JSON.parse(rawInput) } catch { return {} }
+  }
+  return (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<string, any>
+}
+
+/** 按消息顺序重放 create_todo / update_todo，得到最终清单与 todoId（幂等）。 */
+function scanTodoState(conversation: Conversation): { todoId: string | null; items: TodoItem[] } {
+  let todoId: string | null = null
+  let items: TodoItem[] = []
+  for (const message of conversation.messages) {
+    if (message.role !== 'assistant') continue
+    for (const tool of message.process?.toolCalls ?? []) {
+      if (tool.name === 'create_todo') {
+        const input = parseTodoRawInput(tool.rawInput)
+        const rawItems: unknown = Array.isArray(input.items) ? input.items : []
+        items = rawItems
+          .map((raw: any, index: number) => ({
+            index,
+            title: String(raw?.title ?? '').trim() || `步骤 ${index + 1}`,
+            description: raw?.description ? String(raw.description) : null,
+            status: 'pending' as const,
+            note: null,
+          }))
+          .filter((item: TodoItem) => item.title)
+        const output = parseTodoRawInput(tool.output)
+        if (output.todo_id) todoId = String(output.todo_id)
+      } else if (tool.name === 'update_todo' && items.length) {
+        const input = parseTodoRawInput(tool.rawInput)
+        const index = Number(input.step_index)
+        const target = items[index]
+        if (target && ['pending', 'in_progress', 'completed', 'blocked'].includes(input.status)) {
+          target.status = input.status
+          target.note = input.note ? String(input.note) : null
+        }
+      }
+    }
+  }
+  return { todoId, items }
+}
+
+function syncTodoState(conversation: Conversation | null | undefined) {
+  if (!conversation) return
+  const { todoId, items } = scanTodoState(conversation)
+  if (items.length) {
+    todoStates.value = { ...todoStates.value, [conversation.id]: items }
+  }
+  // todoId 持久化（刷新后经 /api/todos 恢复）
+  if (todoId && conversation.todoId !== todoId) {
+    conversation.todoId = todoId
+    void saveConversation(conversation)
+  }
+}
+
+const currentTodoItems = computed(() => {
+  const conversation = currentConversation.value
+  if (!conversation) return null
+  return todoStates.value[conversation.id] ?? null
+})
+
+/** 打开会话时恢复：本地无 todo 状态但会话记录了 todoId → 从后端拉取。 */
+async function restoreTodoState(conversation: Conversation) {
+  if (todoStates.value[conversation.id] || !conversation.todoId) return
+  try {
+    const res = await fetch(`/api/todos/${encodeURIComponent(conversation.todoId)}`)
+    if (res.ok) {
+      const todo = await res.json()
+      if (Array.isArray(todo.items) && todo.items.length) {
+        todoStates.value = { ...todoStates.value, [conversation.id]: todo.items }
+      }
+    }
+  } catch {
+    // backend unavailable: keep rendering from messages only
+  }
 }
 
 // ---------- 右上角菜单：导出会话 / 帮助 ----------
@@ -3155,11 +3249,16 @@ onMounted(async () => {
   window.addEventListener('click', closeGroupMenu)
 })
 watch(() => currentMessages.value.length, () => {
+  syncTodoState(currentConversation.value)
   nextTick(() => {
     const el = timeline.value
     if (el) onTimelineScroll()
   })
 })
+// tool_call_update 等不改变消息长度但更新 toolCalls 内部状态——深监听以同步 todo 清单
+watch(() => currentConversation.value?.messages, (messages) => {
+  if (messages) syncTodoState(currentConversation.value)
+}, { deep: true })
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeMessageMenu)
   window.removeEventListener('click', closeRenameMenu)
@@ -3515,7 +3614,7 @@ onBeforeUnmount(() => {
               <template v-else>
                 <template v-for="segment in item.segments" :key="segment.id">
                   <MarkdownMessage v-if="segment.type === 'text' || segment.type === 'thought'" class="assistant-content" :content="segment.text" @open-file="openFilePreview" />
-                  <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" />
+                  <ExecutionProcess v-else-if="segment.type === 'plan'" :process="item.process" :todo-items="currentTodoItems" />
                   <ToolCallCard v-else-if="segment.type === 'tool'" :tool="segmentTool(item, segment)" @open-file="openFilePreview" />
                 </template>
                 <span v-if="isAssistantRunning(item)" class="msg-loader" aria-label="loading" />
