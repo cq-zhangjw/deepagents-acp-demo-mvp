@@ -132,6 +132,7 @@ BUILTIN_TOOLS = [
     {"name": "grep", "description": "Search file contents by regex"},
     {"name": "execute", "description": "Run shell commands"},
     {"name": "task", "description": "Call a subagent"},
+    {"name": "todo", "description": "Manage task step checklist (create/update/get)"},
 ]
 
 

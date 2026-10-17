@@ -14,6 +14,7 @@ Note: The default model is openai:gpt-4o, so OPENAI_API_KEY must be set.
 """
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -28,6 +29,7 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellB
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from langchain_core.messages import HumanMessage, RemoveMessage, convert_to_messages
+from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
@@ -54,6 +56,9 @@ from utils.session_context import (  # noqa: E402  (imported after env/DB setup,
 from utils.model_util import MODEL
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
 from utils.skill_loader import get_agent_skills
+from api.todos import create_todo as _todos_create
+from api.todos import get_todo as _todos_get
+from api.todos import update_todo as _todos_update
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("acp_agent")
@@ -112,7 +117,10 @@ def get_system_prompt(agent_name: str | None = None) -> str:
     else:
         base_prompt = (
             "You are an intelligent task agent.\n"
-            "1. Break down the task, produce an execution plan, and run it step by step.\n"
+            "1. For task requests, before acting: call create_todo to break the task "
+            "into concrete steps. Then execute step by step; after each step, call "
+            "update_todo to mark it completed (or blocked with a reason). When all "
+            "steps are done, summarize the results in your final reply.\n"
             "2. When essential information is missing, proactively ask the user (request_input); do not fabricate.\n"
             "3. Image attachments are provided as image content; analyze them directly, do not call read_file. "
             "Other attachments are provided as virtual paths (e.g. /uploads/example.txt); "
@@ -211,6 +219,59 @@ class PowerShellBackend(LocalShellBackend):
             )
 
 
+def _todo_tools() -> list[StructuredTool]:
+    """Builtin todo tools: task step checklist (create / update / get).
+
+    State lives in db/todos/<todo_id>.json (see api/todos.py), independent
+    from the conversation history so context compaction never touches it.
+    Exceptions are returned as "Error: ..." strings so the agent can react
+    instead of the tool call crashing.
+    """
+
+    def create_todo(items: list[dict[str, Any]] | None = None, session_id: str | None = None) -> str:
+        try:
+            return json.dumps(_todos_create(items or [], session_id), ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return f"Error: {e}"
+
+    def update_todo(todo_id: str, step_index: int, status: str, note: str | None = None) -> str:
+        try:
+            return json.dumps(_todos_update(todo_id, step_index, status, note), ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return f"Error: {e}"
+
+    def get_todo(todo_id: str) -> str:
+        try:
+            todo = _todos_get(todo_id)
+            if todo is None:
+                return f"Error: todo not found: {todo_id}"
+            return json.dumps(todo, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            return f"Error: {e}"
+
+    return [
+        StructuredTool.from_function(
+            func=create_todo,
+            name="create_todo",
+            description="Create a task step checklist BEFORE acting on a task request. "
+            "Args: items=[{title: step description, description?: optional detail}]. "
+            "Returns the todo_id and the full list. Then execute each step and call update_todo after each one.",
+        ),
+        StructuredTool.from_function(
+            func=update_todo,
+            name="update_todo",
+            description="Update the status of one step in a todo checklist. "
+            "Args: todo_id, step_index (0-based), status in {pending, in_progress, completed, blocked}, "
+            "note (optional reason). Call after each step completes (or when blocked).",
+        ),
+        StructuredTool.from_function(
+            func=get_todo,
+            name="get_todo",
+            description="Fetch the current todo checklist for a todo_id. Use when resuming a task to see remaining steps.",
+        ),
+    ]
+
+
 def build_agent(
     context: AgentSessionContext, checkpointer=None, agent_name: str | None = None
 ) -> CompiledStateGraph:
@@ -273,7 +334,9 @@ def build_agent(
         model=MODEL,
         # MCP tools configured for the selected agent (agents.json -> mcp_tools);
         # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
-        tools=get_agent_mcp_tools(agent_name),
+        # Todo tools (create_todo/update_todo/get_todo) are appended as builtin
+        # task-step checklist tools (state in db/todos/).
+        tools=[*get_agent_mcp_tools(agent_name), *_todo_tools()],
         subagents=subagents or None,
         # Skills enabled for the selected agent (agents.json -> skills; the
         # default agent starts with every installed skill).

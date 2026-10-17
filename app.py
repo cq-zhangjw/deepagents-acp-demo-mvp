@@ -26,6 +26,7 @@ from api.preview_file import router as preview_router
 from api.reveal_file import router as reveal_router
 from api.context import router as context_router
 from api.history import router as history_router
+from api.todos import router as todos_router
 from api.knowledge import router as knowledge_router
 from api.manage.manager import router as manage_router
 from api.timers import router as timers_router
@@ -125,6 +126,7 @@ app = FastAPI(title="ACP client base", lifespan=_app_lifespan)
 app.include_router(chat_voice_router)
 # history persistence sub-router: /api/history (MooFile BSON files)
 app.include_router(history_router)
+app.include_router(todos_router)
 # knowledge base gateway sub-router: /api/knowledge (external moofile_base)
 app.include_router(knowledge_router)
 # management panel sub-router: /api/manage/skills, /api/manage/tools, /api/manage/agents
