@@ -518,14 +518,12 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function createConversation(mode: 'chat' | 'task' = 'task') {
+function createConversation(mode: 'chat' | 'task' = 'chat') {
   resetAgentToDefault()
-  // 复用已有空会话仅限任务模式，且只复用任务模式空会话（模式锁定：chat 显式新建，不复用 task 空会话）
-  const existingEmpty = mode === 'task'
-    ? conversations.value.find((conversation) => conversation.messages.length === 0 && modeOf(conversation) === 'task')
-    : undefined
+  // 复用已有空会话：仅复用同模式空会话（模式锁定）
+  const existingEmpty = conversations.value.find((conversation) => conversation.messages.length === 0 && modeOf(conversation) === mode)
   if (existingEmpty) {
-    // 已有空会话：直接复用（模式锁定，空会话缺省 task；chat 模式显式新建）
+    // 已有同模式空会话：直接复用
     selectConversation(existingEmpty.id)
     conversationSearch.value = ''
     sidebarVisible.value = false
@@ -559,13 +557,11 @@ function modeOf(conversation: { id: string; mode?: 'chat' | 'task' } | null | un
 }
 const currentMode = computed(() => modeOf(currentConversation.value))
 
-// 新建会话下拉：主按钮 = 新建任务会话（缺省）；下拉可显式选聊天/任务
-const newSessionOptions = computed(() => [
-  { key: 'task', label: t('newTaskSession') },
-  { key: 'chat', label: t('newChatSession') },
-])
-function onNewSessionSelect(key: string) {
-  createConversation(key === 'chat' ? 'chat' : 'task')
+// 新建会话弹窗：点击侧栏「新建会话」选择普通聊天 / 工作任务
+const newSessionModal = ref(false)
+function createConversationFromModal(mode: 'chat' | 'task') {
+  newSessionModal.value = false
+  createConversation(mode)
 }
 
 // chat 模式附件引导：上传附件时弹提示，可一键新建任务会话并携带附件
@@ -3276,8 +3272,8 @@ onMounted(async () => {
   void loadGroups()
   try {
     await loadHistory()
-    // 进入画面时自动新建会话（createConversation 会复用已有空会话，不会重复创建）
-    createConversation()
+    // 进入画面时默认新建普通聊天会话（复用同模式空会话，不会重复创建）
+    createConversation('chat')
     const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && displayTitle(conversation.title) === t('newSessionTitle'))
     if (defaultEmpties.length > 1) {
       const keepId = defaultEmpties[0].id
@@ -3330,16 +3326,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-nav">
-        <div class="sidebar-nav-item--split">
-          <button type="button" class="sidebar-nav-item sidebar-nav-item--primary sidebar-nav-item--split-main" :aria-label="t('newConversation')" @click="createConversation">
-            <NIcon :component="AddOutline" /><span>{{ t('newConversation') }}</span>
-          </button>
-          <NDropdown :options="newSessionOptions" trigger="click" placement="bottom-start" @select="onNewSessionSelect">
-            <button type="button" class="sidebar-nav-item--primary-caret" :aria-label="t('newConversationMore')">
-              <NIcon :component="ChevronDownOutline" />
-            </button>
-          </NDropdown>
-        </div>
+        <button type="button" class="sidebar-nav-item sidebar-nav-item--primary" :aria-label="t('newConversation')" @click="newSessionModal = true">
+          <NIcon :component="AddOutline" /><span>{{ t('newConversation') }}</span>
+        </button>
         <button type="button" class="sidebar-nav-item" :class="{ 'sidebar-nav-item--active': rightPanelVisible && rightPanelTab === 'timers' }" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
           <NIcon :component="TimeOutline" /><span>{{ t('timers.panelTitle') }}</span>
         </button>
@@ -3405,6 +3394,29 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div v-if="!isGroupCollapsed('__cat_' + cat.kind)" class="conversation-group-list">
+              <!-- 未分组会话直接平铺在类别区（不设「未分组」子组头），散落即可 -->
+              <button
+                v-for="conversation in convsInGroup(cat.kind, null)"
+                :key="conversation.id"
+                class="conversation-item"
+                :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+                @click="selectConversation(conversation.id)"
+                @contextmenu.prevent="openRenameMenu(conversation, $event)"
+              >
+                <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
+                <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="cat.kind !== 'timer'" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span></span>
+                <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+                <span
+                  class="conversation-delete"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="t('deleteSession')"
+                  @click.stop="deleteTarget = conversation.id"
+                  @keydown.enter.prevent="deleteTarget = conversation.id"
+                >
+                  <NIcon :component="TrashOutline" />
+                </span>
+              </button>
               <div v-for="g in groupsOf(cat.kind)" :key="g.id" class="sub-group">
                 <button
                   type="button"
@@ -3427,43 +3439,7 @@ onBeforeUnmount(() => {
                     @contextmenu.prevent="openRenameMenu(conversation, $event)"
                   >
                     <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
-                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
-                    <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-                    <span
-                      class="conversation-delete"
-                      role="button"
-                      tabindex="0"
-                      :aria-label="t('deleteSession')"
-                      @click.stop="deleteTarget = conversation.id"
-                      @keydown.enter.prevent="deleteTarget = conversation.id"
-                    >
-                      <NIcon :component="TrashOutline" />
-                    </span>
-                  </button>
-                </div>
-              </div>
-              <div v-if="convsInGroup(cat.kind, null).length" class="sub-group">
-                <button
-                  type="button"
-                  class="sub-group-label"
-                  :class="{ 'sub-group-label--collapsed': isGroupCollapsed('__ung_' + cat.kind) }"
-                  @click="toggleGroup('__ung_' + cat.kind)"
-                >
-                  <NIcon :component="isGroupCollapsed('__ung_' + cat.kind) ? ChevronForwardOutline : ChevronDownOutline" />
-                  <span class="sub-group-name">{{ t('groups.ungrouped') }}</span>
-                  <span class="conversation-group-count">{{ convsInGroup(cat.kind, null).length }}</span>
-                </button>
-                <div v-if="!isGroupCollapsed('__ung_' + cat.kind)" class="sub-group-list">
-                  <button
-                    v-for="conversation in convsInGroup(cat.kind, null)"
-                    :key="conversation.id"
-                    class="conversation-item"
-                    :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
-                    @click="selectConversation(conversation.id)"
-                    @contextmenu.prevent="openRenameMenu(conversation, $event)"
-                  >
-                    <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
-                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
+                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="cat.kind !== 'timer'" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span></span>
                     <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
                     <span
                       class="conversation-delete"
@@ -4370,6 +4346,33 @@ onBeforeUnmount(() => {
       @update:show="(visible) => { if (!visible) groupDeleteTarget = null }"
     />
 
+    <!-- 新建会话：选择普通聊天 / 工作任务 -->
+    <NModal
+      :show="newSessionModal"
+      preset="card"
+      :title="t('newSessionChooseType')"
+      style="width: 360px"
+      :mask-closable="true"
+      @update:show="(visible) => { if (!visible) newSessionModal = false }"
+    >
+      <div class="new-session-type-list">
+        <button type="button" class="new-session-type" @click="createConversationFromModal('chat')">
+          <NIcon :component="ChatbubbleOutline" class="new-session-type-icon" />
+          <span class="new-session-type-body">
+            <strong>{{ t('mode.chat') }}</strong>
+            <small>{{ t('newChatSessionDesc') }}</small>
+          </span>
+        </button>
+        <button type="button" class="new-session-type" @click="createConversationFromModal('task')">
+          <NIcon :component="SparklesOutline" class="new-session-type-icon" />
+          <span class="new-session-type-body">
+            <strong>{{ t('mode.task') }}</strong>
+            <small>{{ t('newTaskSessionDesc') }}</small>
+          </span>
+        </button>
+      </div>
+    </NModal>
+
     <!-- chat 模式附件引导：一键新建任务会话并携带附件 -->
     <NModal
       preset="dialog"
@@ -4428,7 +4431,9 @@ onBeforeUnmount(() => {
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:12px; } .conversation-search { padding:0 2px 6px; } .conversation-label { padding:0 10px 6px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
- .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; } .sidebar-nav-item--split { display:flex; align-items:stretch; gap:4px; } .sidebar-nav-item--split-main { flex:1; min-width:0; } .sidebar-nav-item--split-main span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .sidebar-nav-item--primary-caret { display:grid; place-items:center; width:34px; flex:0 0 34px; padding:0; color:#fff; background:#2563eb; border:0; border-radius:8px; cursor:pointer; } .sidebar-nav-item--primary-caret:hover { background:#1d4ed8; } .sidebar-nav-item--primary-caret .n-icon { color:#fff; }
+ .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
+.new-session-type-list { display:flex; flex-direction:column; gap:10px; }
+.new-session-type { display:flex; gap:12px; align-items:center; padding:12px 14px; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:10px; cursor:pointer; text-align:left; } .new-session-type:hover { background:var(--muted); border-color:#cbd8ed; } .new-session-type-icon { font-size:20px; color:#2563eb; } .new-session-type-body { display:flex; flex-direction:column; gap:2px; min-width:0; } .new-session-type-body strong { font-size:14px; } .new-session-type-body small { color:var(--subtle); font-size:12px; line-height:1.5; }
 .conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-mode { display:inline-block; margin-left:6px; padding:0 5px; border-radius:4px; font-size:10px; line-height:15px; vertical-align:1px; } .conversation-mode--chat { color:#1a7f37; background:#e6f6ec; } .conversation-mode--task { color:#6b5ae0; background:#efeefc; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
