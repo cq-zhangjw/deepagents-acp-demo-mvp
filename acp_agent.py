@@ -20,14 +20,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import aiosqlite
 from acp import run_agent
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse
-from deepagents_acp.server import AgentServerACP, AgentSessionContext
+from deepagents_acp.server import AgentServerACP, AgentSessionContext, SetSessionModeResponse
+from deepagents_acp.server import _ACP_MODE_METADATA_KEY
 from langchain_core.messages import HumanMessage, RemoveMessage, convert_to_messages
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -67,6 +68,16 @@ logger = logging.getLogger("acp_agent")
 # sends it through the /acp-ws?agent= query param). Its enabled MCP tools are
 # loaded from .deepagents/agents/agents.json and attached in build_agent().
 AGENT_NAME = os.getenv("AGENT_NAME", "default").strip() or "default"
+
+# 聊天模式（chat）系统提示：轻量，不操作本地文件/工具。
+# 会话 mode 由前端经 ACP session/set_mode 设置；缺省（含历史会话）一律视为 task。
+CHAT_SYSTEM_PROMPT = (
+    "你是一个轻量聊天助手。\n"
+    "- 只回答问题与日常对话，不执行任何本地文件操作或 shell 命令。\n"
+    "- 不调用文件、代码或系统工具。\n"
+    "- 如果用户需要操作本地文件、运行代码或执行任务，请明确提示：\n"
+    "  「当前是聊天模式，请新建一个任务会话后再执行。」"
+)
 
 # conversation state persistence file: checkpoints are saved (sqlite),
 # survive process/gateway restarts; the frontend can load historical
@@ -311,36 +322,40 @@ def build_agent(
             "/conversation_history/": ephemeral_backend,
         },
     )
-    # Build subagents from agents.json "subagents" field
+    mode = getattr(context, "mode", None) or "task"   # 缺省 task；"auto"/"default" 均落 task
+    chat = mode == "chat"
+    # Build subagents from agents.json "subagents" field (skipped in chat mode)
     subagents: list[SubAgent] = []
-    for sa_cfg in get_agent_subagents_config(agent_name):
-        sa_name = sa_cfg.get("name")
-        if not sa_name:
-            continue
-        sa: SubAgent = {
-            "name": sa_name,
-            "description": sa_cfg.get("description", ""),
-        }
-        sa_tools = get_agent_mcp_tools(sa_name)
-        if sa_tools:
-            sa["tools"] = sa_tools
-        if sa_cfg.get("skills"):
-            sa["skills"] = sa_cfg["skills"]
-        if sa_cfg.get("system_prompt"):
-            sa["system_prompt"] = sa_cfg["system_prompt"]
-        subagents.append(sa)
+    if not chat:
+        for sa_cfg in get_agent_subagents_config(agent_name):
+            sa_name = sa_cfg.get("name")
+            if not sa_name:
+                continue
+            sa: SubAgent = {
+                "name": sa_name,
+                "description": sa_cfg.get("description", ""),
+            }
+            sa_tools = get_agent_mcp_tools(sa_name)
+            if sa_tools:
+                sa["tools"] = sa_tools
+            if sa_cfg.get("skills"):
+                sa["skills"] = sa_cfg["skills"]
+            if sa_cfg.get("system_prompt"):
+                sa["system_prompt"] = sa_cfg["system_prompt"]
+            subagents.append(sa)
 
     agent = create_deep_agent(
         model=MODEL,
-        # MCP tools configured for the selected agent (agents.json -> mcp_tools);
+        # 聊天模式：不加载任何 MCP / todo / 子 agent / skills 工具；
+        # 任务模式：MCP tools configured for the selected agent (agents.json -> mcp_tools);
         # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
         # Todo tools (create_todo/update_todo/get_todo) are appended as builtin
         # task-step checklist tools (state in db/todos/).
-        tools=[*get_agent_mcp_tools(agent_name), *_todo_tools()],
-        subagents=subagents or None,
+        tools=None if chat else [*get_agent_mcp_tools(agent_name), *_todo_tools()],
+        subagents=None if chat else (subagents or None),
         # Skills enabled for the selected agent (agents.json -> skills; the
         # default agent starts with every installed skill).
-        skills=get_agent_skills(agent_name),
+        skills=None if chat else get_agent_skills(agent_name),
         # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
         # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
         checkpointer=checkpointer,
@@ -348,13 +363,16 @@ def build_agent(
         # The sandbox is off (virtual_mode=False): built-in file tools operate
         # on the real Windows filesystem. Tell the model its actual working
         # directory so ls/read_file/glob resolve relative paths correctly
-        # instead of guessing a drive root.
+        # instead of guessing a drive root. (chat mode uses the light prompt.)
         system_prompt=(
-            f"{get_system_prompt(agent_name)}\n\n"
-            f"# 当前工作目录\n"
-            f"工作目录为：{str(Path(agent_root_dir).resolve())}\n"
-            f"内置文件工具（ls/read_file/glob/grep 等）可直接访问 Windows 全局绝对路径，"
-            f"相对路径基于上述工作目录解析；/uploads/ 下的附件同样可读。\n"
+            CHAT_SYSTEM_PROMPT if chat else
+            (
+                f"{get_system_prompt(agent_name)}\n\n"
+                f"# 当前工作目录\n"
+                f"工作目录为：{str(Path(agent_root_dir).resolve())}\n"
+                f"内置文件工具（ls/read_file/glob/grep 等）可直接访问 Windows 全局绝对路径，"
+                f"相对路径基于上述工作目录解析；/uploads/ 下的附件同样可读。\n"
+            )
         ),
         # Trigger HITL interrupt before risky tool calls -> deepagents_acp converts it to ACP
         # session/request_permission -> frontend shows permission prompt (allow / deny / always allow)
@@ -432,6 +450,36 @@ class RollbackAgentServer(CompactingAgentServer):
         # task may run with the agent it was created for, unlike the WS flow
         # where AGENT_NAME is fixed per subprocess).
         self._session_agents: dict[str, str] = {}
+
+    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse:
+        """Set the per-session mode ('chat' | 'task').
+
+        The stock implementation only applies the mode when the server was
+        started with a service-level modes list; this project starts without
+        one, so override: always store the mode, rebuild the agent with it,
+        and persist it for session/load recovery.
+        """
+        self._session_modes[session_id] = mode_id
+        self._reset_agent(session_id)
+        if self._load_sessions:
+            await self._persist_session(session_id)
+        return SetSessionModeResponse()
+
+    def _restore_session_options(self, session_id: str, metadata: Mapping[str, Any]) -> bool:
+        """Restore a persisted chat/task mode even without a modes config.
+
+        Super's restore is gated on `self._modes is not None`; ours accepts any
+        mode we persisted (set_session_mode writes _ACP_MODE_METADATA_KEY via
+        _persist_session) so a chat session keeps its mode across reloads.
+        """
+        changed = super()._restore_session_options(session_id, metadata)
+        saved_mode = metadata.get(_ACP_MODE_METADATA_KEY)
+        if isinstance(saved_mode, str) and saved_mode in ("chat", "task"):
+            self._session_modes[session_id] = saved_mode
+            default_mode = self._modes.current_mode_id if self._modes is not None else "task"
+            if saved_mode != default_mode:
+                changed = True
+        return changed
 
     def _reset_agent(self, session_id: str) -> None:
         """Reset the agent instance, re-creating it from the factory if applicable.
