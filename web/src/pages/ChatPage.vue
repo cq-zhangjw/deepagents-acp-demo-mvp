@@ -518,10 +518,12 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function createConversation() {
+function createConversation(mode: 'chat' | 'task' = 'task') {
   resetAgentToDefault()
-  const existingEmpty = conversations.value.find((conversation) => conversation.messages.length === 0)
+  // 复用已有空会话仅限任务模式（模式锁定：chat 显式新建，不复用 task 空会话）
+  const existingEmpty = mode === 'task' ? conversations.value.find((conversation) => conversation.messages.length === 0) : undefined
   if (existingEmpty) {
+    // 已有空会话：直接复用（模式锁定，空会话缺省 task；chat 模式显式新建）
     selectConversation(existingEmpty.id)
     conversationSearch.value = ''
     sidebarVisible.value = false
@@ -532,6 +534,7 @@ function createConversation() {
     id: `web-${Date.now()}`,
     title: t('newSessionTitle'),
     updatedAt: Date.now(),
+    mode,
     messages: []
   }
   conversations.value.unshift(conversation)
@@ -543,6 +546,35 @@ function createConversation() {
   sidebarVisible.value = false
   void saveConversation(conversation)
   nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
+}
+
+// ---------- 会话模式（chat / task） ----------
+/** 会话模式判定：timer 会话与缺省均视为 task（与后端缺省一致）。 */
+function modeOf(conversation: { id: string; mode?: 'chat' | 'task' } | null | undefined): 'chat' | 'task' {
+  if (!conversation) return 'task'
+  if (String(conversation.id).startsWith('timer-')) return 'task'
+  return (conversation.mode ?? 'task') === 'chat' ? 'chat' : 'task'
+}
+const currentMode = computed(() => modeOf(currentConversation.value))
+
+// 新建会话下拉：主按钮 = 新建任务会话（缺省）；下拉可显式选聊天/任务
+const newSessionOptions = computed(() => [
+  { key: 'task', label: t('newTaskSession') },
+  { key: 'chat', label: t('newChatSession') },
+])
+function onNewSessionSelect(key: string) {
+  createConversation(key === 'chat' ? 'chat' : 'task')
+}
+
+// chat 模式附件引导：上传附件时弹提示，可一键新建任务会话并携带附件
+const chatAttachmentPrompt = ref(false)
+const pendingChatFiles = ref<File[]>([])
+function createTaskWithAttachments() {
+  chatAttachmentPrompt.value = false
+  const files = pendingChatFiles.value
+  pendingChatFiles.value = []
+  createConversation('task')
+  if (files.length) void addFiles(files)
 }
 
 /** Open the standalone voice-call window (#/voice hash route) */
@@ -2330,6 +2362,10 @@ async function ensureAgentSession(conversation: Conversation, isNewConversation:
     const response = await callAcp('session/new', { sessionId: conversation.id, cwd: '.', mcpServers: [] })
     if (!response?.sessionId) throw new Error(t('invalidSession'))
     conversation.agentSessionId = response.sessionId
+    // chat 会话：紧接设置模式（缺省为 task）；服务端会重建为轻量 agent
+    if (modeOf(conversation) === 'chat') {
+      await callAcp('session/set_mode', { mode_id: 'chat', session_id: response.sessionId }).catch(() => undefined)
+    }
   } else {
     const agentSessionId = conversation.agentSessionId ?? conversation.id
     restoringHistory.value = true
@@ -2826,6 +2862,12 @@ async function uploadResource(resource: AttachmentRef, sessionId: string): Promi
 async function addFiles(files: Iterable<File>) {
   const selectedFiles = Array.from(files)
   if (!selectedFiles.length) return
+  // chat 模式：不添加附件，引导新建任务会话（可一键携带附件）
+  if (currentMode.value === 'chat') {
+    pendingChatFiles.value = selectedFiles
+    chatAttachmentPrompt.value = true
+    return
+  }
   isUploading.value = true
   try {
     for (const file of selectedFiles) {
@@ -3286,9 +3328,16 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-nav">
-        <button type="button" class="sidebar-nav-item sidebar-nav-item--primary" :aria-label="t('newConversation')" @click="createConversation">
-          <NIcon :component="AddOutline" /><span>{{ t('newConversation') }}</span>
-        </button>
+        <div class="sidebar-nav-item--split">
+          <button type="button" class="sidebar-nav-item sidebar-nav-item--primary sidebar-nav-item--split-main" :aria-label="t('newConversation')" @click="createConversation">
+            <NIcon :component="AddOutline" /><span>{{ t('newConversation') }}</span>
+          </button>
+          <NDropdown :options="newSessionOptions" trigger="click" placement="bottom-start" @select="onNewSessionSelect">
+            <button type="button" class="sidebar-nav-item--primary-caret" :aria-label="t('newConversationMore')">
+              <NIcon :component="ChevronDownOutline" />
+            </button>
+          </NDropdown>
+        </div>
         <button type="button" class="sidebar-nav-item" :class="{ 'sidebar-nav-item--active': rightPanelVisible && rightPanelTab === 'timers' }" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
           <NIcon :component="TimeOutline" /><span>{{ t('timers.panelTitle') }}</span>
         </button>
@@ -3315,7 +3364,7 @@ onBeforeUnmount(() => {
             @contextmenu.prevent="openRenameMenu(conversation, $event)"
           >
             <span class="conversation-icon"><NIcon :component="String(conversation.id).startsWith('timer-') ? TimeOutline : ChatbubbleOutline" /></span>
-            <span class="conversation-title">{{ String(conversation.id).startsWith('timer-') ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
+            <span class="conversation-title">{{ String(conversation.id).startsWith('timer-') ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="!String(conversation.id).startsWith('timer-')" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span></span>
             <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
             <span
               class="conversation-delete"
@@ -3496,7 +3545,7 @@ onBeforeUnmount(() => {
             {{ actionLabels.expandSidebar }}
           </NTooltip>
           <div>
-            <h1>{{ currentTitle }}</h1>
+            <h1>{{ currentTitle }}<span v-if="currentConversation && !String(currentConversation.id).startsWith('timer-')" class="header-mode-badge" :class="`header-mode-badge--${currentMode}`">{{ currentMode === 'chat' ? t('mode.chat') : t('mode.task') }}</span></h1>
             <span>{{ isRunning ? t('taskRunning') : connectionLabel }}</span>
           </div>
         </div>
@@ -3724,7 +3773,7 @@ onBeforeUnmount(() => {
                   </template>
                   {{ t('upload') }}
                 </NTooltip>
-                <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
+                <NDropdown v-if="currentMode !== 'chat'" :options="agentDropdownOptions" trigger="click" @select="selectAgent">
                   <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
                     <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
                   </NButton>
@@ -4319,6 +4368,21 @@ onBeforeUnmount(() => {
       @update:show="(visible) => { if (!visible) groupDeleteTarget = null }"
     />
 
+    <!-- chat 模式附件引导：一键新建任务会话并携带附件 -->
+    <NModal
+      preset="dialog"
+      type="info"
+      :show="chatAttachmentPrompt"
+      :title="t('chatAttachmentTitle')"
+      :content="t('chatAttachmentBody')"
+      :positive-text="t('chatAttachmentCreate')"
+      :negative-text="t('deleteConfirmCancel')"
+      @positive-click="createTaskWithAttachments"
+      @negative-click="chatAttachmentPrompt = false"
+      @close="chatAttachmentPrompt = false"
+      @update:show="(visible) => { if (!visible) chatAttachmentPrompt = false }"
+    />
+
     <!-- 帮助（内容待定） -->
     <NModal :show="helpVisible" :mask-closable="true" @after-leave="helpVisible = false">
       <NCard :title="t('help')" :bordered="false" class="rename-card" role="dialog">
@@ -4362,12 +4426,12 @@ onBeforeUnmount(() => {
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:12px; } .conversation-search { padding:0 2px 6px; } .conversation-label { padding:0 10px 6px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
- .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
+ .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; } .sidebar-nav-item--split { display:flex; align-items:stretch; gap:4px; } .sidebar-nav-item--split-main { flex:1; min-width:0; } .sidebar-nav-item--split-main span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .sidebar-nav-item--primary-caret { display:grid; place-items:center; width:34px; flex:0 0 34px; padding:0; color:#fff; background:#2563eb; border:0; border-radius:8px; cursor:pointer; } .sidebar-nav-item--primary-caret:hover { background:#1d4ed8; } .sidebar-nav-item--primary-caret .n-icon { color:#fff; }
 .conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
-.conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
+.conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-mode { display:inline-block; margin-left:6px; padding:0 5px; border-radius:4px; font-size:10px; line-height:15px; vertical-align:1px; } .conversation-mode--chat { color:#1a7f37; background:#e6f6ec; } .conversation-mode--task { color:#6b5ae0; background:#efeefc; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
-.workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .locale-trigger .locale-short { margin-left:2px; font-size:13px; font-weight:600; color:var(--subtle); }
+.workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title h1 .header-mode-badge { display:inline-block; margin-left:8px; padding:1px 7px; border-radius:5px; font-size:11px; font-weight:500; vertical-align:1px; } .header-mode-badge--chat { color:#1a7f37; background:#e6f6ec; } .header-mode-badge--task { color:#6b5ae0; background:#efeefc; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .locale-trigger .locale-short { margin-left:2px; font-size:13px; font-weight:600; color:var(--subtle); }
 .timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .timeline::-webkit-scrollbar { width:6px; } .timeline::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .timeline::-webkit-scrollbar-track { background:transparent; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
