@@ -520,8 +520,10 @@ function createId(prefix: string) {
 
 function createConversation(mode: 'chat' | 'task' = 'task') {
   resetAgentToDefault()
-  // 复用已有空会话仅限任务模式（模式锁定：chat 显式新建，不复用 task 空会话）
-  const existingEmpty = mode === 'task' ? conversations.value.find((conversation) => conversation.messages.length === 0) : undefined
+  // 复用已有空会话仅限任务模式，且只复用任务模式空会话（模式锁定：chat 显式新建，不复用 task 空会话）
+  const existingEmpty = mode === 'task'
+    ? conversations.value.find((conversation) => conversation.messages.length === 0 && modeOf(conversation) === 'task')
+    : undefined
   if (existingEmpty) {
     // 已有空会话：直接复用（模式锁定，空会话缺省 task；chat 模式显式新建）
     selectConversation(existingEmpty.id)
