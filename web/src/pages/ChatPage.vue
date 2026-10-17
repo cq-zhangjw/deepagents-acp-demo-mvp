@@ -201,28 +201,26 @@ const filteredConversations = computed(() => {
   )
 })
 // 侧栏分组：定时任务专用会话（timer-*）与普通会话（chat / task 按 mode 区分）
-const timerConversations = computed(() =>
-  filteredConversations.value.filter((c) => String(c.id).startsWith('timer-'))
-)
-const chatConversations = computed(() =>
-  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-') && (c.mode ?? 'task') === 'chat')
-)
-const taskConversations = computed(() =>
-  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-') && (c.mode ?? 'task') === 'task')
-)
-const normalConversations = computed(() =>
-  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-'))
-)
-// 三类视图（类别 → 自定义分组 → 未分组）
-const categories = computed(() => [
-  { kind: 'chat' as const, label: t('groups.chat'), convs: chatConversations.value },
-  { kind: 'task' as const, label: t('groups.task'), convs: taskConversations.value },
-  { kind: 'timer' as const, label: t('groups.timer'), convs: timerConversations.value },
+// 类型过滤：全部 / 聊天 / 任务 / 定时（在关键词搜索之后叠加生效）
+const filterMode = ref<'all' | 'chat' | 'task' | 'timer'>('all')
+const modeFilteredConversations = computed(() => {
+  if (filterMode.value === 'all') return filteredConversations.value
+  return filteredConversations.value.filter((c) => {
+    if (filterMode.value === 'timer') return String(c.id).startsWith('timer-')
+    return !String(c.id).startsWith('timer-') && (c.mode ?? 'task') === filterMode.value
+  })
+})
+// 过滤选项（供侧栏过滤条渲染）
+const filterOptions = computed(() => [
+  { key: 'all' as const, label: t('filter.all') },
+  { key: 'chat' as const, label: t('mode.chat') },
+  { key: 'task' as const, label: t('mode.task') },
+  { key: 'timer' as const, label: t('groups.timer') },
 ])
 const groups = ref<Group[]>([])
 // todo 分步清单：key = conversation.id（由 ACP toolCalls 事件重放构建）
 const todoStates = ref<Record<string, TodoItem[]>>({})
-// 折叠 key：类别 "__cat_<kind>"、自定义分组 "<gid>"、未分组 "__ung_<kind>"
+// 折叠 key：顶层组 "__all"、自定义分组 "<gid>"
 const collapsedGroups = ref<Set<string>>(new Set())
 // 分组新建/改名弹窗
 const groupModalVisible = ref(false)
@@ -718,16 +716,14 @@ async function loadGroups() {
   }
 }
 
-function groupsOf(kind: string) {
-  return groups.value
-    .filter((g) => g.kind === kind)
-    .sort((a, b) => a.createdAt - b.createdAt)
+// 全部子分组（不再按类别分区；kind 字段兼容保留）
+function allGroups() {
+  return [...groups.value].sort((a, b) => a.createdAt - b.createdAt)
 }
 
-function convsInGroup(kind: string, gid: string | null) {
-  const cat = categories.value.find((c) => c.kind === kind)
-  if (!cat) return []
-  return cat.convs.filter((c) => (c.groupId ?? null) === gid)
+// 过滤后会话按分组归属过滤：gid = null 表示未分组
+function convsInGroupAll(gid: string | null) {
+  return modeFilteredConversations.value.filter((c) => (c.groupId ?? null) === gid)
 }
 
 function isGroupCollapsed(key: string) {
@@ -741,8 +737,8 @@ function toggleGroup(key: string) {
   collapsedGroups.value = next
 }
 
-function openCreateGroup(kind: 'chat' | 'task' | 'timer') {
-  groupModalKind.value = kind
+function openCreateGroup() {
+  groupModalKind.value = 'all'
   groupFormName.value = ''
   groupModalTitle.value = t('groups.newGroup')
   groupEditingId.value = null
@@ -813,15 +809,9 @@ async function moveToGroup(conversation: Conversation, gid: string | null) {
   renameMenu.value = null
 }
 
-// 右键菜单内"移动到分组"子菜单
+// 右键菜单内"移动到分组"子菜单（列出全部子分组）
 const ctxMoveMenu = ref(false)
 const ctxConv = computed(() => conversations.value.find((c) => c.id === renameMenu.value?.id) ?? null)
-const ctxConvKind = computed(() => {
-  const c = ctxConv.value
-  if (!c) return 'task'
-  if (String(c.id).startsWith('timer-')) return 'timer'
-  return (c.mode ?? 'task') === 'chat' ? 'chat' : 'task'
-})
 function openDeleteFromMenu() {
   const id = renameMenu.value?.id
   closeRenameMenu()
@@ -3342,6 +3332,18 @@ onBeforeUnmount(() => {
           <template #prefix><NIcon :component="SearchOutline" /></template>
         </NInput>
       </div>
+      <div class="sidebar-filter">
+        <button
+          v-for="opt in filterOptions"
+          :key="opt.key"
+          type="button"
+          class="sidebar-filter-item"
+          :class="{ 'sidebar-filter-item--active': filterMode === opt.key }"
+          @click="filterMode = opt.key"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
         <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
         <!-- 搜索时：扁平列表（忽略分组） -->
@@ -3369,42 +3371,39 @@ onBeforeUnmount(() => {
             </span>
           </button>
         </template>
-        <!-- 分组视图：三类（类别 → 自定义分组 → 未分组） -->
+        <!-- 分组视图：所有会话（顶层组 → 未分组平铺 + 自定义子分组） -->
         <template v-else>
           <div
-            v-for="cat in categories"
-            :key="cat.kind"
-            v-show="cat.convs.length || groupsOf(cat.kind).length"
-            class="conversation-group"
-            :class="cat.kind === 'timer' ? 'conversation-group--timers' : 'conversation-group--normal'"
+            v-show="modeFilteredConversations.length || allGroups().length"
+            class="conversation-group conversation-group--normal"
           >
             <div class="conversation-group-head">
               <button
                 type="button"
                 class="conversation-group-label"
-                :class="{ 'conversation-group-label--collapsed': isGroupCollapsed('__cat_' + cat.kind) }"
-                @click="toggleGroup('__cat_' + cat.kind)"
+                :class="{ 'conversation-group-label--collapsed': isGroupCollapsed('__all') }"
+                @click="toggleGroup('__all')"
               >
-                <NIcon :component="isGroupCollapsed('__cat_' + cat.kind) ? ChevronForwardOutline : ChevronDownOutline" />
-                <span>{{ cat.label }}</span>
-                <span class="conversation-group-count">{{ cat.convs.length }}</span>
+                <NIcon :component="isGroupCollapsed('__all') ? ChevronForwardOutline : ChevronDownOutline" />
+                <span>{{ t('groups.all') }}</span>
+                <span class="conversation-group-count">{{ modeFilteredConversations.length }}</span>
               </button>
-              <button type="button" class="group-add-btn" :aria-label="t('groups.newGroup')" @click="openCreateGroup(cat.kind)">
+              <button type="button" class="group-add-btn" :aria-label="t('groups.newGroup')" @click="openCreateGroup()">
                 <NIcon :component="AddOutline" />
               </button>
             </div>
-            <div v-if="!isGroupCollapsed('__cat_' + cat.kind)" class="conversation-group-list">
-              <!-- 未分组会话直接平铺在类别区（不设「未分组」子组头），散落即可 -->
+            <div v-if="!isGroupCollapsed('__all')" class="conversation-group-list">
+              <!-- 未分组会话直接平铺（散落） -->
               <button
-                v-for="conversation in convsInGroup(cat.kind, null)"
+                v-for="conversation in convsInGroupAll(null)"
                 :key="conversation.id"
                 class="conversation-item"
-                :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+                :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': String(conversation.id).startsWith('timer-') && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
                 @click="selectConversation(conversation.id)"
                 @contextmenu.prevent="openRenameMenu(conversation, $event)"
               >
-                <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
-                <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="cat.kind !== 'timer'" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span></span>
+                <span class="conversation-icon"><NIcon :component="String(conversation.id).startsWith('timer-') ? TimeOutline : ChatbubbleOutline" /></span>
+                <span class="conversation-title">{{ String(conversation.id).startsWith('timer-') ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="!String(conversation.id).startsWith('timer-')" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span><span v-else class="conversation-mode conversation-mode--timer">{{ t('groups.timer') }}</span></span>
                 <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
                 <span
                   class="conversation-delete"
@@ -3417,7 +3416,7 @@ onBeforeUnmount(() => {
                   <NIcon :component="TrashOutline" />
                 </span>
               </button>
-              <div v-for="g in groupsOf(cat.kind)" :key="g.id" class="sub-group">
+              <div v-for="g in allGroups()" :key="g.id" class="sub-group">
                 <button
                   type="button"
                   class="sub-group-label"
@@ -3427,19 +3426,19 @@ onBeforeUnmount(() => {
                 >
                   <NIcon :component="isGroupCollapsed(g.id) ? ChevronForwardOutline : ChevronDownOutline" />
                   <span class="sub-group-name">{{ g.name }}</span>
-                  <span class="conversation-group-count">{{ convsInGroup(cat.kind, g.id).length }}</span>
+                  <span class="conversation-group-count">{{ convsInGroupAll(g.id).length }}</span>
                 </button>
                 <div v-if="!isGroupCollapsed(g.id)" class="sub-group-list">
                   <button
-                    v-for="conversation in convsInGroup(cat.kind, g.id)"
+                    v-for="conversation in convsInGroupAll(g.id)"
                     :key="conversation.id"
                     class="conversation-item"
-                    :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+                    :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': String(conversation.id).startsWith('timer-') && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
                     @click="selectConversation(conversation.id)"
                     @contextmenu.prevent="openRenameMenu(conversation, $event)"
                   >
-                    <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
-                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="cat.kind !== 'timer'" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span></span>
+                    <span class="conversation-icon"><NIcon :component="String(conversation.id).startsWith('timer-') ? TimeOutline : ChatbubbleOutline" /></span>
+                    <span class="conversation-title">{{ String(conversation.id).startsWith('timer-') ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}<span v-if="!String(conversation.id).startsWith('timer-')" class="conversation-mode" :class="`conversation-mode--${modeOf(conversation)}`">{{ modeOf(conversation) === 'chat' ? t('mode.chat') : t('mode.task') }}</span><span v-else class="conversation-mode conversation-mode--timer">{{ t('groups.timer') }}</span></span>
                     <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
                     <span
                       class="conversation-delete"
@@ -3475,7 +3474,7 @@ onBeforeUnmount(() => {
       >
         <NIcon :component="FolderOutline" />{{ t('groups.moveToGroup') }}
         <div class="rename-menu-sub">
-          <button type="button" class="message-menu-item" v-for="g in groupsOf(ctxConvKind)" :key="g.id" @click="moveToGroup(ctxConv, g.id)">
+          <button type="button" class="message-menu-item" v-for="g in allGroups()" :key="g.id" @click="moveToGroup(ctxConv, g.id)">
             <NIcon :component="FolderOutline" />{{ g.name }}
           </button>
           <button type="button" class="message-menu-item" @click="moveToGroup(ctxConv, null)">
@@ -4336,7 +4335,7 @@ onBeforeUnmount(() => {
       type="warning"
       :show="Boolean(groupDeleteTarget)"
       :title="t('groups.deleteGroup')"
-      :content="groupDeleteTarget ? t('groups.deleteGroupConfirm', { n: convsInGroup(groupDeleteTarget.kind, groupDeleteTarget.id).length }) : ''"
+      :content="groupDeleteTarget ? t('groups.deleteGroupConfirm', { n: convsInGroupAll(groupDeleteTarget.id).length }) : ''"
       :positive-text="t('deleteConfirmOk')"
       :negative-text="t('deleteConfirmCancel')"
       :positive-button-props="{ type: 'error' }"
@@ -4431,7 +4430,8 @@ onBeforeUnmount(() => {
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:12px; } .conversation-search { padding:0 2px 6px; } .conversation-label { padding:0 10px 6px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
- .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
+ .sidebar-filter { display:flex; gap:4px; margin:0 0 10px; padding:2px; background:var(--surface, #f5f6f8); border-radius:8px; } .sidebar-filter-item { flex:1; min-width:0; padding:5px 4px; border:0; border-radius:6px; background:transparent; color:var(--subtle); font-size:12px; line-height:1.2; text-align:center; cursor:pointer; white-space:nowrap; } .sidebar-filter-item:hover { color:var(--text); } .sidebar-filter-item--active { background:#fff; color:#2563eb; font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,0.12); }
+.sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
 .new-session-type-list { display:flex; flex-direction:column; gap:10px; }
 .new-session-type { display:flex; gap:12px; align-items:center; padding:12px 14px; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:10px; cursor:pointer; text-align:left; } .new-session-type:hover { background:var(--muted); border-color:#cbd8ed; } .new-session-type-icon { font-size:20px; color:#2563eb; } .new-session-type-body { display:flex; flex-direction:column; gap:2px; min-width:0; } .new-session-type-body strong { font-size:14px; } .new-session-type-body small { color:var(--subtle); font-size:12px; line-height:1.5; }
 .conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }

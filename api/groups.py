@@ -47,7 +47,7 @@ _LOCK = threading.Lock()
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-KINDS = ("chat", "task", "timer")
+KINDS = ("chat", "task", "timer", "all")
 
 
 class GroupCreate(BaseModel):
