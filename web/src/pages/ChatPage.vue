@@ -4019,7 +4019,7 @@ onBeforeUnmount(() => {
 .file-preview-empty { color:var(--subtle); font-size:13px; }
 .edit-card { width:70vw; } .rename-card { width:min(400px, calc(100vw - 32px)); } .edit-body { display:flex; gap:16px; align-items:stretch; } .edit-input { flex:1 1 50%; min-width:0; } .edit-input :deep(textarea) { font-family:"Cascadia Code",Consolas,monospace; font-size:13px; line-height:1.6; } .edit-preview { flex:1 1 50%; min-width:0; display:flex; flex-direction:column; } .edit-preview-label { margin-bottom:6px; color:var(--subtle); font-size:12px; } .edit-preview-body { flex:1; padding:12px 14px; background:var(--canvas); border:1px solid var(--border); border-radius:8px; overflow:auto; } .edit-preview-body :deep(p) { margin:0 0 8px; } .edit-preview-body :deep(p:last-child) { margin-bottom:0; }.drawer-list { display:flex; flex-direction:column; gap:8px; } .drawer-item { justify-content:flex-start; padding:10px; }
 @media (min-width: 721px) { .chat-app--collapsed .sidebar-expand-btn { display:inline-flex; } }
-@media (max-width: 720px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } }
+@media (max-width: 720px) { .sidebar { display:none; } .mobile-menu { display:inline-flex; } .composer-toolbar .toolbar-pill { padding:0 6px; } .composer-toolbar .toolbar-pill :deep(.n-button__content) { display:none; } .composer-toolbar .agent-pill { max-width:none; } }
 @media (max-width: 900px) { .right-panel { display:none; } .workspace-header { padding:0 14px; } .message-column,.composer-column { width:calc(100% - 32px); } .message-column { padding-top:22px; } .message--user .message-body { max-width:86%; } }
 /* animated loading dots under a running assistant message */
 .msg-loader {
