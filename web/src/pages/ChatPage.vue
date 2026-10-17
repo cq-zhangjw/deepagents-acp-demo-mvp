@@ -19,6 +19,7 @@ import {
   DesktopOutline,
   DocumentOutline,
   FolderOutline,
+  FolderOpenOutline,
   EllipsisHorizontalOutline,
   LanguageOutline,
   CallOutline,
@@ -146,6 +147,15 @@ interface Conversation {
   title: string
   updatedAt: number
   messages: ChatMessage[]
+  mode?: 'chat' | 'task'
+  groupId?: string | null
+}
+
+interface Group {
+  id: string
+  name: string
+  kind: 'chat' | 'task' | 'timer'
+  createdAt: number
 }
 
 interface PermissionRequest {
@@ -180,13 +190,45 @@ const filteredConversations = computed(() => {
     conversation.title.toLowerCase().includes(keyword)
   )
 })
-// 侧栏分组：定时任务专用会话（timer-*）与普通会话
+// 侧栏分组：定时任务专用会话（timer-*）与普通会话（chat / task 按 mode 区分）
 const timerConversations = computed(() =>
   filteredConversations.value.filter((c) => String(c.id).startsWith('timer-'))
+)
+const chatConversations = computed(() =>
+  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-') && (c.mode ?? 'task') === 'chat')
+)
+const taskConversations = computed(() =>
+  filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-') && (c.mode ?? 'task') === 'task')
 )
 const normalConversations = computed(() =>
   filteredConversations.value.filter((c) => !String(c.id).startsWith('timer-'))
 )
+// 三类视图（类别 → 自定义分组 → 未分组）
+const categories = computed(() => [
+  { kind: 'chat' as const, label: t('groups.chat'), convs: chatConversations.value },
+  { kind: 'task' as const, label: t('groups.task'), convs: taskConversations.value },
+  { kind: 'timer' as const, label: t('groups.timer'), convs: timerConversations.value },
+])
+const groups = ref<Group[]>([])
+// 折叠 key：类别 "__cat_<kind>"、自定义分组 "<gid>"、未分组 "__ung_<kind>"
+const collapsedGroups = ref<Set<string>>(new Set())
+// 分组新建/改名弹窗
+const groupModalVisible = ref(false)
+const groupModalTitle = ref('')
+const groupModalKind = ref<'chat' | 'task' | 'timer'>('chat')
+const groupFormName = ref('')
+const groupEditingId = ref<string | null>(null)
+// 分组删除确认
+const groupDeleteTarget = ref<Group | null>(null)
+// 分组右键菜单
+const groupMenu = ref<{ id: string; x: number; y: number } | null>(null)
+function closeGroupMenu() {
+  groupMenu.value = null
+}
+function openGroupMenu(g: Group, event: MouseEvent) {
+  groupMenu.value = { id: g.id, x: event.clientX, y: event.clientY }
+}
+const groupMenuTarget = computed(() => groups.value.find((g) => g.id === groupMenu.value?.id) ?? null)
 /** 会话对应的定时任务（无绑定返回 undefined）。 */
 function timerTaskOf(cid: string) {
   return timers.value.find((t) => t.sessionId === cid)
@@ -618,6 +660,126 @@ function saveRename() {
     void saveConversation(conversation)
   }
   renameTarget.value = null
+}
+
+// ---------- 分组管理 ----------
+async function loadGroups() {
+  try {
+    const res = await fetch('/api/groups')
+    if (res.ok) groups.value = await res.json()
+  } catch {
+    // backend unavailable: keep the previous list
+  }
+}
+
+function groupsOf(kind: string) {
+  return groups.value
+    .filter((g) => g.kind === kind)
+    .sort((a, b) => a.createdAt - b.createdAt)
+}
+
+function convsInGroup(kind: string, gid: string | null) {
+  const cat = categories.value.find((c) => c.kind === kind)
+  if (!cat) return []
+  return cat.convs.filter((c) => (c.groupId ?? null) === gid)
+}
+
+function isGroupCollapsed(key: string) {
+  return collapsedGroups.value.has(key)
+}
+
+function toggleGroup(key: string) {
+  const next = new Set(collapsedGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedGroups.value = next
+}
+
+function openCreateGroup(kind: 'chat' | 'task' | 'timer') {
+  groupModalKind.value = kind
+  groupFormName.value = ''
+  groupModalTitle.value = t('groups.newGroup')
+  groupEditingId.value = null
+  groupModalVisible.value = true
+}
+
+function openRenameGroupModal(g: Group) {
+  groupModalKind.value = g.kind
+  groupFormName.value = g.name
+  groupModalTitle.value = t('groups.renameGroup')
+  groupEditingId.value = g.id
+  groupMenu.value = null
+  groupModalVisible.value = true
+}
+
+async function submitGroupForm() {
+  const name = groupFormName.value.trim()
+  if (!name) return
+  try {
+    if (groupEditingId.value) {
+      await fetch(`/api/groups/${encodeURIComponent(groupEditingId.value)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+    } else {
+      await fetch('/api/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, kind: groupModalKind.value }),
+      })
+    }
+    await loadGroups()
+  } catch {
+    // keep the form open on failure
+    return
+  }
+  groupModalVisible.value = false
+}
+
+function openDeleteGroupModal(g: Group) {
+  groupMenu.value = null
+  groupDeleteTarget.value = g
+}
+
+async function confirmDeleteGroup() {
+  const g = groupDeleteTarget.value
+  if (!g) return
+  try {
+    await fetch(`/api/groups/${encodeURIComponent(g.id)}`, { method: 'DELETE' })
+    // 本地立即同步：组内会话回到未分组（会话本身不删除）
+    conversations.value = conversations.value.map((c) =>
+      c.groupId === g.id ? { ...c, groupId: null } : c
+    )
+    await loadGroups()
+  } catch {
+    // keep the dialog open on failure
+    return
+  }
+  groupDeleteTarget.value = null
+}
+
+async function moveToGroup(conversation: Conversation, gid: string | null) {
+  if (!conversation) return
+  conversation.groupId = gid
+  conversation.updatedAt = Date.now()
+  void saveConversation(conversation)
+  renameMenu.value = null
+}
+
+// 右键菜单内"移动到分组"子菜单
+const ctxMoveMenu = ref(false)
+const ctxConv = computed(() => conversations.value.find((c) => c.id === renameMenu.value?.id) ?? null)
+const ctxConvKind = computed(() => {
+  const c = ctxConv.value
+  if (!c) return 'task'
+  if (String(c.id).startsWith('timer-')) return 'timer'
+  return (c.mode ?? 'task') === 'chat' ? 'chat' : 'task'
+})
+function openDeleteFromMenu() {
+  const id = renameMenu.value?.id
+  closeRenameMenu()
+  if (id) deleteTarget.value = id
 }
 
 // After a manual compaction the backend reports the real post-compaction
@@ -2902,6 +3064,7 @@ onMounted(async () => {
   void loadContextSize()
   setupChatBridge()
   void loadTimers()
+  void loadGroups()
   try {
     await loadHistory()
     // 进入画面时自动新建会话（createConversation 会复用已有空会话，不会重复创建）
@@ -2918,6 +3081,7 @@ onMounted(async () => {
   }
   window.addEventListener('click', closeMessageMenu)
   window.addEventListener('click', closeRenameMenu)
+  window.addEventListener('click', closeGroupMenu)
 })
 watch(() => currentMessages.value.length, () => {
   nextTick(() => {
@@ -2928,6 +3092,7 @@ watch(() => currentMessages.value.length, () => {
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeMessageMenu)
   window.removeEventListener('click', closeRenameMenu)
+  window.removeEventListener('click', closeGroupMenu)
   if (timerRefreshInterval !== undefined) window.clearInterval(timerRefreshInterval)
   if (scrollPauseTimer) window.clearTimeout(scrollPauseTimer)
   stopScreenShare()
@@ -2969,68 +3134,132 @@ onBeforeUnmount(() => {
       </div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
         <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
-        <div v-if="normalConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': normalCollapsed }">
-          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': normalCollapsed }" @click="normalCollapsed = !normalCollapsed">
-            <NIcon :component="normalCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
-            <span>{{ t('timers.timerGroupNormal') }}</span>
-            <span class="conversation-group-count">{{ normalConversations.length }}</span>
-          </button>
-          <div v-if="!normalCollapsed" class="conversation-group-list">
-            <button
-              v-for="conversation in normalConversations"
-              :key="conversation.id"
-              class="conversation-item"
-              :class="{ active: conversation.id === activeConversationId }"
-              @click="selectConversation(conversation.id)"
-              @contextmenu.prevent="openRenameMenu(conversation, $event)"
+        <!-- 搜索时：扁平列表（忽略分组） -->
+        <template v-else-if="conversationSearch.trim()">
+          <button
+            v-for="conversation in filteredConversations"
+            :key="conversation.id"
+            class="conversation-item"
+            :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': String(conversation.id).startsWith('timer-') && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+            @click="selectConversation(conversation.id)"
+            @contextmenu.prevent="openRenameMenu(conversation, $event)"
+          >
+            <span class="conversation-icon"><NIcon :component="String(conversation.id).startsWith('timer-') ? TimeOutline : ChatbubbleOutline" /></span>
+            <span class="conversation-title">{{ String(conversation.id).startsWith('timer-') ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
+            <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+            <span
+              class="conversation-delete"
+              role="button"
+              tabindex="0"
+              :aria-label="t('deleteSession')"
+              @click.stop="deleteTarget = conversation.id"
+              @keydown.enter.prevent="deleteTarget = conversation.id"
             >
-              <span class="conversation-icon"><NIcon :component="ChatbubbleOutline" /></span>
-              <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
-              <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-              <span
-                class="conversation-delete"
-                role="button"
-                tabindex="0"
-                :aria-label="t('deleteSession')"
-                @click.stop="deleteTarget = conversation.id"
-                @keydown.enter.prevent="deleteTarget = conversation.id"
-              >
-                <NIcon :component="TrashOutline" />
-              </span>
-            </button>
-          </div>
-        </div>
-        <div v-if="timerConversations.length" class="conversation-group conversation-group--timers" :class="{ 'conversation-group--collapsed': timerCollapsed }">
-          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': timerCollapsed }" @click="timerCollapsed = !timerCollapsed">
-            <NIcon :component="timerCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
-            <span>{{ t('timers.timerGroupScheduled') }}</span>
-            <span class="conversation-group-count">{{ timerConversations.length }}</span>
+              <NIcon :component="TrashOutline" />
+            </span>
           </button>
-          <div v-if="!timerCollapsed" class="conversation-group-list">
-            <button
-              v-for="conversation in timerConversations"
-              :key="conversation.id"
-              class="conversation-item"
-              :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
-              @click="selectConversation(conversation.id)"
-              @contextmenu.prevent="openRenameMenu(conversation, $event)"
-            >
-              <span class="conversation-icon"><NIcon :component="TimeOutline" /></span>
-              <span class="conversation-title">{{ timerTitle(conversation.title) || displayTitle(conversation.title) }}</span>
-              <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
-              <span
-                class="conversation-delete"
-                role="button"
-                tabindex="0"
-                :aria-label="t('deleteSession')"
-                @click.stop="deleteTarget = conversation.id"
-                @keydown.enter.prevent="deleteTarget = conversation.id"
+        </template>
+        <!-- 分组视图：三类（类别 → 自定义分组 → 未分组） -->
+        <template v-else>
+          <div
+            v-for="cat in categories"
+            :key="cat.kind"
+            v-show="cat.convs.length || groupsOf(cat.kind).length"
+            class="conversation-group"
+            :class="cat.kind === 'timer' ? 'conversation-group--timers' : 'conversation-group--normal'"
+          >
+            <div class="conversation-group-head">
+              <button
+                type="button"
+                class="conversation-group-label"
+                :class="{ 'conversation-group-label--collapsed': isGroupCollapsed('__cat_' + cat.kind) }"
+                @click="toggleGroup('__cat_' + cat.kind)"
               >
-                <NIcon :component="TrashOutline" />
-              </span>
-            </button>
+                <NIcon :component="isGroupCollapsed('__cat_' + cat.kind) ? ChevronForwardOutline : ChevronDownOutline" />
+                <span>{{ cat.label }}</span>
+                <span class="conversation-group-count">{{ cat.convs.length }}</span>
+              </button>
+              <button type="button" class="group-add-btn" :aria-label="t('groups.newGroup')" @click="openCreateGroup(cat.kind)">
+                <NIcon :component="AddOutline" />
+              </button>
+            </div>
+            <div v-if="!isGroupCollapsed('__cat_' + cat.kind)" class="conversation-group-list">
+              <div v-for="g in groupsOf(cat.kind)" :key="g.id" class="sub-group">
+                <button
+                  type="button"
+                  class="sub-group-label"
+                  :class="{ 'sub-group-label--collapsed': isGroupCollapsed(g.id) }"
+                  @click="toggleGroup(g.id)"
+                  @contextmenu.prevent="openGroupMenu(g, $event)"
+                >
+                  <NIcon :component="isGroupCollapsed(g.id) ? ChevronForwardOutline : ChevronDownOutline" />
+                  <span class="sub-group-name">{{ g.name }}</span>
+                  <span class="conversation-group-count">{{ convsInGroup(cat.kind, g.id).length }}</span>
+                </button>
+                <div v-if="!isGroupCollapsed(g.id)" class="sub-group-list">
+                  <button
+                    v-for="conversation in convsInGroup(cat.kind, g.id)"
+                    :key="conversation.id"
+                    class="conversation-item"
+                    :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+                    @click="selectConversation(conversation.id)"
+                    @contextmenu.prevent="openRenameMenu(conversation, $event)"
+                  >
+                    <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
+                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
+                    <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+                    <span
+                      class="conversation-delete"
+                      role="button"
+                      tabindex="0"
+                      :aria-label="t('deleteSession')"
+                      @click.stop="deleteTarget = conversation.id"
+                      @keydown.enter.prevent="deleteTarget = conversation.id"
+                    >
+                      <NIcon :component="TrashOutline" />
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <div v-if="convsInGroup(cat.kind, null).length" class="sub-group">
+                <button
+                  type="button"
+                  class="sub-group-label"
+                  :class="{ 'sub-group-label--collapsed': isGroupCollapsed('__ung_' + cat.kind) }"
+                  @click="toggleGroup('__ung_' + cat.kind)"
+                >
+                  <NIcon :component="isGroupCollapsed('__ung_' + cat.kind) ? ChevronForwardOutline : ChevronDownOutline" />
+                  <span class="sub-group-name">{{ t('groups.ungrouped') }}</span>
+                  <span class="conversation-group-count">{{ convsInGroup(cat.kind, null).length }}</span>
+                </button>
+                <div v-if="!isGroupCollapsed('__ung_' + cat.kind)" class="sub-group-list">
+                  <button
+                    v-for="conversation in convsInGroup(cat.kind, null)"
+                    :key="conversation.id"
+                    class="conversation-item"
+                    :class="{ active: conversation.id === activeConversationId, 'conversation-item--disabled': cat.kind === 'timer' && timerTaskOf(conversation.id) && !timerTaskOf(conversation.id)?.enabled }"
+                    @click="selectConversation(conversation.id)"
+                    @contextmenu.prevent="openRenameMenu(conversation, $event)"
+                  >
+                    <span class="conversation-icon"><NIcon :component="cat.kind === 'timer' ? TimeOutline : ChatbubbleOutline" /></span>
+                    <span class="conversation-title">{{ cat.kind === 'timer' ? (timerTitle(conversation.title) || displayTitle(conversation.title)) : displayTitle(conversation.title) }}</span>
+                    <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
+                    <span
+                      class="conversation-delete"
+                      role="button"
+                      tabindex="0"
+                      :aria-label="t('deleteSession')"
+                      @click.stop="deleteTarget = conversation.id"
+                      @keydown.enter.prevent="deleteTarget = conversation.id"
+                    >
+                      <NIcon :component="TrashOutline" />
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        </template>
       </nav>
     </aside>
 
@@ -3042,6 +3271,38 @@ onBeforeUnmount(() => {
     >
       <button type="button" class="message-menu-item" @click="openRenameModal">
         <NIcon :component="CreateOutline" />{{ actionLabels.renameConversation }}
+      </button>
+      <div
+        class="message-menu-item message-menu-item--sub"
+        @click.stop
+      >
+        <NIcon :component="FolderOutline" />{{ t('groups.moveToGroup') }}
+        <div class="rename-menu-sub">
+          <button type="button" class="message-menu-item" v-for="g in groupsOf(ctxConvKind)" :key="g.id" @click="moveToGroup(ctxConv, g.id)">
+            <NIcon :component="FolderOutline" />{{ g.name }}
+          </button>
+          <button type="button" class="message-menu-item" @click="moveToGroup(ctxConv, null)">
+            <NIcon :component="FolderOpenOutline" />{{ t('groups.ungrouped') }}
+          </button>
+        </div>
+      </div>
+      <button type="button" class="message-menu-item" @click="openDeleteFromMenu">
+        <NIcon :component="TrashOutline" />{{ t('deleteConversation') }}
+      </button>
+    </div>
+
+    <!-- 分组右键菜单 -->
+    <div
+      v-if="groupMenu"
+      class="rename-menu"
+      :style="{ left: groupMenu.x + 'px', top: groupMenu.y + 'px' }"
+      @click.stop
+    >
+      <button type="button" class="message-menu-item" @click="openRenameGroupModal(groupMenuTarget)">
+        <NIcon :component="CreateOutline" />{{ t('groups.renameGroup') }}
+      </button>
+      <button type="button" class="message-menu-item" @click="openDeleteGroupModal(groupMenuTarget)">
+        <NIcon :component="TrashOutline" />{{ t('groups.deleteGroup') }}
       </button>
     </div>
 
@@ -3854,6 +4115,40 @@ onBeforeUnmount(() => {
       </NCard>
     </NModal>
 
+    <!-- 分组新建/改名 -->
+    <NModal :show="groupModalVisible" :mask-closable="false" @after-leave="groupModalVisible = false">
+      <NCard :title="groupModalTitle" :bordered="false" class="rename-card" role="dialog">
+        <NInput
+          v-model:value="groupFormName"
+          type="text"
+          :placeholder="t('groups.namePlaceholder')"
+          @keydown.enter.exact="submitGroupForm"
+        />
+        <template #footer>
+          <div class="permission-actions">
+            <NButton @click="groupModalVisible = false">{{ actionLabels.cancel }}</NButton>
+            <NButton type="primary" @click="submitGroupForm">{{ actionLabels.save }}</NButton>
+          </div>
+        </template>
+      </NCard>
+    </NModal>
+
+    <!-- 分组删除确认（会话移出分组，不删除会话） -->
+    <NModal
+      preset="dialog"
+      type="warning"
+      :show="Boolean(groupDeleteTarget)"
+      :title="t('groups.deleteGroup')"
+      :content="groupDeleteTarget ? t('groups.deleteGroupConfirm', { n: convsInGroup(groupDeleteTarget.kind, groupDeleteTarget.id).length }) : ''"
+      :positive-text="t('deleteConfirmOk')"
+      :negative-text="t('deleteConfirmCancel')"
+      :positive-button-props="{ type: 'error' }"
+      @positive-click="confirmDeleteGroup"
+      @negative-click="groupDeleteTarget = null"
+      @close="groupDeleteTarget = null"
+      @update:show="(visible) => { if (!visible) groupDeleteTarget = null }"
+    />
+
     <!-- Centered delete-session confirmation (NPopconfirm drifted inside the
          scrolling conversation list, so this uses a centered dialog instead) -->
     <NModal
@@ -3936,6 +4231,7 @@ onBeforeUnmount(() => {
 .timer-cron-invalid { color:#d03050; font-size:11px; font-weight:600; }
 .timer-next-run { color:var(--subtle); font-size:11px; }
 .conversation-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:10px 2px 2px; padding:6px 6px; width:100%; text-align:left; color:#111; font-size:14px; font-weight:700; letter-spacing:.3px; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .conversation-group-label:hover { background:var(--muted); } .conversation-group-count { margin-left:auto; font-size:11px; font-weight:600; color:var(--subtle); background:var(--surface); border:1px solid var(--border); border-radius:99px; padding:0 6px; line-height:16px; }
+.conversation-group-head { display:flex; align-items:center; gap:2px; } .conversation-group-head .conversation-group-label { flex:1 1 auto; min-width:0; margin-right:0; } .group-add-btn { display:flex; align-items:center; justify-content:center; width:22px; height:22px; flex:0 0 auto; padding:0; color:var(--subtle); background:transparent; border:0; border-radius:6px; cursor:pointer; opacity:.65; } .group-add-btn:hover { background:var(--muted); opacity:1; } .sub-group { display:flex; flex-direction:column; min-height:0; } .sub-group-label { display:flex; flex:0 0 auto; align-items:center; gap:4px; margin:2px 2px; padding:4px 6px; width:100%; text-align:left; color:#405166; font-size:12px; font-weight:600; background:transparent; border:0; border-radius:6px; cursor:pointer; user-select:none; } .sub-group-label:hover { background:var(--muted); } .sub-group-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .sub-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; } .sub-group-list .conversation-item { padding-left:40px; } .rename-menu-sub { position:absolute; left:100%; top:-4px; z-index:71; display:none; flex-direction:column; min-width:140px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item--sub { position:relative; } .message-menu-item--sub:hover .rename-menu-sub { display:flex; }
 .message--highlight { outline:2px solid #2563eb; outline-offset:2px; border-radius:10px; }
 .panel-section { display:flex; flex-direction:column; gap:10px; }
 .panel-section-note { font-size:12px; color:var(--subtle); padding:2px 2px 0; }
