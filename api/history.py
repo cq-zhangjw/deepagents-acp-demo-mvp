@@ -157,7 +157,10 @@ def put_history(cid: str, payload: HistoryPut) -> dict[str, Any]:
     with _LOCK:
         existing = util.query_data(_HISTORY_DB, {"id": cid}, _INDEXES)
         if existing:
-            util.update_data(_HISTORY_DB, {"id": cid}, conv, _INDEXES)
+            # 读-改-写：合并现有记录，保留提交载荷未携带的字段
+            # （groupId / mode 等由分组管理写入的扩展字段不因会话刷新而丢失）。
+            merged = {**existing[0], **conv}
+            util.update_data(_HISTORY_DB, {"id": cid}, merged, _INDEXES)
         else:
             util.insert_data(_HISTORY_DB, [conv], _INDEXES)
     return {"ok": True, "id": cid}
