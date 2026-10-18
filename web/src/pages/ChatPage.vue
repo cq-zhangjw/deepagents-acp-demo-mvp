@@ -3755,16 +3755,16 @@ onBeforeUnmount(() => {
                     <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
                   </NButton>
                 </NDropdown>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
+                <NButton v-if="currentMode !== 'chat'" quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
                   <template #icon><NIcon :component="GitNetworkOutline" /></template>{{ actionLabels.subagents }}
                 </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
+                <NButton v-if="currentMode !== 'chat'" quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
                   <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
                 </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
+                <NButton v-if="currentMode !== 'chat'" quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
                   <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
                 </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.knowledge" @click="openRightPanel('knowledge')">
+                <NButton v-if="currentMode !== 'chat'" quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.knowledge" @click="openRightPanel('knowledge')">
                   <template #icon><NIcon :component="BookOutline" /></template>{{ actionLabels.knowledge }}
                 </NButton>
               </div>
