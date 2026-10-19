@@ -21,6 +21,7 @@ export default {
   you: 'You',
   assistant: 'AI',
   viewProcess: 'View execution process',
+  todoPanel: 'Task steps',
   steps: 'steps',
   seconds: 'seconds',
   analysisStep: 'Analysis step',
