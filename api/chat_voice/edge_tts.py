@@ -1,4 +1,4 @@
-"""Microsoft Edge TTS (online) wrapper, drop-in compatible with the genie engine interface.
+"""Microsoft Edge TTS (online) wrapper, drop-in compatible with the shared engine interface.
 
 Used when TTS_ENGINE=edge_tts. Speech is synthesized by the free Microsoft
 Edge online service over a websocket; the returned MP3 stream is decoded to
@@ -13,7 +13,7 @@ Env controls (all optional):
   EDGE_TTS_PITCH   e.g. "+0Hz"
   EDGE_TTS_PROXY   http proxy for the Edge service, e.g. "http://127.0.0.1:7890"
 
-Public API mirrors the genie engine interface:
+Public API mirrors the shared engine interface:
   synthesize_wav_bytes(text, voice) -> (WAV bytes, sample_rate)
   iter_pcm_chunks(text, voice)       -> yields (seq, 16-bit PCM bytes)
   list_voices()                      -> [{"name", "label", "locale"}]
@@ -182,7 +182,7 @@ def synthesize_wav_bytes(
 ) -> tuple[bytes, int]:
     """Synthesize speech and return in-memory WAV bytes (no file written).
 
-    Signature-compatible with genie engine synthesize_wav_bytes; the sampling
+    Signature-compatible with the shared engine synthesize_wav_bytes; the sampling
     params are accepted and ignored (Edge service has no such knobs).
     """
     if not text.strip():
@@ -227,7 +227,7 @@ def iter_pcm_chunks(
     seed: int = 42,
 ):
     """Segment-level streaming: synthesize each segment and yield its 16-bit PCM
-    bytes (same contract as the genie engine iter_pcm_chunks).
+    bytes (same contract as the shared engine iter_pcm_chunks).
 
     With voice='auto' segments are language spans (zh/ja/en), each read by its
     own default voice; otherwise segments are sentences read by the chosen voice.

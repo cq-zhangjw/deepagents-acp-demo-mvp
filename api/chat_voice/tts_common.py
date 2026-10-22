@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared TTS helpers used by all chat_voice engines (genie_tts / edge_tts / sapi_tts).
+"""Shared TTS helpers used by all chat_voice engines (edge_tts / sapi_tts).
 
 detect_language:          lightweight language detection (kana -> ja, hanzi -> zh, else en).
 split_text:               sentence-boundary segmentation for long text.
@@ -8,7 +8,7 @@ split_language_segments:  split mixed zh/ja/en text into per-language segments s
 """
 import re
 
-# ---- mixed-language segmentation (shared by genie / edge_tts "auto" mode) ----
+# ---- mixed-language segmentation (shared by edge_tts / sapi "auto" mode) ----
 
 _EN_RE = re.compile(r"[A-Za-z\uFF21-\uFF3A\uFF41-\uFF5A]")
 _KANA_RE = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF\uFF66-\uFF9D]")

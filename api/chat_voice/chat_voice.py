@@ -1,8 +1,6 @@
 """AI speech synthesis API (sub-router).
 
 Engines (selectable via TTS_ENGINE):
-  - genie     (default) genie-tts local inference (ONNX, CPU), voices zh/en/jp/auto,
-              models under repo-root models/, WAV synthesized in memory (no file kept).
   - edge_tts  Microsoft Edge online TTS, MP3 -> 24kHz PCM via PyAV; no local
               model, but requires access to speech.platform.bing.com
               (EDGE_TTS_PROXY can be set for restricted networks).
@@ -17,8 +15,7 @@ voice features never go silent.
   done on the frontend; recognized text is filled into the main chat input.
 - Speech output (TTS): this module calls the selected engine and synthesizes
   WAV/PCM in memory (no file written).
-- Voice resolution: genie uses the preset voices zh/en/jp/auto (auto = mixed
-  output); edge_tts/sapi resolve unknown/legacy names (e.g. 'zh') to the
+- Voice resolution: edge_tts/sapi resolve unknown/legacy names (e.g. 'zh') to the
   language default voice configured via EDGE_TTS_VOICE_ZH / EDGE_TTS_VOICE_JA /
   EDGE_TTS_VOICE_EN (edge_tts) or SAPI_VOICE_ZH / SAPI_VOICE_JA / SAPI_VOICE_EN (sapi).
 
@@ -47,8 +44,6 @@ def _engine() -> str:
     engine = os.getenv("TTS_ENGINE", "").strip().lower()
     if engine in ("edge", "edge_tts", "edge-tts"):
         return "edge_tts"
-    if engine in ("genie", "genie_tts", "genie-tts"):
-        return "genie"
     return "sapi"
 
 
@@ -61,10 +56,7 @@ def _engine_module():
     if _engine() == "edge_tts":
         from . import edge_tts as mod
         return mod
-    if _engine() == "sapi":
-        from . import sapi_tts as mod
-        return mod
-    from . import genie_tts as mod
+    from . import sapi_tts as mod
     return mod
 
 
@@ -146,9 +138,9 @@ def tts(req: TTSRequest):
 def _resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
     """Linear-interpolate 16-bit mono PCM to a target sample rate.
 
-    Used when the fallback engine (Windows SAPI, 24 kHz) streams PCM into a
-    frontend that decodes at the primary engine's sample rate (genie 32 kHz);
-    without this the fallback audio plays at the wrong speed/pitch.
+    Used when the fallback engine (Windows SAPI) streams PCM into a frontend
+    that decodes at the primary engine's sample rate; without this the fallback
+    audio plays at the wrong speed/pitch.
     """
     if src_rate == dst_rate or not pcm:
         return pcm

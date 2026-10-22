@@ -13,8 +13,8 @@
 
 | 包 | 内容 | 体积（zip 后估算） | 说明 |
 | --- | --- | --- | --- |
-| `DeepAgents-vX.Y-win64-base.zip` | 程序 + web/dist + .deepagents + 依赖 | ~700MB–1GB | 默认分发；语音模型缺失时向导引导 |
-| `DeepAgents-vX.Y-win64-full.zip` | 上述 + `models/`（TTS onnx + genie 数据） | ~3.5–4GB | 需要开箱语音 |
+| `DeepAgents-vX.Y-win64-base.zip` | 程序 + web/dist + .deepagents + 依赖 | ~700MB–1GB | 默认分发（语音引擎在线 edge_tts / 系统 sapi，无需本地模型） |
+| `DeepAgents-vX.Y-win64-full.zip` | 上述 + 可选本地 TTS 模型（`models/`，预留） | ~1.5–2GB | 需要开箱本地语音（当前引擎为在线 edge_tts / 系统 sapi，模型非必需） |
 
 - 不追 onefile（多进程 + 可写数据不适合）；不追 Docker（违背双击即用）。
 - 本期不实施安装器/签名/自动更新（列在"后续阶段"），但路径架构为其预留。
@@ -125,7 +125,6 @@ app.py 启动逻辑：
 | `GET /api/setup/status` | `{ configured: bool }`——`.env` 存在且有 `ENDPOINT` 时为 true |
 | `POST /api/setup/config` | body `{ endpoint, apiKey, modelName, language }` → 写入 `.env`（覆盖/新建），返回 ok |
 | `POST /api/setup/test` | body `{ endpoint, apiKey, modelName }` → 请求 `${endpoint}/v1/models`（或最小空对话）测连通，返回 `{ ok, latencyMs, error? }` |
-| `GET /api/models/status` | `{ tts: 'ok' | 'missing', detail }`——检查 `models/genie-tts-models`、`models/xnnehanglab-geniedata` 存在性（供语音引导） |
 
 **前端新增 `SetupPage.vue`（路由 `/setup`）**
 - 字段：端点、API Key、模型名、语言（三语）；
@@ -152,8 +151,6 @@ app.py 启动逻辑：
 python -m venv .packvenv
 .packvenv\Scripts\pip install -r requirements.txt
 .packvenv\Scripts\pip install pyinstaller==6.*
-# 2) 预装本地 wheel（collect 需要）
-.packvenv\Scripts\pip install ./whls/jieba_fast-0.53-cp312-cp312-win_amd64.whl
 ```
 
 ### 4.2 spec 要点（`packaging/DeepAgents.spec`）
@@ -164,7 +161,7 @@ python -m venv .packvenv
   3. `mcp_runner.py` → `mcp_runner.exe`（console=True）
 - **collect_all**（动态导入包）：
   `langchain, langchain_core, langchain_openai, langgraph, langgraph_checkpoint_sqlite, deepagents, deepagents_acp, fastmcp, moofile`
-- **binaries**：`onnxruntime`（collect_binaries）；`playwright`（必要时 collect_data，浏览器走系统 MS Edge）
+- **binaries**：`playwright`（必要时 collect_data，浏览器走系统 MS Edge）
 - **datas**：
   - `web/dist` → `web/dist`
   - `.deepagents` → `.deepagents`
@@ -243,7 +240,6 @@ Compress-Archive -Path $dist -DestinationPath "DeepAgents-v$Version-win64-$(if($
 | 风险 | 应对 |
 | --- | --- |
 | langchain/deepagents 动态导入打包后缺模块 | collect_all + 按验证清单逐项补 spec；打包机与干净机双验证 |
-| onnxruntime/genie_tts 二进制收集问题 | collect_binaries；models 外置减少体积风险 |
 | 子进程 stdin/stdout 管道在 frozen 下异常 | acp_agent.exe console=True；首条验证（场景 3）优先 |
 | 打包后路径错乱 | BASE_DIR 单点改造 + 场景 1/12 验证 |
 | 杀软误报 | Release 说明 + 后续签名评估 |

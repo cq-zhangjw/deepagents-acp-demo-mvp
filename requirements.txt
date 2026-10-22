@@ -21,13 +21,8 @@ pywin32; sys_platform == "win32"
 edge-tts
 av
 
-# genie-tts
-./whls/jieba_fast-0.53-cp312-cp312-win_amd64.whl
-genie_tts
-onnxruntime
 soundfile
 numpy
-pydub
 
 
 # Local history persistence (MooFile BSON collections under db/history)
