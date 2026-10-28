@@ -3,6 +3,8 @@
 Bridges the frontend knowledge panel to the external moofile_base project:
 - GET  /api/knowledge/config                       -> {baseUrl, topK, threshold, reachable}
 - GET  /api/knowledge/databases?agent=<name>       -> list of knowledge bases (+ enabled)
+- POST /api/knowledge/start                        -> launch the external moofile_base backend
+- POST /api/knowledge/stop                         -> terminate the external moofile_base backend
 - POST /api/knowledge/databases/{db_id}/toggle?agent=<name> -> enable/disable the
        knowledge_server MCP entry for the agent (single source of truth)
 
@@ -199,6 +201,59 @@ def start_knowledge_service():
     raise HTTPException(
         status_code=504,
         detail="moofile_base did not become ready within 20s (check moofile_base/logs/app.err.log)",
+    )
+
+
+# Windows: terminate processes anchored to the moofile_base project (command
+# line / executable path match), then fall back to whatever listens on :8888.
+# Mirrors moofile_base/stop.ps1 so the panel can stop the backend on demand.
+_STOP_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$targets = Get-CimInstance Win32_Process | Where-Object {
+    ($_.CommandLine -match 'app\.py') -and
+    ($_.ExecutablePath -match 'moofile_base' -or $_.CommandLine -match 'moofile_base')
+}
+foreach ($t in $targets) {
+    $children = Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $t.ProcessId }
+    foreach ($c in $children) { Stop-Process -Id $c.ProcessId -Force -ErrorAction SilentlyContinue }
+    Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue
+}
+$listener = Get-NetTCPConnection -LocalPort 8888 -State Listen -ErrorAction SilentlyContinue
+foreach ($l in $listener) { Stop-Process -Id $l.OwningProcess -Force -ErrorAction SilentlyContinue }
+"""
+
+
+@router.post("/stop")
+def stop_knowledge_service():
+    """Stop the external moofile_base backend when it is running.
+
+    Kills the moofile_base app.py process tree (anchored by executable path /
+    command line) with a :8888 listener fallback, then clears the MCP tool
+    cache so the next agent assembly drops the knowledge tools.
+    """
+    if not _probe():
+        return {"ok": True, "wasRunning": False}
+
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _STOP_SCRIPT],
+            cwd=str(BASE_DIR),
+            timeout=30,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"failed to stop moofile_base: {exc}") from exc
+
+    for _ in range(10):
+        time.sleep(1)
+        if not _probe():
+            clear_tools_cache()
+            invalidate_agents_cache()
+            return {"ok": True, "wasRunning": True}
+
+    raise HTTPException(
+        status_code=500,
+        detail="moofile_base did not stop within 10s (check running processes on :8888)",
     )
 
 

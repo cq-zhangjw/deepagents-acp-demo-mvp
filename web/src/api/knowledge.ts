@@ -63,3 +63,17 @@ export async function startKnowledgeService(): Promise<KnowledgeStartResult> {
   }
   return (await resp.json()) as KnowledgeStartResult
 }
+
+export interface KnowledgeStopResult {
+  ok: boolean
+  wasRunning: boolean
+}
+
+export async function stopKnowledgeService(): Promise<KnowledgeStopResult> {
+  const resp = await fetch('/api/knowledge/stop', { method: 'POST' })
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}))
+    throw new Error(data.detail || data.error || `HTTP ${resp.status}`)
+  }
+  return (await resp.json()) as KnowledgeStopResult
+}

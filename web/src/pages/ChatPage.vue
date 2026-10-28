@@ -29,6 +29,7 @@ import {
   SearchOutline,
   SparklesOutline,
   GitNetworkOutline,
+  StopOutline,
   StopCircleOutline,
   TrashOutline,
   TimeOutline,
@@ -67,7 +68,7 @@ import ExecutionProcess from '../components/ExecutionProcess.vue'
 import KnowledgeManageModal from '../components/KnowledgeManageModal.vue'
 import MarkdownMessage from '../components/MarkdownMessage.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
-import { fetchKnowledgeConfig, fetchKnowledgeDatabases, toggleKnowledgeDb, startKnowledgeService, type KnowledgeDb } from '../api/knowledge'
+import { fetchKnowledgeConfig, fetchKnowledgeDatabases, toggleKnowledgeDb, startKnowledgeService, stopKnowledgeService, type KnowledgeDb } from '../api/knowledge'
 
 type TaskStatus = 'pending' | 'streaming' | 'completed' | 'cancelled' | 'failed' | 'waiting_permission'
 type ToolStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting_permission'
@@ -257,6 +258,8 @@ const actionLabels = computed(() => ({
   knowledgeUnreachable: locale.value === 'zh' ? '知识库服务未启动' : locale.value === 'ja' ? 'ナレッジベースサービスが起動していません' : 'Knowledge base service is unreachable',
   knowledgeStart: locale.value === 'zh' ? '立即启动' : locale.value === 'ja' ? '今すぐ起動' : 'Start now',
   knowledgeStarting: locale.value === 'zh' ? '启动中...' : locale.value === 'ja' ? '起動中...' : 'Starting...',
+  knowledgeStop: locale.value === 'zh' ? '停止服务' : locale.value === 'ja' ? 'サービス停止' : 'Stop service',
+  knowledgeStopping: locale.value === 'zh' ? '停止中...' : locale.value === 'ja' ? '停止中...' : 'Stopping...',
   knowledgeDocs: locale.value === 'zh' ? '文档' : locale.value === 'ja' ? '文書' : 'Docs',
   knowledgeRecords: locale.value === 'zh' ? '记录' : locale.value === 'ja' ? 'レコード' : 'Records',
   knowledgeVector: locale.value === 'zh' ? '向量' : locale.value === 'ja' ? 'ベクトル' : 'Vector',
@@ -1367,6 +1370,24 @@ async function startKnowledge() {
     message.error(e.message || String(e))
   } finally {
     knowledgeStarting.value = false
+  }
+}
+
+/** Stop the external moofile_base backend and refresh the panel. */
+const knowledgeStopping = ref(false)
+async function stopKnowledge() {
+  if (knowledgeStopping.value) return
+  knowledgeStopping.value = true
+  try {
+    const res = await stopKnowledgeService()
+    if (res.ok) {
+      message.success(actionLabels.value.knowledgeStop)
+      await loadKnowledge()
+    }
+  } catch (e: any) {
+    message.error(e.message || String(e))
+  } finally {
+    knowledgeStopping.value = false
   }
 }
 
@@ -3712,6 +3733,9 @@ onBeforeUnmount(() => {
     </p>
   </div>
   <div class="knowledge-manage-btn">
+    <NButton size="small" type="error" quaternary :loading="knowledgeStopping" :disabled="!knowledgeConfig.reachable || knowledgeStopping" @click="stopKnowledge()">
+      <template #icon v-if="!knowledgeStopping"><NIcon :component="StopOutline" /></template>{{ knowledgeStopping ? actionLabels.knowledgeStopping : actionLabels.knowledgeStop }}
+    </NButton>
     <NButton size="small" :disabled="!knowledgeConfig.reachable" @click="openKnowledgeManager()">{{ actionLabels.knowledgeManage }}</NButton>
   </div>
 </div>
@@ -4141,7 +4165,7 @@ onBeforeUnmount(() => {
 .knowledge-alert { margin-bottom:8px; }
 .knowledge-alert-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .panel-section--knowledge { position:relative; padding-bottom:44px; }
-.knowledge-manage-btn { position:absolute; right:6px; bottom:6px; }
+.knowledge-manage-btn { position:absolute; right:6px; bottom:6px; display:flex; align-items:center; gap:6px; }
 .manage-card-head--group { cursor:pointer; user-select:none; }
 .tool-group-left { display:flex; align-items:center; gap:6px; min-width:0; }
 .tool-group-caret { font-size:12px; color:var(--subtle); width:14px; text-align:center; flex:0 0 auto; }
