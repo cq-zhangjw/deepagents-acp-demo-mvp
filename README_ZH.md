@@ -8,6 +8,7 @@
 - **工具调用**：每个工具卡片以可折叠 `json` 标签页展示参数/返回值；权限请求（`session/request_permission`）可允许、拒绝或始终允许。
 - **消息操作**：复制（纯文本/Markdown）、重试（仅最后一条 AI 消息）、编辑（以 Markdown 源码编辑且不重跑）、通过 `...` 菜单删除。
 - **会话管理**：最近会话侧栏支持搜索/过滤、右键菜单重命名、确认后删除，时间显示为 `YYYY/MM/DD hh:mm:ss`。
+- **会话模式（Chat 聊天 / Agent 任务）**：新建会话时弹窗选择模式。「Chat 聊天」会话运行轻量聊天 Agent（`AGENT_NAME=Chat`）：不加载 MCP 工具、子 Agent、技能，使用专属豆包风格人设（`.deepagents/agents/chat.agent.md`，耐心、简洁、善用 emoji），消息栏隐藏子 Agent / 技能 / 工具 / 知识库入口且 Agent 固定为 Chat 不可切换；「Agent 任务」会话保留完整工作区（默认 Default Agent），为进入画面时的默认模式。模式随会话持久化（`/api/history` 的 `mode: 'chat' | 'task'`），切换会话时自动对账 Agent（Chat ⇄ default）并重建 WebSocket。
 - **附件**：上传或粘贴图片/文件，支持内联预览与点击下载；上下文用量（已用 / `CONTENT_SIZE`）以百分比显示，悬停查看详情。
 - **错误处理**：ACP 错误详情返回前端，作为 AI 消息内容展示并保留红色错误块；出错或连接断开后停止按钮总能恢复为发送。
 - **多语言**：界面支持简体中文 / 日文 / 英文（语言文件位于 `web/src/locales/`）。

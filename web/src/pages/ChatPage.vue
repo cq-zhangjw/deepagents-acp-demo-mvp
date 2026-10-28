@@ -148,6 +148,8 @@ interface Conversation {
   updatedAt: number
   messages: ChatMessage[]
   todoId?: string
+  /** 'chat' = lightweight Chat agent (no tools/agents/skills UI); 'task' = full agent workspace. */
+  mode?: 'chat' | 'task'
 }
 
 interface TodoItem {
@@ -180,6 +182,14 @@ const requestId = ref(1)
 const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: Error) => void }>()
 const conversations = ref<Conversation[]>([])
 const activeConversationId = ref('')
+
+/** The currently selected conversation (may be undefined while loading). */
+const activeConversation = computed(() =>
+  conversations.value.find((c) => c.id === activeConversationId.value)
+)
+
+/** True when the active conversation runs in lightweight Chat mode. */
+const isChatMode = computed(() => activeConversation.value?.mode === 'chat')
 const conversationSearch = ref('')
 // 侧栏分组折叠状态（普通会话 / 定时任务）
 const normalCollapsed = ref(false)
@@ -264,6 +274,12 @@ const actionLabels = computed(() => ({
   knowledgeRecords: locale.value === 'zh' ? '记录' : locale.value === 'ja' ? 'レコード' : 'Records',
   knowledgeVector: locale.value === 'zh' ? '向量' : locale.value === 'ja' ? 'ベクトル' : 'Vector',
   knowledgeNormal: locale.value === 'zh' ? '普通' : locale.value === 'ja' ? '通常' : 'Normal',
+  chatMode: locale.value === 'zh' ? 'Chat 聊天' : locale.value === 'ja' ? 'チャット' : 'Chat',
+  taskMode: locale.value === 'zh' ? 'Agent 任务' : locale.value === 'ja' ? 'エージェントタスク' : 'Agent task',
+  newConversationModeTitle: locale.value === 'zh' ? '新建会话' : locale.value === 'ja' ? '新しい会話' : 'New conversation',
+  newConversationModeDesc: locale.value === 'zh' ? '选择会话模式' : locale.value === 'ja' ? 'セッションモードを選択' : 'Choose a session mode',
+  chatModeDesc: locale.value === 'zh' ? '轻量聊天，不加载工具与技能' : locale.value === 'ja' ? 'ツールやスキルなしの軽量チャット' : 'Lightweight chat without tools or skills',
+  taskModeDesc: locale.value === 'zh' ? '完整 Agent 工作区，可调用工具与技能' : locale.value === 'ja' ? 'ツールとスキルを使える本格エージェント' : 'Full agent workspace with tools and skills',
   builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
@@ -479,9 +495,32 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function createConversation() {
-  resetAgentToDefault()
-  const existingEmpty = conversations.value.find((conversation) => conversation.messages.length === 0)
+/** New-conversation mode picker: Chat (lightweight) or Agent task (full workspace). */
+const newConversationVisible = ref(false)
+
+function openNewConversation() {
+  newConversationVisible.value = true
+}
+
+function createConversationWithMode(mode: 'chat' | 'task') {
+  newConversationVisible.value = false
+  createConversation(mode)
+}
+
+function createConversation(mode: 'chat' | 'task' = 'task') {
+  if (mode === 'chat') {
+    // Chat mode: agent is fixed to "Chat" (lightweight, no tools/skills).
+    if (currentAgentName.value !== 'Chat') {
+      currentAgentName.value = 'Chat'
+      localStorage.setItem(AGENT_STORAGE_KEY, 'Chat')
+      resetSocketForAgentChange()
+    }
+  } else {
+    resetAgentToDefault()
+  }
+  const existingEmpty = conversations.value.find(
+    (conversation) => conversation.messages.length === 0 && (conversation.mode ?? 'task') === mode
+  )
   if (existingEmpty) {
     selectConversation(existingEmpty.id)
     conversationSearch.value = ''
@@ -493,7 +532,8 @@ function createConversation() {
     id: `web-${Date.now()}`,
     title: t('newSessionTitle'),
     updatedAt: Date.now(),
-    messages: []
+    messages: [],
+    mode
   }
   conversations.value.unshift(conversation)
   activeConversationId.value = conversation.id
@@ -524,6 +564,22 @@ function sortedRuns(task: { runHistory?: any[] }): any[] {
 
 function selectConversation(id: string) {
   activeConversationId.value = id
+  // Session mode drives the ACP agent: chat conversations pin the Chat agent
+  // (lightweight, fixed, not switchable); task conversations keep the current
+  // agent choice, but leaving a Chat session back into a task session restores
+  // the default agent so the full workspace is available again.
+  const modeConv = conversations.value.find((c) => c.id === id)
+  if (modeConv?.mode === 'chat') {
+    if (currentAgentName.value !== 'Chat') {
+      currentAgentName.value = 'Chat'
+      localStorage.setItem(AGENT_STORAGE_KEY, 'Chat')
+      resetSocketForAgentChange()
+    }
+  } else if (currentAgentName.value === 'Chat') {
+    currentAgentName.value = 'default'
+    localStorage.setItem(AGENT_STORAGE_KEY, 'default')
+    resetSocketForAgentChange()
+  }
   contextOverride.value = null // usage is per-session; refreshed after history load
   messageWindowSize.value = MESSAGE_WINDOW
   attachments.value = []
@@ -1438,11 +1494,10 @@ function displayAgentName(name: string) {
   return name ? name.charAt(0).toUpperCase() + name.slice(1) : name
 }
 
-/** New conversations always start on the default agent. */
-function resetAgentToDefault() {
-  currentAgentName.value = 'default'
-  localStorage.setItem(AGENT_STORAGE_KEY, 'default')
-  // Drop the current ACP subprocess connection so the next send reconnects as default.
+/** Drop the current ACP subprocess connection so the next send reconnects
+ *  with the new agent name in the WS URL (each agent maps to a separate
+ *  subprocess). */
+function resetSocketForAgentChange() {
   if (ws.value) {
     ws.value.close()
     ws.value = null
@@ -1451,6 +1506,13 @@ function resetAgentToDefault() {
   connected.value = false
   initialized.value = false
   initializedSessions.clear()
+}
+
+/** New conversations always start on the default agent. */
+function resetAgentToDefault() {
+  currentAgentName.value = 'default'
+  localStorage.setItem(AGENT_STORAGE_KEY, 'default')
+  resetSocketForAgentChange()
   void fetchManageData()
 }
 
@@ -1519,19 +1581,11 @@ async function deleteAgent(agent: any) {
   }
 }
 function selectAgent(key: string) {
+  if (isChatMode.value) return // Chat mode: agent is fixed and not switchable
   currentAgentName.value = key
   localStorage.setItem(AGENT_STORAGE_KEY, key)
   fetchManageData() // tools panel state follows the current agent
-  // Each agent maps to a separate ACP subprocess: drop the current connection
-  // so the next send reconnects with the new agent name in the WS URL.
-  if (ws.value) {
-    ws.value.close()
-    ws.value = null
-  }
-  socketPromise.value = null
-  connected.value = false
-  initialized.value = false
-  initializedSessions.clear()
+  resetSocketForAgentChange() // each agent maps to a separate ACP subprocess
 }
 
 async function fetchManageData() {
@@ -3090,7 +3144,7 @@ onMounted(async () => {
   try {
     await loadHistory()
     // 进入画面时自动新建会话（createConversation 会复用已有空会话，不会重复创建）
-    createConversation()
+    createConversation('task')
     const defaultEmpties = conversations.value.filter((conversation) => conversation.messages.length === 0 && displayTitle(conversation.title) === t('newSessionTitle'))
     if (defaultEmpties.length > 1) {
       const keepId = defaultEmpties[0].id
@@ -3141,7 +3195,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-nav">
-        <button type="button" class="sidebar-nav-item sidebar-nav-item--primary" :aria-label="t('newConversation')" @click="createConversation">
+        <button type="button" class="sidebar-nav-item sidebar-nav-item--primary" :aria-label="t('newConversation')" @click="openNewConversation">
           <NIcon :component="AddOutline" /><span>{{ t('newConversation') }}</span>
         </button>
         <button type="button" class="sidebar-nav-item" :class="{ 'sidebar-nav-item--active': rightPanelVisible && rightPanelTab === 'timers' }" :aria-label="t('timers.panelTitle')" @click="openRightPanel('timers')">
@@ -3175,7 +3229,10 @@ onBeforeUnmount(() => {
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
               <span class="conversation-icon"><NIcon :component="ChatbubbleOutline" /></span>
-              <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
+              <span class="conversation-line">
+                <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
+                <span v-if="conversation.mode === 'chat'" class="conversation-mode-tag">{{ actionLabels.chatMode }}</span>
+              </span>
               <span class="conversation-time">{{ formatTime(conversation.updatedAt) }}</span>
               <span
                 class="conversation-delete"
@@ -3483,23 +3540,30 @@ onBeforeUnmount(() => {
                   </template>
                   {{ t('upload') }}
                 </NTooltip>
-                <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
-                  <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
-                    <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
+                <template v-if="!isChatMode">
+                  <NDropdown :options="agentDropdownOptions" trigger="click" @select="selectAgent">
+                    <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.selectAgent">
+                      <template #icon><NIcon :component="SparklesOutline" /></template>{{ displayAgentName(currentAgentName) || actionLabels.agent }}
+                    </NButton>
+                  </NDropdown>
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
+                    <template #icon><NIcon :component="GitNetworkOutline" /></template>{{ actionLabels.subagents }}
                   </NButton>
-                </NDropdown>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.subagents" :title="actionLabels.subagents" @click="openRightPanel('subagents')">
-                  <template #icon><NIcon :component="GitNetworkOutline" /></template>{{ actionLabels.subagents }}
-                </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
-                  <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
-                </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
-                  <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
-                </NButton>
-                <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.knowledge" @click="openRightPanel('knowledge')">
-                  <template #icon><NIcon :component="BookOutline" /></template>{{ actionLabels.knowledge }}
-                </NButton>
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.skills" :title="actionLabels.skills" @click="openRightPanel('skills')">
+                    <template #icon><NIcon :component="CodeSlashOutline" /></template>{{ actionLabels.skills }}
+                  </NButton>
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.tools" @click="openRightPanel('tools')">
+                    <template #icon><NIcon :component="ConstructOutline" /></template>{{ actionLabels.tools }}
+                  </NButton>
+                  <NButton quaternary size="small" class="toolbar-pill" :aria-label="actionLabels.knowledge" @click="openRightPanel('knowledge')">
+                    <template #icon><NIcon :component="BookOutline" /></template>{{ actionLabels.knowledge }}
+                  </NButton>
+                </template>
+                <template v-else>
+                  <NButton quaternary size="small" class="toolbar-pill agent-pill" :aria-label="actionLabels.chatMode" disabled>
+                    <template #icon><NIcon :component="SparklesOutline" /></template>{{ actionLabels.chatMode }}
+                  </NButton>
+                </template>
               </div>
               <div class="composer-toolbar-right">
                 <NPopover v-if="contextUsage" placement="bottom" :show-arrow="false" :delay="200" :trigger="'hover'">
@@ -3549,7 +3613,7 @@ onBeforeUnmount(() => {
     <NDrawer v-model:show="sidebarVisible" placement="left" :width="280">
       <NDrawerContent :title="t('recentConversations')">
         <div class="drawer-list">
-          <NButton type="primary" block @click="createConversation"><template #icon><NIcon :component="AddOutline" /></template>{{ t('newConversation') }}</NButton>
+          <NButton type="primary" block @click="openNewConversation"><template #icon><NIcon :component="AddOutline" /></template>{{ t('newConversation') }}</NButton>
           <NInput v-model:value="conversationSearch" size="small" clearable :placeholder="t('searchConversations')">
             <template #prefix><NIcon :component="SearchOutline" /></template>
           </NInput>
@@ -4082,10 +4146,40 @@ onBeforeUnmount(() => {
       :loading-text="actionLabels.knowledgeLoading"
       @close="knowledgeManageVisible = false"
     />
+
+    <!-- 新建会话：选择 Chat 聊天 / Agent 任务 模式 -->
+    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" :mask-closable="true" @after-leave="newConversationVisible = false">
+      <p class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</p>
+      <div class="new-conversation-options">
+        <button type="button" class="new-conversation-option" @click="createConversationWithMode('chat')">
+          <span class="new-conversation-option-icon"><NIcon :component="ChatbubbleOutline" /></span>
+          <span class="new-conversation-option-body">
+            <span class="new-conversation-option-title">{{ actionLabels.chatMode }}</span>
+            <span class="new-conversation-option-desc">{{ actionLabels.chatModeDesc }}</span>
+          </span>
+        </button>
+        <button type="button" class="new-conversation-option" @click="createConversationWithMode('task')">
+          <span class="new-conversation-option-icon"><NIcon :component="ConstructOutline" /></span>
+          <span class="new-conversation-option-body">
+            <span class="new-conversation-option-title">{{ actionLabels.taskMode }}</span>
+            <span class="new-conversation-option-desc">{{ actionLabels.taskModeDesc }}</span>
+          </span>
+        </button>
+      </div>
+    </NModal>
   </main>
 </template>
 
 <style scoped>
+.new-conversation-modal { max-width: 460px; }
+.new-conversation-hint { margin: 0 0 14px; font-size: 13px; color: var(--subtle); }
+.new-conversation-options { display: flex; flex-direction: column; gap: 10px; }
+.new-conversation-option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s, background .15s; }
+.new-conversation-option:hover { border-color: #2563eb; background: #f5f9ff; box-shadow: 0 2px 10px rgba(37,99,235,.12); }
+.new-conversation-option-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px; background: rgba(37,99,235,.08); color: #2563eb; font-size: 20px; }
+.new-conversation-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.new-conversation-option-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.new-conversation-option-desc { font-size: 12px; color: var(--subtle); }
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100vh; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
 .sidebar { width:264px; flex:0 0 264px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
@@ -4094,7 +4188,7 @@ onBeforeUnmount(() => {
  .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
 .conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
-.conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
+.conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-line { display:flex; align-items:center; gap:6px; min-width:0; } .conversation-line .conversation-title { flex:0 1 auto; min-width:0; } .conversation-mode-tag { flex:0 0 auto; padding:0 6px; font-size:10px; line-height:1.7; color:#2563eb; background:rgba(37,99,235,.08); border-radius:5px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
 .workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .locale-trigger .locale-short { margin-left:2px; font-size:13px; font-weight:600; color:var(--subtle); }
 .timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .timeline::-webkit-scrollbar { width:6px; } .timeline::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .timeline::-webkit-scrollbar-track { background:transparent; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; }

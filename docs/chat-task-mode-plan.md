@@ -1,135 +1,78 @@
-# 聊天/任务会话模式分离 —— 实施方案
+# 会话模式分离（Chat 聊天 / Agent 任务）
 
-> 状态：**方案存档（暂不实施，后期执行）**
-> 适用版本：当前 main（`acp_agent.py::build_agent` + `api/history.py` MooFile 会话表 + `ChatPage.vue`）
-> 目标：区分「简单聊天」与「任务执行」——聊天会话不关联 agent/skills/MCP 工具/文件工具，省 token、减少工具干扰，同时保持现有任务能力完全不变。
+> 状态：**已实现**（2026-10-29）
+> 本文档替代 v3.2 前的旧版模式分离方案：不再做分组、不再做多种模式，只保留「Chat 聊天」与「Agent 任务」两种会话模式。
 
----
+## 背景与目标
 
-## 1. 行为定义
+- 普通聊天场景下，用户不需要子 Agent、技能、工具、知识库等入口，也不需要任务导向的 AGENTS.md 提示词。
+- 目标：新建会话时由用户选择「Chat 聊天」或「Agent 任务」；Chat 会话为轻量纯聊天（无任何工具/技能/文件能力），Agent 任务会话保持现有完整工作区行为（默认 Default Agent）。
 
-| | 聊天模式（chat） | 任务模式（task） |
-| --- | --- | --- |
-| MCP 工具 | 不加载 | 按所选 agent 加载 |
-| Skills | 不加载 | 按所选 agent 加载（default 为全部） |
-| 子 agent（subagents） | 无 | 按 agents.json 加载 |
-| 系统提示 | 轻量聊天提示（见 §3.2） | 现有完整提示（agent + 工作目录 + 文件工具说明） |
-| 对话 / 上下文压缩 / 附件读取 | 正常 | 正常 |
-| 绑定 agent | 固定轻量 default，不出现在 agent 选择中 | 可自由选择 agent |
-| 定时任务 | **不允许**（无 agent 可执行） | 允许 |
+## 需求口径（用户确认）
 
-**模式不可切换（用户确认）**：同一会话的模式一经创建即锁定。用户需要另一种模式时，**直接新建对应模式的会话**（新会话、空上下文）。不提供会话内切换/重建 agent 的入口，也不需要 ws 重连逻辑。
+1. `acp_agent.py build_agent` 新增 `agent_name == "Chat"` 分支：Chat 不装配 MCP 工具、子 Agent、技能。
+2. 新建「ChatAgent」提示词：模仿豆包语气——总是很耐心、不罗嗦恰到好处、喜欢用 emoji 表达情感。
+3. 新建会话时可选「Chat 聊天 / Agent 任务」两种模式；Chat 聊天模式不显示子 Agent、技能、工具、知识库入口。
+4. Chat 模式 Agent 固定为 Chat，不可切换。
+5. Agent 任务模式默认 Default Agent（当前行为，兼容）。
 
----
+## 架构实现
 
-## 2. 数据模型
+### 链路（不改协议，只改参数）
 
-会话记录（`api/history.py` 的 MooFile `db_history` 表，宽松 dict 结构）增加字段：
-
-```jsonc
-{
-  "id": "...",
-  "title": "...",
-  "updatedAt": 1234567890,
-  "mode": "chat" | "task",   // 新增；缺省视为 task（兼容已有会话）
-  "...": "..."
-}
+```
+前端 WebSocket /acp-ws?agent=<name>
+  → app.py acp_bridge 读取 query，注入 AGENT_NAME 环境变量
+  → acp_agent.py build_agent(agent_name) 按名字组装
+      ├─ "Chat"  → tools=[] / subagents=None / skills=[] / StateBackend / chat.agent.md 人设
+      └─ 其他    → 完整 DeepAgent（默认 default 与现状一致）
 ```
 
-- `put_history` / `list_history` 天然透传该字段，无建表迁移；
-- 已有会话无 `mode` 字段 → 后端按 `task` 处理（行为完全不变）。
+会话对象新增 `mode?: 'chat' | 'task'` 字段，随 `/api/history` 全量落库（MooFile 透传，后端无需改）。
 
----
+### 后端（acp_agent.py）
 
-## 3. 后端改动（`acp_agent.py`）
+- **build_agent**：
+  - 修复非 Chat 分支缺失 `return agent` 的 bug（原先整个 if/elif 走完隐式返回 None，AgentServerACP 会在会话非首轮时拿不到 agent）。
+  - Chat 分支：`chat_backend = StateBackend()`（虚拟内存后端，无文件/命令能力），`return agent`。
+- **get_system_prompt("Chat")**：Chat 特判——**不继承任务导向的 `./AGENTS.md`**（避免 todo / 文件工具指令泄漏进纯聊天回复），只加载 `.deepagents/agents/chat.agent.md`；缺失时返回英文兜底人设。
+- 新增 `.deepagents/agents/chat.agent.md`：豆包人设（耐心、不罗嗦恰到好处、emoji 表达情绪、像朋友、不编造、不调用工具、跟随用户语言）。
 
-### 3.1 mode 来源（现成通道）
+### 前端（web/src/pages/ChatPage.vue）
 
-`acp_agent.py:390` 已有：
+- `Conversation` 接口新增 `mode?: 'chat' | 'task'`（旧数据缺省视为 task）。
+- `isChatMode` computed：当前会话 `mode === 'chat'`。
+- **新建会话弹窗**：侧栏「新建会话」/移动端按钮 → `openNewConversation()` 弹出 NModal，两个选项（Chat 聊天 / Agent 任务）→ `createConversationWithMode(mode)`。
+- **createConversation(mode)**：
+  - `chat`：`currentAgentName = 'Chat'`（持久化）+ `resetSocketForAgentChange()`；复用同模式空会话。
+  - `task`：`resetAgentToDefault()`（默认 Default，兼容现状）。
+  - 进入画面自动新建走 `createConversation('task')`。
+- **selectConversation** 按会话 mode 对账 agent：
+  - Chat 会话 → `currentAgentName = 'Chat'`（若不同则重建 WS）。
+  - task 会话 → 若当前是 'Chat' 则回 'default'（重建 WS）；task 会话之间保留各自的 agent 选择（现状兼容）。
+- **工具条收敛**（`v-if="!isChatMode"` 包住 Agent 下拉 / 子 Agent / 技能 / 工具 / 知识库；Chat 模式只显示固定 Chat pill）。附件上传按钮两种模式均保留。
+- **Agent 固定 Chat**：Chat 模式 `selectAgent` 直接 return；下拉不渲染，改为 disabled 的 Chat pill。
+- 会话列表：Chat 会话标题旁显示「Chat 聊天」小标签。
 
-```python
-context = AgentSessionContext(cwd=self._cwd, mode=mode, model=model)
-```
+## 行为矩阵
 
-`mode` 由前端建 ws 时传入（ACP 协议 session mode）——无需新增协议。前端 `?agent=X&mode=chat` 或 new_session 消息携带。
-
-### 3.2 `build_agent()` 按 mode 裁剪（214-306 行）
-
-```python
-def build_agent(context, checkpointer=None, agent_name=None):
-    ...
-    mode = getattr(context, "mode", None) or "task"   # 缺省 task
-    chat = mode == "chat"
-    agent = create_deep_agent(
-        model=MODEL,
-        tools=None if chat else get_agent_mcp_tools(agent_name),   # chat: 无 MCP
-        subagents=None if chat else (subagents or None),           # chat: 无子 agent
-        skills=None if chat else get_agent_skills(agent_name),     # chat: 无 skills
-        system_prompt=(
-            CHAT_SYSTEM_PROMPT if chat else
-            f"{get_system_prompt(agent_name)}\n\n# 当前工作目录\n..."
-        ),
-        ...
-    )
-```
-
-**CHAT_SYSTEM_PROMPT**（新增常量，中文，与现有提示风格一致）：
-
-```text
-你是一个轻量聊天助手。
-- 只回答问题与日常对话，不执行任何本地文件操作或 shell 命令。
-- 不调用文件、代码或系统工具。
-- 如果用户需要操作本地文件、运行代码或执行任务，请明确提示：
-  「当前是聊天模式，请新建一个任务会话后再执行。」
-```
-
-### 3.3 边界
-
-- 定时任务引擎（`timers_engine.py`）创建任务时强制 `mode="task"`（chat 会话不进入定时任务入口，前端层面拦截 + 后端兜底校验）；
-- `api/context.py` 的 `_compact/_usage` 构建 agent 时沿用传入 mode（chat 会话压缩照常工作）。
-
----
-
-## 4. 前端改动（`ChatPage.vue`）
-
-1. **新建会话入口**：提供「新建聊天会话」「新建任务会话」两个入口（或一个入口内选择模式），新建时 `mode` 随会话创建写入；
-2. **模式标识**：会话卡片显示「聊天 / 任务」小徽标；消息栏顶部显示当前模式；
-3. **agent 选择**：chat 会话不显示 agent 选择器（固定 default 轻量）；task 会话保持现有 agent 选择；
-4. **附件提示**：chat 会话上传附件/图片时提示「当前为聊天模式，附件相关任务请新建任务会话」（可一键新建对应任务会话并带上附件）；
-5. **定时任务**：chat 会话隐藏「创建定时任务」入口。
-
-**不做**：会话内模式切换按钮、会话内 ws 重建逻辑（模式锁定，见 §1）。
-
----
-
-## 5. 改动清单
-
-| 文件 | 改动 |
+| 场景 | 行为 |
 | --- | --- |
-| `acp_agent.py` | `build_agent` 按 context.mode 裁剪 tools/skills/subagents/system_prompt；新增 `CHAT_SYSTEM_PROMPT` 常量；缺省 task |
-| `api/history.py` | 无需改动（dict 透传），仅文档说明 `mode` 字段 |
-| `api/timers*.py` | 创建定时任务时校验会话为 task 模式（后端兜底） |
-| `web/src/pages/ChatPage.vue` | 新建双入口、模式徽标、chat 隐藏 agent/定时任务入口、附件提示 |
-| `web/src/locales/{zh,ja,en}.ts` | 新增聊天/任务相关文案（三语） |
+| 新建会话 | 弹窗选择 Chat 聊天 / Agent 任务 |
+| Chat 会话 | agent=Chat；无工具/技能/子 Agent/知识库入口；Agent 固定 Chat 不可切换 |
+| Agent 任务会话 | 默认 Default Agent；完整工作区（子 Agent/技能/工具/知识库/Agent 下拉） |
+| Chat → task 切换 | agent 从 Chat 复位为 default，WS 重建 |
+| task → Chat 切换 | agent 置为 Chat，WS 重建 |
+| 历史旧会话（无 mode） | 按 task 处理，行为不变 |
 
----
+## 验证记录（2026-10-29）
 
-## 6. 验证方案（实施时执行）
+- 后端 WS 直连验证：`?agent=Chat` 回复符合豆包人设（自称豆包、emoji 😊、无任何工具调用）；`?agent=default` 正常流式回复（build_agent 修复生效）。
+- 浏览器验收：新建会话弹窗正常；Chat 会话工具条收敛（仅附件+输入+发送+Chat pill）；task 会话工具条完整（Default/子Agent/技能/工具/知识库）；会话列表 Chat 标识正确；切换会话模式联动正确。
+- 前端 `npm run build` 通过。
 
-1. **后端**：`build_agent(context(mode="chat"))` → 断言 tools=None、skills=None、subagents=None、system_prompt 含聊天提示且不含"工作目录/内置文件工具"；`mode="task"`/缺省 → 与现状一致（对比改动前输出）；
-2. **定时任务拦截**：chat 会话创建定时任务 → 后端拒绝；
-3. **端到端**：新建聊天会话 → 发消息正常回复（无工具调用）；新建任务会话 → 现有任务能力不受影响；两会话各自模式锁定（列表 mode 字段正确）；
-4. **回归**：已有会话（无 mode 字段）打开 → 行为与改动前完全一致。
+## 注意事项
 
----
-
-## 7. 风险与回滚
-
-| 风险 | 缓解 |
-| --- | --- |
-| chat 会话误以为能操作文件 | 聊天系统提示明确禁止 + 引导新建任务会话；无任何工具可调用 |
-| 已有会话行为变化 | mode 缺省 task，已有会话零改动 |
-| 定时任务与 chat 冲突 | 前端隐藏入口 + 后端兜底校验 |
-| 模式锁定过死（用户想升级） | 按用户确认执行；后期如需可在会话列表加「基于此会话新建任务会话」入口（复制上下文） |
-
-回滚：`acp_agent.py` 单文件 revert 即恢复；前端改动独立提交可独立 revert。
+- `.deepagents/agents/chat.agent.md` 文件名小写 `chat`，后端 `_load_agent_md("Chat")` 在 Windows NTFS（大小写不敏感）可命中；**跨平台（Linux）部署需统一大小写**（建议改文件名为 `Chat.agent.md` 或让 `_load_agent_md` 大小写不敏感）。
+- `utils/model_util.py` 中 `print(f"Using model endpoint: ...")` 会打印到 agent 子进程 stdout，前端 `handleAcpMessage` 对非 JSON 行需容忍（当前已容错，历史任务验证过）。
+- 定时任务引擎的 agent 选项来自 `agents.json`（不含 Chat），定时任务不会使用 Chat agent。
