@@ -280,6 +280,17 @@ const actionLabels = computed(() => ({
   newConversationModeDesc: locale.value === 'zh' ? '选择会话模式' : locale.value === 'ja' ? 'セッションモードを選択' : 'Choose a session mode',
   chatModeDesc: locale.value === 'zh' ? '轻量聊天，不加载工具与技能' : locale.value === 'ja' ? 'ツールやスキルなしの軽量チャット' : 'Lightweight chat without tools or skills',
   taskModeDesc: locale.value === 'zh' ? '完整 Agent 工作区，可调用工具与技能' : locale.value === 'ja' ? 'ツールとスキルを使える本格エージェント' : 'Full agent workspace with tools and skills',
+  chatModeFeats: (locale.value === 'zh'
+    ? ['豆包风格人设，耐心且简洁', '无工具 / 技能 / 子 Agent', '适合日常闲聊与问答']
+    : locale.value === 'ja'
+      ? ['豆包風ペルソナ、忍耐強く簡潔', 'ツール / スキル / サブエージェントなし', '日常の雑談や Q&A に最適']
+      : ['Doubao-style persona, patient and concise', 'No tools / skills / subagents', 'Best for casual chat & Q&A']),
+  taskModeFeats: (locale.value === 'zh'
+    ? ['默认 Default Agent，可自由切换', '可调用工具 / 技能 / 知识库', '适合复杂任务与文件操作']
+    : locale.value === 'ja'
+      ? ['デフォルトは Default Agent、切り替え自由', 'ツール / スキル / ナレッジベース利用可', '複雑なタスクやファイル操作に最適']
+      : ['Default agent by default, switchable', 'Tools / skills / knowledge base available', 'Best for complex tasks & files']),
+  createMode: locale.value === 'zh' ? '创建' : locale.value === 'ja' ? '作成' : 'Create',
   builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
@@ -497,14 +508,16 @@ function createId(prefix: string) {
 
 /** New-conversation mode picker: Chat (lightweight) or Agent task (full workspace). */
 const newConversationVisible = ref(false)
+const selectedMode = ref<'chat' | 'task'>('task')
 
 function openNewConversation() {
+  selectedMode.value = 'task' // default to Agent task (current behavior)
   newConversationVisible.value = true
 }
 
-function createConversationWithMode(mode: 'chat' | 'task') {
+function createConversationWithMode() {
   newConversationVisible.value = false
-  createConversation(mode)
+  createConversation(selectedMode.value)
 }
 
 function createConversation(mode: 'chat' | 'task' = 'task') {
@@ -4148,38 +4161,66 @@ onBeforeUnmount(() => {
     />
 
     <!-- 新建会话：选择 Chat 聊天 / Agent 任务 模式 -->
-    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" :mask-closable="true" @after-leave="newConversationVisible = false">
-      <p class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</p>
+    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" :mask-closable="true" @update:show="(v: boolean) => { if (!v) newConversationVisible = false }" @after-leave="newConversationVisible = false">
+      <div class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</div>
       <div class="new-conversation-options">
-        <button type="button" class="new-conversation-option" @click="createConversationWithMode('chat')">
-          <span class="new-conversation-option-icon"><NIcon :component="ChatbubbleOutline" /></span>
-          <span class="new-conversation-option-body">
+        <div
+          class="new-conversation-option"
+          :class="{ selected: selectedMode === 'chat' }"
+          role="button"
+          tabindex="0"
+          @click="selectedMode = 'chat'"
+          @keydown.enter.prevent="selectedMode = 'chat'"
+        >
+          <div class="new-conversation-option-head">
+            <span class="new-conversation-option-icon"><NIcon :component="ChatbubbleOutline" /></span>
             <span class="new-conversation-option-title">{{ actionLabels.chatMode }}</span>
-            <span class="new-conversation-option-desc">{{ actionLabels.chatModeDesc }}</span>
-          </span>
-        </button>
-        <button type="button" class="new-conversation-option" @click="createConversationWithMode('task')">
-          <span class="new-conversation-option-icon"><NIcon :component="ConstructOutline" /></span>
-          <span class="new-conversation-option-body">
+          </div>
+          <div class="new-conversation-option-desc">{{ actionLabels.chatModeDesc }}</div>
+          <div v-for="f in actionLabels.chatModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
+        </div>
+        <div
+          class="new-conversation-option"
+          :class="{ selected: selectedMode === 'task' }"
+          role="button"
+          tabindex="0"
+          @click="selectedMode = 'task'"
+          @keydown.enter.prevent="selectedMode = 'task'"
+        >
+          <div class="new-conversation-option-head">
+            <span class="new-conversation-option-icon"><NIcon :component="ConstructOutline" /></span>
             <span class="new-conversation-option-title">{{ actionLabels.taskMode }}</span>
-            <span class="new-conversation-option-desc">{{ actionLabels.taskModeDesc }}</span>
-          </span>
-        </button>
+          </div>
+          <div class="new-conversation-option-desc">{{ actionLabels.taskModeDesc }}</div>
+          <div v-for="f in actionLabels.taskModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
+        </div>
       </div>
+      <template #footer>
+        <div class="new-conversation-footer">
+          <NButton @click="newConversationVisible = false">{{ actionLabels.cancel }}</NButton>
+          <NButton type="primary" @click="createConversationWithMode">{{ actionLabels.createMode }}</NButton>
+        </div>
+      </template>
     </NModal>
   </main>
 </template>
 
 <style scoped>
-.new-conversation-modal { max-width: 460px; }
+.new-conversation-modal { width: 640px; max-width: 92vw; }
 .new-conversation-hint { margin: 0 0 14px; font-size: 13px; color: var(--subtle); }
-.new-conversation-options { display: flex; flex-direction: column; gap: 10px; }
-.new-conversation-option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; transition: border-color .15s, box-shadow .15s, background .15s; }
-.new-conversation-option:hover { border-color: #2563eb; background: #f5f9ff; box-shadow: 0 2px 10px rgba(37,99,235,.12); }
-.new-conversation-option-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: 0 0 40px; border-radius: 10px; background: rgba(37,99,235,.08); color: #2563eb; font-size: 20px; }
-.new-conversation-option-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.new-conversation-option-title { font-size: 15px; font-weight: 600; color: var(--text); }
-.new-conversation-option-desc { font-size: 12px; color: var(--subtle); }
+.new-conversation-options { display: flex; gap: 16px; }
+.new-conversation-option { flex: 1; min-width: 0; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; cursor: pointer; transition: all 200ms; background: #fff; }
+.new-conversation-option:hover { box-shadow: 0 4px 6px -1px rgba(17,24,39,0.07); }
+.new-conversation-option.selected { border-width: 2px; background: #f9fafb; }
+.new-conversation-option.selected:first-child { border-color: #2563eb; background: #eff6ff; }
+.new-conversation-option.selected:last-child { border-color: #7c3aed; background: #f5f3ff; }
+.new-conversation-option-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.new-conversation-option-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px; color: #2563eb; background: rgba(37,99,235,0.08); font-size: 17px; }
+.new-conversation-option:last-child .new-conversation-option-icon { color: #7c3aed; background: rgba(124,58,237,0.08); }
+.new-conversation-option-title { font-weight: 600; font-size: 16px; color: var(--text); }
+.new-conversation-option-desc { font-size: 13px; color: #6b7280; margin-bottom: 10px; line-height: 1.5; }
+.new-conversation-option-feat { font-size: 13px; color: #374151; margin-top: 6px; }
+.new-conversation-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100vh; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
 .sidebar { width:264px; flex:0 0 264px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
