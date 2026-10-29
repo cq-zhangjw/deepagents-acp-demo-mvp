@@ -14,6 +14,8 @@ export default {
   exportConversation: 'Export conversation',
   exportSuccess: 'Conversation exported',
   exportFailed: 'Export failed',
+  modelSwitchSuccess: 'Model switched',
+  modelSwitchFailed: 'Failed to switch model',
   help: 'Help',
   helpPlaceholder: 'Help content to be added.',
   startTask: 'Start a task',

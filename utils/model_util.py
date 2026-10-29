@@ -1,31 +1,77 @@
 
+import json
 import os
+from pathlib import Path
 
 from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv
-load_dotenv()
 
-ENDPOINT = os.getenv("ENDPOINT") if os.getenv("ENDPOINT") else "http://127.0.0.1:8088"
-API_KEY = os.getenv("API_KEY") if os.getenv("API_KEY") else None
-TEMPERATURE = float(os.getenv("TEMPERATURE")) if os.getenv("TEMPERATURE") else 0.5
-TOP_P = float(os.getenv("TOP_P")) if os.getenv("TOP_P") else None
-MAX_TOKENS = int(os.getenv("MAX_TOKENS")) if os.getenv("MAX_TOKENS") else 65535
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODEL_CONFIG_PATH = BASE_DIR / "model_config.json"
+MODE_CONFIG_PATH = BASE_DIR / "mode_config.json"
 
-MAX_RETRY = int(os.getenv("MAX_RETRY")) if os.getenv("MAX_RETRY") else 3
-MODEL_PROVIDER = os.getenv("MODEL_PROVIDER") if os.getenv("MODEL_PROVIDER") else "openai"
-MODEL_NAME = os.getenv("MODEL_NAME") if os.getenv("MODEL_NAME") else "qwen3.8-9b"
-TIMEOUT = float(os.getenv("TIMEOUT")) if os.getenv("TIMEOUT") else None
+DEFAULT_MODEL = "qwen3.8-9b"
 
-MODEL_KWARGS = dict(
-    model=MODEL_NAME,
-    model_provider=MODEL_PROVIDER,
-    base_url=ENDPOINT,
-    api_key=API_KEY,
-    timeout=TIMEOUT,
-    max_retries=MAX_RETRY,
-    temperature=TEMPERATURE,
-    max_tokens=MAX_TOKENS,
-)
-if TOP_P is not None:
-    MODEL_KWARGS["top_p"] = TOP_P
-MODEL = init_chat_model(**MODEL_KWARGS)
+
+def _load_json(path: Path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def load_mode_config() -> dict:
+    """运行模式配置（mode_config.json）：content_size / 当前模型 / timeout / max_retry。"""
+    cfg = _load_json(MODE_CONFIG_PATH, {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def current_model_name() -> str:
+    cfg = load_mode_config()
+    return cfg.get("model") or DEFAULT_MODEL
+
+
+def list_models() -> list[dict]:
+    """模型配置列表（model_config.json），供前端模型选择器使用。"""
+    configs = _load_json(MODEL_CONFIG_PATH, [])
+    return configs if isinstance(configs, list) else []
+
+
+def _load_model_config(model_name: str) -> dict:
+    configs = list_models()
+    for cfg in configs:
+        if cfg.get("model_name") == model_name:
+            return cfg
+    available = ", ".join(c.get("model_name", "?") for c in configs)
+    raise ValueError(
+        f"MODEL_NAME '{model_name}' not found in {MODEL_CONFIG_PATH.name}. Available: {available}"
+    )
+
+
+def create_model(model_name: str | None = None):
+    """Build a chat model; reloads mode_config.json / model_config.json on every call."""
+    load_dotenv(override=True)
+
+    model_name = model_name or current_model_name()
+    mode_cfg = load_mode_config()
+    timeout = float(mode_cfg["timeout"]) if mode_cfg.get("timeout") else None
+    max_retry = int(mode_cfg["max_retry"]) if mode_cfg.get("max_retry") else 3
+
+    cfg = _load_model_config(model_name)
+    top_p = cfg.get("top_p")
+
+    kwargs = dict(
+        model=model_name,
+        model_provider=cfg.get("model_provider") or "openai",
+        base_url=cfg.get("endpoint") or "http://127.0.0.1:8088",
+        api_key=cfg.get("api_key") or os.getenv("API_KEY") or None,
+        timeout=timeout,
+        max_retries=max_retry,
+        temperature=float(cfg["temperature"]) if cfg.get("temperature") is not None else 0.5,
+        max_tokens=int(cfg["max_tokens"]) if cfg.get("max_tokens") is not None else 65535,
+    )
+    if top_p is not None:
+        kwargs["top_p"] = float(top_p)
+
+    return init_chat_model(**kwargs)

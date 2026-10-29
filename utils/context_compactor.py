@@ -23,10 +23,10 @@ import os
 
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 
-from utils.model_util import MODEL
+from utils.model_util import create_model, load_mode_config
 
 # Context window size (tokens), same as the frontend display value.
-CONTENT_SIZE = int(os.getenv("CONTENT_SIZE") or 32768)
+CONTENT_SIZE = int(load_mode_config().get("content_size") or 32768)
 # Compaction triggers when estimated tokens >= CONTENT_SIZE * RATIO.
 COMPACT_RATIO = float(os.getenv("CONTEXT_COMPACT_RATIO") or 0.80)
 # Extra tokens not counted by the message estimator (system prompt, tool
@@ -193,12 +193,13 @@ async def build_summary(messages: list[BaseMessage], prior_summary: str | None =
     if not chunks:
         return "[summary unavailable]"
 
+    model = create_model()
     parts: list[str] = []
     for i, chunk in enumerate(chunks):
         is_first = i == 0
         prompt = _build_prompt(chunk, prior_summary=prior_summary if is_first else None, is_first=is_first)
         try:
-            resp = await MODEL.ainvoke([HumanMessage(content=prompt)])
+            resp = await model.ainvoke([HumanMessage(content=prompt)])
             part = _extract_text(resp)
         except Exception:  # noqa: BLE001 - summarization must never break the prompt
             part = ""

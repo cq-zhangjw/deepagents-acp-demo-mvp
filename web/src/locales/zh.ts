@@ -14,6 +14,8 @@ export default {
   exportConversation: '导出会话',
   exportSuccess: '会话已导出',
   exportFailed: '导出失败',
+  modelSwitchSuccess: '已切换模型',
+  modelSwitchFailed: '模型切换失败',
   help: '帮助',
   helpPlaceholder: '帮助内容待补充。',
   startTask: '开始一个任务',

@@ -14,6 +14,8 @@ export default {
   exportConversation: 'セッションをエクスポート',
   exportSuccess: 'エクスポートしました',
   exportFailed: 'エクスポートに失敗しました',
+  modelSwitchSuccess: 'モデルを切り替えました',
+  modelSwitchFailed: 'モデルの切り替えに失敗しました',
   help: 'ヘルプ',
   helpPlaceholder: 'ヘルプの内容は追記予定です。',
   startTask: 'タスクを始める',

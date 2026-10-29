@@ -53,7 +53,7 @@ from utils.session_context import (  # noqa: E402  (imported after env/DB setup,
     rollback_last_turn as sc_rollback_last_turn,
     save_context as sc_save_context,
 )
-from utils.model_util import MODEL
+from utils.model_util import create_model
 from utils.mcp_loader import close_mcp_clients, get_agent_mcp_tools, get_agent_subagents_config
 from utils.skill_loader import get_agent_skills
 from api.todos import create_todo as _todos_create
@@ -344,7 +344,7 @@ def build_agent(
             subagents.append(sa)
 
         agent = create_deep_agent(
-            model=MODEL,
+            model=create_model(),
             # MCP tools configured for the selected agent (agents.json -> mcp_tools);
             # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
             # Todo tools (create_todo/update_todo/get_todo) are appended as builtin
@@ -380,7 +380,7 @@ def build_agent(
         # conversational model with no local file or shell access.
         chat_backend = StateBackend()
         agent = create_deep_agent(
-            model=MODEL,
+            model=create_model(),
             tools=[],
             subagents=None,
             skills=[],

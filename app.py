@@ -252,13 +252,36 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 @app.get("/api/config")
 async def get_config():
-    """Serve frontend config (e.g. context window size, tokens)."""
-    content_size = os.getenv("CONTENT_SIZE", "").strip()
+    """Serve frontend config: context window size, active model name, model list.
+
+    Source of truth is mode_config.json / model_config.json (env vars removed).
+    """
+    from utils.model_util import current_model_name, list_models, load_mode_config
+    cfg = load_mode_config()
     try:
-        content_size = int(content_size) if content_size else 0
-    except ValueError:
+        content_size = int(cfg.get("content_size") or 0)
+    except (TypeError, ValueError):
         content_size = 0
-    return {"contentSize": content_size}
+    return {
+        "contentSize": content_size,
+        "model": current_model_name(),
+        "models": [m.get("model_name") for m in list_models() if m.get("model_name")],
+    }
+
+
+@app.post("/api/config")
+async def set_config(payload: dict):
+    """Update mode_config.json (e.g. switch the active model)."""
+    import json as _json
+
+    from utils.model_util import MODE_CONFIG_PATH, load_mode_config
+    cfg = load_mode_config()
+    model = (payload or {}).get("model")
+    if model:
+        cfg["model"] = str(model)
+    with open(MODE_CONFIG_PATH, "w", encoding="utf-8") as f:
+        _json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return {"ok": True, "model": cfg.get("model")}
 
 
 # Mount the SPA after API and WebSocket routes so it only handles client asset requests.

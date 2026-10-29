@@ -621,7 +621,7 @@ async def explain_cron_ai(norm: str) -> str:
     local = cron_description_local(norm)
     try:
         from langchain_core.messages import HumanMessage
-        from utils.model_util import MODEL
+        from utils.model_util import create_model
 
         prompt = (
             "把下面这个标准 5 段 cron 表达式翻译成一句简洁的中文自然语言描述"
@@ -630,7 +630,7 @@ async def explain_cron_ai(norm: str) -> str:
             "只输出描述本身，不要多余内容。"
         )
         result = await asyncio.wait_for(
-            MODEL.ainvoke([HumanMessage(content=prompt)]), timeout=8
+            create_model().ainvoke([HumanMessage(content=prompt)]), timeout=8
         )
         text = getattr(result, "content", "") or ""
         if isinstance(text, list):

@@ -62,7 +62,7 @@ async def main() -> int:
     msgs = build_session(30)
     before = cc.estimate_tokens(msgs)
     fm = FakeModel()
-    cc.MODEL = fm
+    cc.create_model = lambda: fm
     compacted, result = await cc.compact_messages_list(msgs)
 
     check("触发成功 ok=True", result.get("ok") is True)
