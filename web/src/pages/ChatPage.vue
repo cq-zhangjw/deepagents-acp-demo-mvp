@@ -4158,7 +4158,7 @@ onBeforeUnmount(() => {
     />
 
     <!-- 新建会话：选择 Chat 聊天 / Agent 任务 模式 -->
-    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" :mask-closable="true" @update:show="(v: boolean) => { if (!v) newConversationVisible = false }" @after-leave="newConversationVisible = false">
+    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" style="width:60vw;max-width:640px;min-width:340px;" :mask-closable="true" @update:show="(v: boolean) => { if (!v) newConversationVisible = false }" @after-leave="newConversationVisible = false">
       <div class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</div>
       <div class="new-conversation-options">
         <div
@@ -4195,7 +4195,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.new-conversation-modal { width: 640px; max-width: 92vw; }
 .new-conversation-hint { margin: 0 0 14px; font-size: 13px; color: var(--subtle); }
 .new-conversation-options { display: flex; gap: 16px; }
 .new-conversation-option { flex: 1; min-width: 0; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; cursor: pointer; transition: all 200ms; background: #fff; }
