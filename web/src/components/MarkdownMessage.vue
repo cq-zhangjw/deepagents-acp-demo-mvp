@@ -7,7 +7,7 @@ import 'highlight.js/styles/github.css'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 
-const props = defineProps<{ content: string; variant?: 'assistant' | 'user' }>()
+const props = defineProps<{ content: string; variant?: 'assistant' | 'user'; linkifyPaths?: boolean }>()
 const emit = defineEmits<{ (e: 'open-file', path: string): void }>()
 const root = ref<HTMLElement | null>(null)
 const message = useMessage()
@@ -59,13 +59,17 @@ function absPathToLink(match: string): string {
 // 会被第二个正则再次匹配，造成 `[path](url)` 嵌套）。
 const PATH_LINK_RE = new RegExp('`(' + ABS_PATH_RE.source + ')`|(' + ABS_PATH_RE.source + ')', 'g')
 function resolveAttachments(content: string): string {
-  return content
+  let out = content
     .replace(/\[图片:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `![${t('attachmentImage')}](/api/attachments/${id})`)
     .replace(/\[文件:\s*([a-zA-Z0-9_-]+)\]/g, (_, id: string) => `[📎 ${t('attachmentFile')}](/api/attachments/${id})`)
-    .replace(PATH_LINK_RE, (m: string, btPath?: string, barePath?: string) => {
+  // 工具调用（linkifyPaths=false）不把绝对路径转成可点击链接，保持纯文本
+  if (props.linkifyPaths !== false) {
+    out = out.replace(PATH_LINK_RE, (m: string, btPath?: string, barePath?: string) => {
       const path = (btPath || barePath || '').trim().replace(/[，。；;、"'<>()\[\]{}`|*?\s]+$/, '')
       return path ? absPathToLink(path) : m
     })
+  }
+  return out
 }
 
 // 开启 html 渲染（预览文本中的 html 元素），输出经 DOMPurify 白名单消毒防 XSS

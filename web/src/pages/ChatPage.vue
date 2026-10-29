@@ -3229,22 +3229,22 @@ onBeforeUnmount(() => {
       </div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
         <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
-        <div v-if="chatConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': chatCollapsed }">
-          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': chatCollapsed }" @click="chatCollapsed = !chatCollapsed">
-            <NIcon :component="chatCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
-            <span>{{ t('timers.timerGroupNormal') }}</span>
-            <span class="conversation-group-count">{{ chatConversations.length }}</span>
+        <div v-if="agentConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': agentCollapsed }">
+          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': agentCollapsed }" @click="agentCollapsed = !agentCollapsed">
+            <NIcon :component="agentCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
+            <span>{{ t('timers.timerGroupAgent') }}</span>
+            <span class="conversation-group-count">{{ agentConversations.length }}</span>
           </button>
-          <div v-if="!chatCollapsed" class="conversation-group-list">
+          <div v-if="!agentCollapsed" class="conversation-group-list">
             <button
-              v-for="conversation in chatConversations"
+              v-for="conversation in agentConversations"
               :key="conversation.id"
               class="conversation-item"
               :class="{ active: conversation.id === activeConversationId }"
               @click="selectConversation(conversation.id)"
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
-              <span class="conversation-icon"><NIcon :component="ChatbubbleOutline" /></span>
+              <span class="conversation-icon"><NIcon :component="SparklesOutline" /></span>
               <span class="conversation-line">
                 <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
               </span>
@@ -3262,22 +3262,22 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <div v-if="agentConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': agentCollapsed }">
-          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': agentCollapsed }" @click="agentCollapsed = !agentCollapsed">
-            <NIcon :component="agentCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
-            <span>{{ t('timers.timerGroupAgent') }}</span>
-            <span class="conversation-group-count">{{ agentConversations.length }}</span>
+        <div v-if="chatConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': chatCollapsed }">
+          <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': chatCollapsed }" @click="chatCollapsed = !chatCollapsed">
+            <NIcon :component="chatCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
+            <span>{{ t('timers.timerGroupNormal') }}</span>
+            <span class="conversation-group-count">{{ chatConversations.length }}</span>
           </button>
-          <div v-if="!agentCollapsed" class="conversation-group-list">
+          <div v-if="!chatCollapsed" class="conversation-group-list">
             <button
-              v-for="conversation in agentConversations"
+              v-for="conversation in chatConversations"
               :key="conversation.id"
               class="conversation-item"
               :class="{ active: conversation.id === activeConversationId }"
               @click="selectConversation(conversation.id)"
               @contextmenu.prevent="openRenameMenu(conversation, $event)"
             >
-              <span class="conversation-icon"><NIcon :component="ConstructOutline" /></span>
+              <span class="conversation-icon"><NIcon :component="ChatbubbleOutline" /></span>
               <span class="conversation-line">
                 <span class="conversation-title">{{ displayTitle(conversation.title) }}</span>
               </span>
@@ -4247,12 +4247,12 @@ onBeforeUnmount(() => {
 .new-conversation-option-desc { font-size: 13px; color: #6b7280; margin-bottom: 10px; line-height: 1.5; }
 .new-conversation-option-feat { font-size: 13px; color: #374151; margin-top: 6px; }
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100vh; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
-.sidebar { width:264px; flex:0 0 264px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
+.sidebar { width:284px; flex:0 0 284px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
 .brand-mark,.welcome-symbol { display:grid; place-items:center; width:32px; height:32px; color:#fff; background:#1d2733; border-radius:8px; font-size:18px; }
 .new-conversation { justify-content:flex-start; margin-bottom:12px; } .conversation-search { padding:0 2px 6px; } .conversation-label { padding:0 10px 6px; color:var(--subtle); font-size:12px; } .conversation-empty { padding:14px 10px; color:var(--subtle); font-size:12px; text-align:center; } .conversation-group-empty { padding:8px 10px; color:var(--subtle); font-size:12px; } .delete-confirm-body { display:block; margin-top:2px; color:var(--subtle); font-size:12px; }
  .sidebar-nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; } .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:9px 10px; border:0; border-radius:8px; background:transparent; color:var(--text); font-size:14px; font-weight:500; text-align:left; cursor:pointer; } .sidebar-nav-item:hover { background:var(--muted); } .sidebar-nav-item .n-icon { font-size:17px; color:var(--subtle); } .sidebar-nav-item--active { background:var(--muted); font-weight:600; } .sidebar-nav-item--active .n-icon { color:var(--accent, #2563eb); } .sidebar-nav-item--primary { background:#2563eb; color:#fff; font-weight:600; } .sidebar-nav-item--primary:hover { background:#1d4ed8; } .sidebar-nav-item--primary .n-icon { color:#fff; }
-.conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:1 1 0; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; overflow-y:auto; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
+.conversation-list { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:3px; overflow:hidden; overflow-y:auto; } .conversation-group { display:flex; flex-direction:column; min-height:0; } .conversation-group--normal { flex:0 0 auto; } .conversation-group--timers { flex:0 1 auto; } .conversation-group--collapsed { flex:0 0 auto; } .conversation-group-list { display:flex; flex-direction:column; gap:3px; min-height:0; } .conversation-group-list::-webkit-scrollbar { width:6px; } .conversation-group-list::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .conversation-group-list::-webkit-scrollbar-track { background:transparent; } .conversation-item { position:relative; min-height:54px; padding:9px 28px 9px 34px; overflow:hidden; color:var(--text); text-align:left; background:transparent; border:0; border-radius:7px; cursor:pointer; } .conversation-item:hover { background:var(--muted); } .conversation-item.active { background:#eaf1ff; color:#174cb9; }
 .conversation-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); display:grid; place-items:center; color:var(--subtle); font-size:15px; } .conversation-item.active .conversation-icon { color:#174cb9; } .conversation-item--disabled { opacity:.45; } .conversation-item--disabled .conversation-icon { color:var(--subtle); } .conversation-item--disabled .conversation-title { text-decoration:line-through; }
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-line { display:flex; align-items:center; gap:6px; min-width:0; } .conversation-line .conversation-title { flex:0 1 auto; min-width:0; } .conversation-mode-tag { flex:0 0 auto; padding:0 6px; font-size:10px; line-height:1.7; color:#2563eb; background:rgba(37,99,235,.08); border-radius:5px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }

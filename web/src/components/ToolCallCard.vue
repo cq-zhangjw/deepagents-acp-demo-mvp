@@ -84,10 +84,10 @@ function statusText(status: string) {
       </template>
       <NTabs type="line" size="small" class="tool-tabs">
         <NTabPane name="input" :tab="t('parameters')">
-          <div class="tool-pane tool-pane--params"><MarkdownMessage :content="paramsMarkdown" @open-file="(p) => emit('open-file', p)" /></div>
+          <div class="tool-pane tool-pane--params"><MarkdownMessage :content="paramsMarkdown" :linkify-paths="false" @open-file="(p) => emit('open-file', p)" /></div>
         </NTabPane>
         <NTabPane name="output" :tab="t('output')">
-          <div class="tool-pane tool-pane--output"><MarkdownMessage :content="outputMarkdown" @open-file="(p) => emit('open-file', p)" /></div>
+          <div class="tool-pane tool-pane--output"><MarkdownMessage :content="outputMarkdown" :linkify-paths="false" @open-file="(p) => emit('open-file', p)" /></div>
         </NTabPane>
       </NTabs>
     </NCollapseItem>
