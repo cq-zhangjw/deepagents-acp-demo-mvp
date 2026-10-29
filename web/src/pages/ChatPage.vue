@@ -290,7 +290,6 @@ const actionLabels = computed(() => ({
     : locale.value === 'ja'
       ? ['デフォルトは Default Agent、切り替え自由', 'ツール / スキル / ナレッジベース利用可', '複雑なタスクやファイル操作に最適']
       : ['Default agent by default, switchable', 'Tools / skills / knowledge base available', 'Best for complex tasks & files']),
-  createMode: locale.value === 'zh' ? '创建' : locale.value === 'ja' ? '作成' : 'Create',
   builtinTools: locale.value === 'zh' ? '内置工具' : locale.value === 'ja' ? '内蔵ツール' : 'Built-in tools',
   context: locale.value === 'zh' ? '上下文' : locale.value === 'ja' ? 'コンテキスト' : 'Context',
   contextTooltip: locale.value === 'zh' ? '当前会话上下文用量（本地估算）' : locale.value === 'ja' ? '現在のセッションのコンテキスト使用量（ローカル推定）' : 'Current session context usage (local estimate)',
@@ -508,16 +507,14 @@ function createId(prefix: string) {
 
 /** New-conversation mode picker: Chat (lightweight) or Agent task (full workspace). */
 const newConversationVisible = ref(false)
-const selectedMode = ref<'chat' | 'task'>('task')
 
 function openNewConversation() {
-  selectedMode.value = 'task' // default to Agent task (current behavior)
   newConversationVisible.value = true
 }
 
-function createConversationWithMode() {
+function createConversationWithMode(mode: 'chat' | 'task') {
   newConversationVisible.value = false
-  createConversation(selectedMode.value)
+  createConversation(mode)
 }
 
 function createConversation(mode: 'chat' | 'task' = 'task') {
@@ -4165,12 +4162,11 @@ onBeforeUnmount(() => {
       <div class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</div>
       <div class="new-conversation-options">
         <div
-          class="new-conversation-option"
-          :class="{ selected: selectedMode === 'chat' }"
+          class="new-conversation-option new-conversation-option-chat"
           role="button"
           tabindex="0"
-          @click="selectedMode = 'chat'"
-          @keydown.enter.prevent="selectedMode = 'chat'"
+          @click="createConversationWithMode('chat')"
+          @keydown.enter.prevent="createConversationWithMode('chat')"
         >
           <div class="new-conversation-option-head">
             <span class="new-conversation-option-icon"><NIcon :component="ChatbubbleOutline" /></span>
@@ -4180,12 +4176,11 @@ onBeforeUnmount(() => {
           <div v-for="f in actionLabels.chatModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
         </div>
         <div
-          class="new-conversation-option"
-          :class="{ selected: selectedMode === 'task' }"
+          class="new-conversation-option new-conversation-option-task"
           role="button"
           tabindex="0"
-          @click="selectedMode = 'task'"
-          @keydown.enter.prevent="selectedMode = 'task'"
+          @click="createConversationWithMode('task')"
+          @keydown.enter.prevent="createConversationWithMode('task')"
         >
           <div class="new-conversation-option-head">
             <span class="new-conversation-option-icon"><NIcon :component="ConstructOutline" /></span>
@@ -4195,12 +4190,6 @@ onBeforeUnmount(() => {
           <div v-for="f in actionLabels.taskModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
         </div>
       </div>
-      <template #footer>
-        <div class="new-conversation-footer">
-          <NButton @click="newConversationVisible = false">{{ actionLabels.cancel }}</NButton>
-          <NButton type="primary" @click="createConversationWithMode">{{ actionLabels.createMode }}</NButton>
-        </div>
-      </template>
     </NModal>
   </main>
 </template>
@@ -4211,16 +4200,14 @@ onBeforeUnmount(() => {
 .new-conversation-options { display: flex; gap: 16px; }
 .new-conversation-option { flex: 1; min-width: 0; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; cursor: pointer; transition: all 200ms; background: #fff; }
 .new-conversation-option:hover { box-shadow: 0 4px 6px -1px rgba(17,24,39,0.07); }
-.new-conversation-option.selected { border-width: 2px; background: #f9fafb; }
-.new-conversation-option.selected:first-child { border-color: #2563eb; background: #eff6ff; }
-.new-conversation-option.selected:last-child { border-color: #7c3aed; background: #f5f3ff; }
+.new-conversation-option-chat:hover { border-color: #2563eb; background: #eff6ff; }
+.new-conversation-option-task:hover { border-color: #7c3aed; background: #f5f3ff; }
 .new-conversation-option-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .new-conversation-option-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px; color: #2563eb; background: rgba(37,99,235,0.08); font-size: 17px; }
 .new-conversation-option:last-child .new-conversation-option-icon { color: #7c3aed; background: rgba(124,58,237,0.08); }
 .new-conversation-option-title { font-weight: 600; font-size: 16px; color: var(--text); }
 .new-conversation-option-desc { font-size: 13px; color: #6b7280; margin-bottom: 10px; line-height: 1.5; }
 .new-conversation-option-feat { font-size: 13px; color: #374151; margin-top: 6px; }
-.new-conversation-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100vh; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
 .sidebar { width:264px; flex:0 0 264px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
