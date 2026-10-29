@@ -64,6 +64,7 @@
 | Chat → task 切换 | agent 从 Chat 复位为 default，WS 重建 |
 | task → Chat 切换 | agent 置为 Chat，WS 重建 |
 | 历史旧会话（无 mode） | 按 task 处理，行为不变 |
+| 侧栏会话列表 | 三类分组（可折叠）：普通会话（chat 模式）、Agent 会话（task 模式）、定时任务（timer-* 会话，常驻显示，空时提示「暂无定时任务」） |
 
 ## 验证记录（2026-10-29）
 
