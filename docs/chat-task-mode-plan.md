@@ -87,3 +87,8 @@
 5. **发送即建会话**：submitPrompt 开头 if (!currentConversation.value) createConversation(initialMode.value)——初始画面直接发送时按所选模式新建会话。
 6. 空会话（有会话无消息）仍显示原「Start a task」占位欢迎区。
 7. **AI 消息背景色**：.message--assistant .message-body 加白底 #fff + 边框 #e6ebf2 + 圆角 8px + padding 12px 14px，与用户浅蓝气泡（#eaf1ff）区分，增强边界感。
+
+### 调整二：新建会话去弹窗 + header 固定顶部（2026-10-29）
+
+1. **header 固定顶部**：原 `.workspace--initial { justify-content:center }` 会把整个 workspace（含 64px header）垂直居中，导致右上角语言/通话/扬声器等工具栏被挤到屏幕约 1/3 处。改为去掉该规则，`.workspace--initial .timeline-wrap { margin-top:auto }` + `.composer-wrap { margin-bottom:auto }`，header 保持顶部，仅内容区（模式选择 + 输入框）在剩余空间垂直居中。
+2. **新建会话去弹窗**：删除 NModal 弹窗（`newConversationVisible` / `createConversationWithMode` / `.new-conversation-*` 样式 / `newConversationModeTitle`·`Desc` 文案）。`openNewConversation()` 改为直接 `activeConversationId = ''` 并清理会话态（contextOverride/messageWindowSize/attachments/errorText/conversationSearch）+ 关闭右侧面板与移动端侧栏，显示初始模式选择页；发送消息时按所选模式新建会话（原逻辑不变）。

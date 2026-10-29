@@ -284,8 +284,6 @@ const actionLabels = computed(() => ({
   knowledgeNormal: locale.value === 'zh' ? '普通' : locale.value === 'ja' ? '通常' : 'Normal',
   chatMode: locale.value === 'zh' ? 'Chat 聊天' : locale.value === 'ja' ? 'チャット' : 'Chat',
   taskMode: locale.value === 'zh' ? 'Agent 任务' : locale.value === 'ja' ? 'エージェントタスク' : 'Agent task',
-  newConversationModeTitle: locale.value === 'zh' ? '新建会话' : locale.value === 'ja' ? '新しい会話' : 'New conversation',
-  newConversationModeDesc: locale.value === 'zh' ? '选择会话模式' : locale.value === 'ja' ? 'セッションモードを選択' : 'Choose a session mode',
   chatModeDesc: locale.value === 'zh' ? '轻量聊天，不加载工具与技能' : locale.value === 'ja' ? 'ツールやスキルなしの軽量チャット' : 'Lightweight chat without tools or skills',
   taskModeDesc: locale.value === 'zh' ? '完整 Agent 工作区，可调用工具与技能' : locale.value === 'ja' ? 'ツールとスキルを使える本格エージェント' : 'Full agent workspace with tools and skills',
   chatModeFeats: (locale.value === 'zh'
@@ -514,16 +512,16 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** New-conversation mode picker: Chat (lightweight) or Agent task (full workspace). */
-const newConversationVisible = ref(false)
-
+/** 新建会话：直接回到初始模式选择页（无弹窗），发送消息时按所选模式新建会话。 */
 function openNewConversation() {
-  newConversationVisible.value = true
-}
-
-function createConversationWithMode(mode: 'chat' | 'task') {
-  newConversationVisible.value = false
-  createConversation(mode)
+  activeConversationId.value = ''
+  conversationSearch.value = ''
+  contextOverride.value = null
+  messageWindowSize.value = MESSAGE_WINDOW
+  attachments.value = []
+  errorText.value = ''
+  rightPanelVisible.value = false
+  sidebarVisible.value = false
 }
 
 function createConversation(mode: 'chat' | 'task' = 'task') {
@@ -4211,56 +4209,10 @@ onBeforeUnmount(() => {
       @close="knowledgeManageVisible = false"
     />
 
-    <!-- 新建会话：选择 Chat 聊天 / Agent 任务 模式 -->
-    <NModal :show="newConversationVisible" preset="card" :title="actionLabels.newConversationModeTitle" class="new-conversation-modal" style="width:60vw;max-width:640px;min-width:340px;" :mask-closable="true" @update:show="(v: boolean) => { if (!v) newConversationVisible = false }" @after-leave="newConversationVisible = false">
-      <div class="new-conversation-hint">{{ actionLabels.newConversationModeDesc }}</div>
-      <div class="new-conversation-options">
-        <div
-          class="new-conversation-option new-conversation-option-chat"
-          role="button"
-          tabindex="0"
-          @click="createConversationWithMode('chat')"
-          @keydown.enter.prevent="createConversationWithMode('chat')"
-        >
-          <div class="new-conversation-option-head">
-            <span class="new-conversation-option-icon"><NIcon :component="ChatbubbleOutline" /></span>
-            <span class="new-conversation-option-title">{{ actionLabels.chatMode }}</span>
-          </div>
-          <div class="new-conversation-option-desc">{{ actionLabels.chatModeDesc }}</div>
-          <div v-for="f in actionLabels.chatModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
-        </div>
-        <div
-          class="new-conversation-option new-conversation-option-task"
-          role="button"
-          tabindex="0"
-          @click="createConversationWithMode('task')"
-          @keydown.enter.prevent="createConversationWithMode('task')"
-        >
-          <div class="new-conversation-option-head">
-            <span class="new-conversation-option-icon"><NIcon :component="ConstructOutline" /></span>
-            <span class="new-conversation-option-title">{{ actionLabels.taskMode }}</span>
-          </div>
-          <div class="new-conversation-option-desc">{{ actionLabels.taskModeDesc }}</div>
-          <div v-for="f in actionLabels.taskModeFeats" :key="f" class="new-conversation-option-feat">√ {{ f }}</div>
-        </div>
-      </div>
-    </NModal>
   </main>
 </template>
 
 <style scoped>
-.new-conversation-hint { margin: 0 0 14px; font-size: 13px; color: var(--subtle); }
-.new-conversation-options { display: flex; gap: 16px; }
-.new-conversation-option { flex: 1; min-width: 0; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; cursor: pointer; transition: all 200ms; background: #fff; }
-.new-conversation-option:hover { box-shadow: 0 4px 6px -1px rgba(17,24,39,0.07); }
-.new-conversation-option-chat:hover { border-color: #2563eb; background: #eff6ff; }
-.new-conversation-option-task:hover { border-color: #7c3aed; background: #f5f3ff; }
-.new-conversation-option-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.new-conversation-option-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px; color: #2563eb; background: rgba(37,99,235,0.08); font-size: 17px; }
-.new-conversation-option:last-child .new-conversation-option-icon { color: #7c3aed; background: rgba(124,58,237,0.08); }
-.new-conversation-option-title { font-weight: 600; font-size: 16px; color: var(--text); }
-.new-conversation-option-desc { font-size: 13px; color: #6b7280; margin-bottom: 10px; line-height: 1.5; }
-.new-conversation-option-feat { font-size: 13px; color: #374151; margin-top: 6px; }
 .chat-app { --canvas:#f7f8fa; --surface:#fff; --muted:#f1f4f8; --border:#e4e8ee; --text:#1d2733; --subtle:#6b7785; height:100vh; height:100dvh; display:flex; overflow:hidden; background:var(--canvas); color:var(--text); }
 .sidebar { width:284px; flex:0 0 284px; height:100%; min-height:0; display:flex; flex-direction:column; padding:18px 14px 14px; background:var(--surface); border-right:1px solid var(--border); overflow:hidden; overflow-x:hidden; } .sidebar .brand-row,.sidebar .sidebar-nav,.sidebar .conversation-search,.sidebar .conversation-list,.sidebar .sidebar-footer { overflow-x:hidden; }
 .brand-row { display:flex; gap:10px; align-items:center; padding:0 10px 14px; } .brand-row strong { display:block; font-size:15px; } .brand-row span { display:block; margin-top:2px; color:var(--subtle); font-size:11px; } .sidebar-collapse-btn { margin-left:auto; } .sidebar-expand-btn { display:none; } .chat-app--collapsed .sidebar { width:0; flex:0 0 0; padding:0; overflow:hidden; border-right:0; } .mobile-menu { display:none; }
@@ -4272,7 +4224,7 @@ onBeforeUnmount(() => {
 .conversation-title,.conversation-time { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .conversation-title { font-size:13px; } .conversation-time { margin-top:4px; color:var(--subtle); font-size:11px; } .conversation-line { display:flex; align-items:center; gap:6px; min-width:0; } .conversation-line .conversation-title { flex:0 1 auto; min-width:0; } .conversation-mode-tag { flex:0 0 auto; padding:0 6px; font-size:10px; line-height:1.7; color:#2563eb; background:rgba(37,99,235,.08); border-radius:5px; } .conversation-delete { position:absolute; right:8px; top:18px; display:none; color:var(--subtle); } .conversation-item:hover .conversation-delete { display:block; }
 .sidebar-footer { display:flex; gap:7px; align-items:center; padding:10px; color:var(--subtle); font-size:12px; } .connection-dot { width:7px; height:7px; border-radius:50%; background:#aab4c0; } .connection-dot.connected { background:#16805b; }
 .workspace { min-width:0; flex:1; display:flex; flex-direction:column; } .workspace-header { height:64px; flex:0 0 64px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; background:rgba(255,255,255,.72); border-bottom:1px solid var(--border); } .header-title,.header-actions { display:flex; align-items:center; gap:8px; } .header-title h1 { max-width:440px; margin:0; overflow:hidden; font-size:15px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; } .header-title span { display:block; margin-top:3px; color:var(--subtle); font-size:11px; } .mobile-menu { display:none; } .locale-trigger .locale-short { margin-left:2px; font-size:13px; font-weight:600; color:var(--subtle); }
-.timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .timeline::-webkit-scrollbar { width:6px; } .timeline::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .timeline::-webkit-scrollbar-track { background:transparent; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; } .workspace--initial { justify-content:center; } .workspace--initial .timeline-wrap { flex:0 0 auto; } .workspace--initial .composer-wrap { flex:0 0 auto; padding:0 0 24px; } .welcome--mode { min-height:0; padding:24px; } .welcome--mode .mode-tabs { display:flex; gap:10px; margin-bottom:18px; } .mode-tab { display:inline-flex; align-items:center; gap:6px; padding:8px 20px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text); font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; } .mode-tab:hover { border-color:#b6c2d4; } .mode-tab.active { border-color:#2563eb; color:#2563eb; background:#eff6ff; } .mode-feats { display:flex; flex-direction:column; gap:5px; margin-top:16px; font-size:13px; color:var(--subtle); }
+.timeline-wrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; } .timeline { flex:1; overflow:auto; scroll-behavior:smooth; } .timeline::-webkit-scrollbar { width:6px; } .timeline::-webkit-scrollbar-thumb { background:rgba(0,0,0,.18); border-radius:3px; } .timeline::-webkit-scrollbar-track { background:transparent; } .scroll-bottom-btn { position:absolute; right:max(28px, calc((100% - 840px) / 2 + 28px)); bottom:28px; z-index:5; box-shadow:0 2px 10px rgba(29,39,51,.2); } .message-column,.composer-column { width:min(840px, calc(100% - 64px)); margin:0 auto; } .message-column { padding:32px 0 48px; } .welcome { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100%; padding:48px 24px 150px; text-align:center; } .welcome-symbol { width:44px; height:44px; margin-bottom:16px; font-size:23px; } .welcome h2 { margin:0 0 8px; font-size:20px; } .welcome p { max-width:360px; margin:0; color:var(--subtle); font-size:14px; line-height:1.7; } .workspace--initial .timeline-wrap { flex:0 0 auto; margin-top:auto; } .workspace--initial .composer-wrap { flex:0 0 auto; margin-bottom:auto; padding:0 0 24px; } .welcome--mode { min-height:0; padding:24px; } .welcome--mode .mode-tabs { display:flex; gap:10px; margin-bottom:18px; } .mode-tab { display:inline-flex; align-items:center; gap:6px; padding:8px 20px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text); font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; } .mode-tab:hover { border-color:#b6c2d4; } .mode-tab.active { border-color:#2563eb; color:#2563eb; background:#eff6ff; } .mode-feats { display:flex; flex-direction:column; gap:5px; margin-top:16px; font-size:13px; color:var(--subtle); }
 .message { display:flex; gap:10px; margin-bottom:24px; } .message--user { flex-direction:row-reverse; } .message-body { min-width:0; max-width:calc(100% - 42px); } .message--user .message-body { display:flex; flex-direction:column; align-items:flex-end; width:fit-content; max-width:72%; } .message--assistant .message-body { background:#fff; border:1px solid #e6ebf2; border-radius:8px; padding:12px 14px; } .message-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:var(--subtle); font-size:12px; } .message-meta strong { color:var(--text); font-size:13px; } .message-bubble { border-radius:8px; } .user-bubble { max-width:100%; padding:11px 14px; background:#eaf1ff; } .user-bubble p { margin:0; white-space:pre-wrap; word-break:break-word; }
 .assistant-content { margin-bottom:12px; } .message-status { display:inline-block; margin-top:10px; color:#b76a00; font-size:12px; }
 .message-actions { display:flex; gap:2px; align-items:center; margin-top:7px; } .message-actions--user { justify-content:flex-end; } .message-menu-wrap { position:relative; display:inline-flex; } .message-menu { position:absolute; right:0; bottom:calc(100% + 6px); z-index:60; display:flex; flex-direction:column; min-width:130px; padding:4px; background:#fff; border:1px solid #e4e8ee; border-radius:8px; box-shadow:0 4px 16px rgba(29,39,51,.12); } .message-menu-item { display:flex; gap:6px; align-items:center; padding:6px 10px; color:#1d2733; background:transparent; border:0; border-radius:6px; cursor:pointer; font-size:13px; } .message-menu-item:hover { background:#f1f4f8; }
