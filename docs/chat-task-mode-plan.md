@@ -92,3 +92,12 @@
 
 1. **header 固定顶部**：原 `.workspace--initial { justify-content:center }` 会把整个 workspace（含 64px header）垂直居中，导致右上角语言/通话/扬声器等工具栏被挤到屏幕约 1/3 处。改为去掉该规则，`.workspace--initial .timeline-wrap { margin-top:auto }` + `.composer-wrap { margin-bottom:auto }`，header 保持顶部，仅内容区（模式选择 + 输入框）在剩余空间垂直居中。
 2. **新建会话去弹窗**：删除 NModal 弹窗（`newConversationVisible` / `createConversationWithMode` / `.new-conversation-*` 样式 / `newConversationModeTitle`·`Desc` 文案）。`openNewConversation()` 改为直接 `activeConversationId = ''` 并清理会话态（contextOverride/messageWindowSize/attachments/errorText/conversationSearch）+ 关闭右侧面板与移动端侧栏，显示初始模式选择页；发送消息时按所选模式新建会话（原逻辑不变）。
+
+### 调整三：模式偏好持久化（浏览器 localStorage，2026-10-29）
+
+1. **存储键**：`chat_initial_mode`（值 `'chat' | 'task'`），纯浏览器 localStorage，无后端参与。
+2. **读取**：`initialMode` ref 初始化时读取 localStorage（缺省 `'task'`），主页（初始模式选择页）默认选中已保存的模式。
+3. **保存时机（最近一次为准）**：
+   - 初始页点击「Chat 聊天 / Agent 任务」tab → watch(initialMode) 立即写入；
+   - 从侧栏进入历史会话（非定时任务）→ 按该会话的 mode 同步 initialMode（watch 自动落盘），即"最近使用的模式"成为主页默认。
+4. **无副作用**：selectConversation 更新 initialMode 不影响工具栏（toolbarChatMode 仅在无活动会话时取 initialMode）；watch 无 immediate，页面加载不产生写回。

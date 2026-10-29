@@ -192,7 +192,9 @@ const activeConversation = computed(() =>
 const isChatMode = computed(() => activeConversation.value?.mode === 'chat')
 /** 初始画面（无活动会话）：模式 tab 选择 Chat 聊天 / Agent 任务，工具栏随之联动。 */
 const noActiveConversation = computed(() => !activeConversationId.value)
-const initialMode = ref<'chat' | 'task'>('task')
+/** 初始画面模式偏好：localStorage 持久化，以最近一次选择/使用为准。 */
+const INITIAL_MODE_STORAGE_KEY = 'chat_initial_mode'
+const initialMode = ref<'chat' | 'task'>(localStorage.getItem(INITIAL_MODE_STORAGE_KEY) === 'chat' ? 'chat' : 'task')
 const toolbarChatMode = computed(() => noActiveConversation.value ? initialMode.value === 'chat' : isChatMode.value)
 const conversationSearch = ref('')
 // 侧栏分组折叠状态（普通会话 / Agent 会话 / 定时任务）
@@ -586,6 +588,8 @@ function selectConversation(id: string) {
   // agent choice, but leaving a Chat session back into a task session restores
   // the default agent so the full workspace is available again.
   const modeConv = conversations.value.find((c) => c.id === id)
+  // 同步初始画面模式偏好：以最近一次进入的会话模式为准（定时任务除外）
+  if (modeConv?.mode && !String(id).startsWith('timer-')) initialMode.value = modeConv.mode
   if (modeConv?.mode === 'chat') {
     if (currentAgentName.value !== 'Chat') {
       currentAgentName.value = 'Chat'
@@ -3106,6 +3110,7 @@ function onComposerArrow(event: KeyboardEvent, delta: number) {
 }
 
 watch(locale, (value) => localStorage.setItem(storageKey, value as SupportedLocale))
+watch(initialMode, (mode) => localStorage.setItem(INITIAL_MODE_STORAGE_KEY, mode))
 
 // 定时任务会话自动刷新：进入 timer-* 会话时每 5s 静默更新履历（不滚动、不重置窗口），切换会话立即停止
 /** 静默刷新会话数据：只替换内存数据，不重置消息窗口、不滚动（避免画面跳动）。 */
