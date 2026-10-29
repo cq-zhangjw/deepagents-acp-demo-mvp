@@ -49,9 +49,11 @@ AGENT_CMD = [sys.executable, str(BASE_DIR / "acp_agent.py")]
 def _should_open_browser() -> bool:
     """Whether the gateway should pop the default browser on startup.
 
-    Controlled by the OPEN_BROWSER env var; enabled by default.
+    Off by default: the packaged app.exe hosts its own WebView window and
+    launches the gateway itself. Set OPEN_BROWSER=1 to restore the browser
+    popup for plain `python app.py` development runs.
     """
-    return os.getenv("OPEN_BROWSER", "1").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("OPEN_BROWSER", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 async def _open_home_in_default_browser(url: str) -> None:

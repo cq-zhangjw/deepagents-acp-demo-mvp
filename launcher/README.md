@@ -49,6 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\.tmp\make_icon.ps1 -OutPa
 | 项 | 值 | 位置 |
 |---|---|---|
 | 服务端口 | `8000` | `Program.cs` |
+| 窗口标题 | `ACPAgent`（启动即最大化） | `Program.cs` |
 | Python 版本要求 | `3.12.x` | `EnvRunner.cs` |
 | pip 镜像源 | 清华 TUNA | `EnvRunner.cs` |
 | Python 下载引导链接 | python.org 3.12.8 | `Program.cs` |

@@ -36,7 +36,7 @@ internal static class Program
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
         var builder = new PhotinoWindow()
-            .SetTitle("DeepAgents ACP");
+            .SetTitle("ACPAgent");
         if (File.Exists(iconPath))
         {
             builder = builder.SetIconFile(iconPath);
@@ -45,7 +45,7 @@ internal static class Program
         _window = builder
             .SetUseOsDefaultSize(false)
             .SetSize(1280, 860)
-            .Center()
+            .SetMaximized(true)
             .SetResizable(true)
             .RegisterWebMessageReceivedHandler(OnWebMessage)
             .RegisterWindowCreatedHandler(OnWindowCreated)
