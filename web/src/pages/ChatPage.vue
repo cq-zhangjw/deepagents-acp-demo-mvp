@@ -2410,11 +2410,12 @@ async function sendAgentPrompt(
 }
 
 async function submitPrompt() {
+  const text = input.value.trim()
+  if ((!text && !attachments.value.length && !screenShareActive.value) || isRunning.value || isUploading.value) return
   // 初始画面（无活动会话）：发送消息时按当前选择的模式新建会话
   if (!currentConversation.value) createConversation(initialMode.value)
   const conversation = currentConversation.value
-  const text = input.value.trim()
-  if (!conversation || (!text && !attachments.value.length && !screenShareActive.value) || isRunning.value || isUploading.value) return
+  if (!conversation) return
   // capture the screen as an attachment before sending when share-screen is on
   if (screenShareActive.value) await captureScreenAttachment()
 
@@ -3084,6 +3085,8 @@ function onComposerBlur() {
 }
 
 function submitOnEnter(event: KeyboardEvent) {
+  // IME 组合输入期间的回车（中文/日文候选词确认）不应触发发送
+  if (event.isComposing || event.keyCode === 229) return
   if (!event.shiftKey) {
     event.preventDefault()
     if (quickAction.value) {
