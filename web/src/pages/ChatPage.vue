@@ -2054,34 +2054,32 @@ function connect() {
 
   socketPromise.value = new Promise((resolve, reject) => {
     const socket = new WebSocket(websocketUrl())
+    let opened = false
     ws.value = socket
     socket.onopen = () => {
+      opened = true
+      if (ws.value !== socket) {
+        socket.close()
+        return
+      }
       connected.value = true
       socketPromise.value = null
       resolve()
     }
     socket.onerror = () => {
-      socketPromise.value = null
+      if (ws.value === socket) socketPromise.value = null
       reject(new Error(t('connectionFailed')))
     }
     socket.onclose = () => {
+      if (!opened) reject(new Error(t('connectionFailed')))
+      if (ws.value !== socket) return
       connected.value = false
       initialized.value = false
       initializedSessions.clear()
       ws.value = null
       pendingRequests.forEach(({ reject }) => reject(new Error(t('connectionClosed'))))
       pendingRequests.clear()
-      // mark running assistant messages failed on abnormal close so the stop button reverts to send
-      const active = activeAssistantMessage()
-      if (
-        active
-        && active.status !== 'cancelled'
-        && (active.status === 'pending' || active.status === 'streaming' || active.status === 'waiting_permission')
-      ) {
-        active.status = 'failed'
-        active.process.completedAt = Date.now()
-        appendTextSegment(active, `\n\n${t('connectionClosed')}`)
-      }
+      socketPromise.value = null
     }
     socket.onmessage = (event) => handleAcpMessage(event.data)
   })
