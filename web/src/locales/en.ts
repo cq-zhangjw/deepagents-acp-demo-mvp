@@ -153,6 +153,8 @@ export default {
     timerGroupAgent: 'Agents',
     timerGroupScheduled: 'Scheduled Tasks',
     timerGroupEmpty: 'No scheduled tasks',
+    timerGroupNormalEmpty: 'No chat conversations',
+    timerGroupAgentEmpty: 'No agent conversations',
     never: 'Never',
     statusRunning: 'Running',
     statusSuccess: 'Success',

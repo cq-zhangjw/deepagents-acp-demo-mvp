@@ -3314,14 +3314,15 @@ onBeforeUnmount(() => {
         </NInput>
       </div>
       <nav class="conversation-list" :aria-label="t('recentConversations')">
-        <div v-if="!filteredConversations.length" class="conversation-empty">{{ conversationSearch.trim() ? t('noMatchingConversations') : t('emptyConversations') }}</div>
-        <div v-if="agentConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': agentCollapsed }">
+        <div v-if="!filteredConversations.length && conversationSearch.trim()" class="conversation-empty">{{ t('noMatchingConversations') }}</div>
+        <div class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': agentCollapsed }">
           <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': agentCollapsed }" @click="agentCollapsed = !agentCollapsed">
             <NIcon :component="agentCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
             <span>{{ t('timers.timerGroupAgent') }}</span>
             <span class="conversation-group-count">{{ agentConversations.length }}</span>
           </button>
           <div v-if="!agentCollapsed" class="conversation-group-list">
+            <div v-if="!agentConversations.length && !conversationSearch.trim()" class="conversation-group-empty">{{ t('timers.timerGroupAgentEmpty') }}</div>
             <button
               v-for="conversation in agentConversations"
               :key="conversation.id"
@@ -3348,13 +3349,14 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <div v-if="chatConversations.length" class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': chatCollapsed }">
+        <div class="conversation-group conversation-group--normal" :class="{ 'conversation-group--collapsed': chatCollapsed }">
           <button type="button" class="conversation-group-label" :class="{ 'conversation-group-label--collapsed': chatCollapsed }" @click="chatCollapsed = !chatCollapsed">
             <NIcon :component="chatCollapsed ? ChevronForwardOutline : ChevronDownOutline" />
             <span>{{ t('timers.timerGroupNormal') }}</span>
             <span class="conversation-group-count">{{ chatConversations.length }}</span>
           </button>
           <div v-if="!chatCollapsed" class="conversation-group-list">
+            <div v-if="!chatConversations.length && !conversationSearch.trim()" class="conversation-group-empty">{{ t('timers.timerGroupNormalEmpty') }}</div>
             <button
               v-for="conversation in chatConversations"
               :key="conversation.id"

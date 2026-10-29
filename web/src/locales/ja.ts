@@ -153,6 +153,8 @@ export default {
     timerGroupAgent: 'エージェント会話',
     timerGroupScheduled: '定期タスク',
     timerGroupEmpty: '定期タスクはありません',
+    timerGroupNormalEmpty: '通常チャットはありません',
+    timerGroupAgentEmpty: 'エージェント会話はありません',
     never: '未実行',
     statusRunning: '実行中',
     statusSuccess: '成功',

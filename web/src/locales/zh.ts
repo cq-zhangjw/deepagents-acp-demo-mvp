@@ -153,6 +153,8 @@ export default {
     timerGroupAgent: 'Agent 会话',
     timerGroupScheduled: '定时任务',
     timerGroupEmpty: '暂无定时任务',
+    timerGroupNormalEmpty: '暂无普通会话',
+    timerGroupAgentEmpty: '暂无 Agent 会话',
     never: '从未执行',
     statusRunning: '执行中',
     statusSuccess: '成功',
