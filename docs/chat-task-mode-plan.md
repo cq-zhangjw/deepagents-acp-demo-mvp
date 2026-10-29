@@ -46,7 +46,7 @@
 - **createConversation(mode)**：
   - `chat`：`currentAgentName = 'Chat'`（持久化）+ `resetSocketForAgentChange()`；复用同模式空会话。
   - `task`：`resetAgentToDefault()`（默认 Default，兼容现状）。
-  - 进入画面自动新建走 `createConversation('task')`。
+  - 进入画面自动新建走 `createConversation('task')`（**2026-10-29 晚改为不自动新建**，见下方「初始画面调整」）。
 - **selectConversation** 按会话 mode 对账 agent：
   - Chat 会话 → `currentAgentName = 'Chat'`（若不同则重建 WS）。
   - task 会话 → 若当前是 'Chat' 则回 'default'（重建 WS）；task 会话之间保留各自的 agent 选择（现状兼容）。
@@ -77,3 +77,13 @@
 - `.deepagents/agents/chat.agent.md` 文件名小写 `chat`，后端 `_load_agent_md("Chat")` 在 Windows NTFS（大小写不敏感）可命中；**跨平台（Linux）部署需统一大小写**（建议改文件名为 `Chat.agent.md` 或让 `_load_agent_md` 大小写不敏感）。
 - `utils/model_util.py` 中 `print(f"Using model endpoint: ...")` 会打印到 agent 子进程 stdout，前端 `handleAcpMessage` 对非 JSON 行需容忍（当前已容错，历史任务验证过）。
 - 定时任务引擎的 agent 选项来自 `agents.json`（不含 Chat），定时任务不会使用 Chat agent。
+
+## 初始画面调整（2026-10-29）
+
+1. **不再自动新建会话**：onMounted 移除 createConversation('task') 与重复空会话清理段；初始画面（无活动会话）展示会话模式选择。
+2. **模式选择 tab**：初始画面顶部「Start a task」区替换为「Chat 聊天 / Agent 任务」两个 tab（initialMode ref，默认 task）。选中切换标题、描述与特性列表（复用 chatModeDesc/taskModeDesc/chatModeFeats/taskModeFeats 文案）。
+3. **工具栏联动**：无活动会话时工具栏收敛状态跟随 initialMode（`toolbarChatMode` computed：Chat → 只留附件/发送；Agent → 完整工具栏）。selectAgent 在 Chat 模式下仍直接 return。
+4. **垂直居中**：`workspace--initial` 类使 `timeline-wrap` 与 composer-wrap 一起在 header 下方垂直居中（输入框上移居中）；发送消息后新建会话、进入正常聊天布局，输入框回到底部。
+5. **发送即建会话**：submitPrompt 开头 if (!currentConversation.value) createConversation(initialMode.value)——初始画面直接发送时按所选模式新建会话。
+6. 空会话（有会话无消息）仍显示原「Start a task」占位欢迎区。
+7. **AI 消息背景色**：.message--assistant .message-body 加白底 #fff + 边框 #e6ebf2 + 圆角 8px + padding 12px 14px，与用户浅蓝气泡（#eaf1ff）区分，增强边界感。
