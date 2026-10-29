@@ -2446,6 +2446,20 @@ async function sendAgentPrompt(
     // Only downgrade to failed while still pending/streaming; a completion
     // path that already set 'completed' must not be overwritten by a late error.
     const assistant = reactiveAssistant()
+    const errMsg = error instanceof Error ? error.message : ''
+    const connectionErrors = [t('connectionClosed'), t('connectionFailed'), t('connectionNotReady')]
+    // Cold-start / transient socket drop (first message right after startup):
+    // reconnect once and re-send instead of failing the user message. Only one
+    // retry so a genuinely broken backend surfaces quickly.
+    if (
+      !retry
+      && !cancelRequested
+      && assistant.status === 'pending'
+      && connectionErrors.includes(errMsg)
+    ) {
+      resetSocketForAgentChange()
+      return sendAgentPrompt(conversation, text, resources, assistantMessage, isNewConversation, true, userMessage)
+    }
     if (assistant.status !== 'cancelled'
       && assistant.status !== 'completed'
       && assistant.status !== 'failed') {
@@ -2663,6 +2677,17 @@ function speakReplyIfEnabled(text: string) {
   }
   if (!speakReplyEnabled.value) return
   void speakText(text)
+}
+
+async function warmUpAcp() {
+  try {
+    await connect()
+    await initialize()
+  } catch {
+    // Backend not ready yet (e.g. gateway still booting): the first send will
+    // connect lazily; a cold-start socket drop is handled by the auto-retry in
+    // sendAgentPrompt.
+  }
 }
 
 /** Exposed to the voice window via window.opener.chatBridge */
@@ -3228,6 +3253,10 @@ onMounted(async () => {
   } finally {
     initialLoading.value = false
   }
+  // 预热 ACP 子进程：页面加载即建立连接并完成握手，避免“程序刚启动
+  // 第一次发消息”撞上子进程冷启动异常而提示连接关闭（失败静默，后续
+  // 发消息时 connect() 会自动重连）。
+  void warmUpAcp()
   window.addEventListener('click', closeMessageMenu)
   window.addEventListener('click', closeRenameMenu)
 })

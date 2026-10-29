@@ -225,6 +225,13 @@ async def acp_bridge(websocket: WebSocket):
     )
     for task in pending:
         task.cancel()
+    # Diagnose cold-start failures: a nonzero/None returncode right after the
+    # first message means the agent subprocess crashed (frontend then sees
+    # "ACP connection closed"); stderr lines above carry the traceback.
+    print(
+        f"[acp-bridge] agent subprocess exited, returncode={proc.returncode}",
+        flush=True,
+    )
     await _terminate_process_tree(proc)
 
 
