@@ -295,87 +295,13 @@ def build_agent(
     Uses a virtual filesystem backend: when the agent reads/writes files or executes commands,
     ACP session/request_permission is triggered and must be approved by the frontend user.
     """
-    if agent_name != "Chat":
-        agent_root_dir = getattr(context, "cwd", None) or "."
-        agent_name = (agent_name or os.getenv("AGENT_NAME", "") or "default").strip() or "default"
+    # Resolve the real agent name FIRST: the WS flow calls this factory without
+    # an explicit agent_name and relies on the AGENT_NAME env var. Judging on
+    # the raw argument (e.g. None != "Chat") would wrongly route Chat sessions
+    # into the full workspace branch and leak all default skills/todo tools.
+    resolved = (agent_name or os.getenv("AGENT_NAME", "") or "default").strip() or "default"
 
-        ephemeral_backend = StateBackend()
-        backend = CompositeBackend(
-            # LocalShellBackend = file operations (inherits FilesystemBackend) + execute (shell commands)
-            # virtual_mode=True maps virtual paths such as /uploads/example.txt to files under root_dir.
-            # Shell commands still run in root_dir and are unrestricted by this filesystem mapping.
-            # inherit_env=True: inherit the parent process environment (PATH/USERPROFILE, etc.); otherwise the child process
-            #   has an empty environment and cannot even find powershell/whoami.
-            # Windows uses PowerShellBackend: default shell=True actually runs cmd.exe, so
-            #   PowerShell syntax fails immediately; switching to explicit powershell.exe lets
-            #   the model execute PowerShell syntax directly.
-            default=(PowerShellBackend if sys.platform == "win32" else LocalShellBackend)(
-                root_dir=agent_root_dir,
-                # virtual_mode=False: absolute paths (C:\, D:\, user home) are
-                # passed through as-is so the built-in read_file/write_file/glob/
-                # grep tools can access global Windows locations. Relative paths
-                # still resolve under root_dir, so /uploads/... attachments keep
-                # working. execute is unaffected (shell was never sandboxed).
-                virtual_mode=False,
-                inherit_env=True,
-            ),
-            routes={
-                "/memories/": ephemeral_backend,
-                "/conversation_history/": ephemeral_backend,
-            },
-        )
-        # Build subagents from agents.json "subagents" field
-        subagents: list[SubAgent] = []
-        for sa_cfg in get_agent_subagents_config(agent_name):
-            sa_name = sa_cfg.get("name")
-            if not sa_name:
-                continue
-            sa: SubAgent = {
-                "name": sa_name,
-                "description": sa_cfg.get("description", ""),
-            }
-            sa_tools = get_agent_mcp_tools(sa_name)
-            if sa_tools:
-                sa["tools"] = sa_tools
-            if sa_cfg.get("skills"):
-                sa["skills"] = sa_cfg["skills"]
-            if sa_cfg.get("system_prompt"):
-                sa["system_prompt"] = sa_cfg["system_prompt"]
-            subagents.append(sa)
-
-        agent = create_deep_agent(
-            model=create_model(),
-            # MCP tools configured for the selected agent (agents.json -> mcp_tools);
-            # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
-            # Todo tools (create_todo/update_todo/get_todo) are appended as builtin
-            # task-step checklist tools (state in db/todos/).
-            tools=[*get_agent_mcp_tools(agent_name), *_todo_tools()],
-            subagents=subagents or None,
-            # Skills enabled for the selected agent (agents.json -> skills; the
-            # default agent starts with every installed skill).
-            skills=get_agent_skills(agent_name),
-            # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
-            # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
-            checkpointer=checkpointer,
-            backend=backend,
-            # The sandbox is off (virtual_mode=False): built-in file tools operate
-            # on the real Windows filesystem. Tell the model its actual working
-            # directory so ls/read_file/glob resolve relative paths correctly
-            # instead of guessing a drive root.
-            system_prompt=(
-                f"{get_system_prompt(agent_name)}"
-            ),
-            # Trigger HITL interrupt before risky tool calls -> deepagents_acp converts it to ACP
-            # session/request_permission -> frontend shows permission prompt (allow / deny / always allow)
-            # Any tool names can be configured: ls/read_file/glob/grep/delete/task/MCP tool, etc.
-            interrupt_on={
-                "execute": False,     # shell commands (remember "always allow" by command type)
-                # "write_file": True,  # write files
-                # "edit_file": True,   # edit files
-                "delete": True,      # delete files
-            },
-        )
-    elif agent_name == "Chat":
+    if resolved == "Chat":
         # Chat-only agent: no MCP tools / subagents / skills — a lightweight
         # conversational model with no local file or shell access.
         chat_backend = StateBackend()
@@ -387,10 +313,91 @@ def build_agent(
             checkpointer=checkpointer,
             backend=chat_backend,
             system_prompt=(
-                f"{get_system_prompt(agent_name)}\n\n"
+                f"{get_system_prompt('Chat')}\n\n"
             ),
         )
         return agent
+
+    agent_name = resolved
+    agent_root_dir = getattr(context, "cwd", None) or "."
+
+    ephemeral_backend = StateBackend()
+    backend = CompositeBackend(
+        # LocalShellBackend = file operations (inherits FilesystemBackend) + execute (shell commands)
+        # virtual_mode=True maps virtual paths such as /uploads/example.txt to files under root_dir.
+        # Shell commands still run in root_dir and are unrestricted by this filesystem mapping.
+        # inherit_env=True: inherit the parent process environment (PATH/USERPROFILE, etc.); otherwise the child process
+        #   has an empty environment and cannot even find powershell/whoami.
+        # Windows uses PowerShellBackend: default shell=True actually runs cmd.exe, so
+        #   PowerShell syntax fails immediately; switching to explicit powershell.exe lets
+        #   the model execute PowerShell syntax directly.
+        default=(PowerShellBackend if sys.platform == "win32" else LocalShellBackend)(
+            root_dir=agent_root_dir,
+            # virtual_mode=False: absolute paths (C:\, D:\, user home) are
+            # passed through as-is so the built-in read_file/write_file/glob/
+            # grep tools can access global Windows locations. Relative paths
+            # still resolve under root_dir, so /uploads/... attachments keep
+            # working. execute is unaffected (shell was never sandboxed).
+            virtual_mode=False,
+            inherit_env=True,
+        ),
+        routes={
+            "/memories/": ephemeral_backend,
+            "/conversation_history/": ephemeral_backend,
+        },
+    )
+    # Build subagents from agents.json "subagents" field
+    subagents: list[SubAgent] = []
+    for sa_cfg in get_agent_subagents_config(agent_name):
+        sa_name = sa_cfg.get("name")
+        if not sa_name:
+            continue
+        sa: SubAgent = {
+            "name": sa_name,
+            "description": sa_cfg.get("description", ""),
+        }
+        sa_tools = get_agent_mcp_tools(sa_name)
+        if sa_tools:
+            sa["tools"] = sa_tools
+        if sa_cfg.get("skills"):
+            sa["skills"] = sa_cfg["skills"]
+        if sa_cfg.get("system_prompt"):
+            sa["system_prompt"] = sa_cfg["system_prompt"]
+        subagents.append(sa)
+
+    agent = create_deep_agent(
+        model=create_model(),
+        # MCP tools configured for the selected agent (agents.json -> mcp_tools);
+        # each tool is a langchain StructuredTool backed by a fastmcp stdio client.
+        # Todo tools (create_todo/update_todo/get_todo) are appended as builtin
+        # task-step checklist tools (state in db/todos/).
+        tools=[*get_agent_mcp_tools(agent_name), *_todo_tools()],
+        subagents=subagents or None,
+        # Skills enabled for the selected agent (agents.json -> skills; the
+        # default agent starts with every installed skill).
+        skills=get_agent_skills(agent_name),
+        # persistent checkpointer (AsyncSqliteSaver): session state saved to agent_state.sqlite,
+        # paired with AgentServerACP(load_sessions=True) for session/load history continuation.
+        checkpointer=checkpointer,
+        backend=backend,
+        # The sandbox is off (virtual_mode=False): built-in file tools operate
+        # on the real Windows filesystem. Tell the model its actual working
+        # directory so ls/read_file/glob resolve relative paths correctly
+        # instead of guessing a drive root.
+        system_prompt=(
+            f"{get_system_prompt(agent_name)}"
+        ),
+        # Trigger HITL interrupt before risky tool calls -> deepagents_acp converts it to ACP
+        # session/request_permission -> frontend shows permission prompt (allow / deny / always allow)
+        # Any tool names can be configured: ls/read_file/glob/grep/delete/task/MCP tool, etc.
+        interrupt_on={
+            "execute": False,     # shell commands (remember "always allow" by command type)
+            # "write_file": True,  # write files
+            # "edit_file": True,   # edit files
+            "delete": True,      # delete files
+        },
+    )
+
 
     return agent
 

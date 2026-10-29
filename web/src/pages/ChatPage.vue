@@ -16,7 +16,7 @@ import {
   ConstructOutline,
   CopyOutline,
   CreateOutline,
-  HardwareChipOutline,
+  FlashOutline,
   DesktopOutline,  DocumentOutline,
   FolderOutline,
   EllipsisHorizontalOutline,
@@ -3690,7 +3690,7 @@ onBeforeUnmount(() => {
                 <NPopover v-if="modelList.length" placement="top" :show-arrow="false" :delay="150" trigger="hover">
                   <template #trigger>
                     <span class="composer-model" role="button" tabindex="0" @keydown.enter.prevent>
-                      <NIcon :component="HardwareChipOutline" />{{ currentModel || 'model' }}
+                      <NIcon :component="FlashOutline" />{{ currentModel || 'model' }}
                     </span>
                   </template>
                   <div class="model-picker">
