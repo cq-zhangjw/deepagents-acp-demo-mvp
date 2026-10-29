@@ -254,16 +254,12 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
 async def get_config():
     """Serve frontend config: context window size, active model name, model list.
 
-    Source of truth is mode_config.json / model_config.json (env vars removed).
+    Source of truth is mode_config.json (model array; active entry's
+    content_size drives the frontend context-usage percentage).
     """
-    from utils.model_util import current_model_name, list_models, load_mode_config
-    cfg = load_mode_config()
-    try:
-        content_size = int(cfg.get("content_size") or 0)
-    except (TypeError, ValueError):
-        content_size = 0
+    from utils.model_util import current_content_size, current_model_name, list_models
     return {
-        "contentSize": content_size,
+        "contentSize": current_content_size(),
         "model": current_model_name(),
         "models": [m.get("model_name") for m in list_models() if m.get("model_name")],
     }
@@ -271,17 +267,21 @@ async def get_config():
 
 @app.post("/api/config")
 async def set_config(payload: dict):
-    """Update mode_config.json (e.g. switch the active model)."""
+    """Switch the active model: move the `active` flag in mode_config.json."""
     import json as _json
 
-    from utils.model_util import MODE_CONFIG_PATH, load_mode_config
-    cfg = load_mode_config()
+    from utils.model_util import MODE_CONFIG_PATH, current_content_size, current_model_name, list_models
     model = (payload or {}).get("model")
-    if model:
-        cfg["model"] = str(model)
+    if not model:
+        return {"ok": False, "error": "model required"}
+    configs = list_models()
+    if not any(c.get("model_name") == model for c in configs):
+        return {"ok": False, "error": f"model '{model}' not in mode_config.json"}
+    for cfg in configs:
+        cfg["active"] = cfg.get("model_name") == model
     with open(MODE_CONFIG_PATH, "w", encoding="utf-8") as f:
-        _json.dump(cfg, f, ensure_ascii=False, indent=2)
-    return {"ok": True, "model": cfg.get("model")}
+        _json.dump(configs, f, ensure_ascii=False, indent=2)
+    return {"ok": True, "model": model}
 
 
 # Mount the SPA after API and WebSocket routes so it only handles client asset requests.

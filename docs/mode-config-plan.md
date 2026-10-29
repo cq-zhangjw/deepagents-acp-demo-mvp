@@ -1,33 +1,38 @@
-# 模型与上下文配置整合方案（mode_config.json）
+# 模型配置整合方案（mode_config.json）
 
-日期：2026-10-29
+日期：2026-10-29（v2 修订）
 状态：已实施
 
 ## 背景
 
-后端模型/上下文相关配置此前散落在 `.env`（MODEL_NAME / ENDPOINT / TEMPERATURE / MAX_TOKENS / CONTENT_SIZE / TIMEOUT / MAX_RETRY 等）。本次将配置统一收敛到 JSON 文件，并支持前端展示/切换当前模型。
+用户提供 4 个已验证文件（acp_agent.py / context_compactor.py / mcp_loader.py / model_util.py），要求分析差异做合并；模型/上下文配置统一收敛到根目录 **mode_config.json**（模型配置数组，格式以用户截图为准），并新增 `content_size` 字段作为前端上下文比例总数与压缩阈值的依据。
 
-## 文件结构
+## mode_config.json（唯一配置文件）
 
-### 1. `mode_config.json`（运行模式配置，根目录）
-
-```json
-{
-  "content_size": 262144,
-  "model": "qwen3.6-14b-a3a",
-  "timeout": 300,
-  "max_retry": 2
-}
-```
-
-- `content_size`：上下文窗口大小（tokens），**前端上下文使用率的总数以它为准**，同时是 context_compactor 的 CONTENT_SIZE 来源（原 `.env` 的 CONTENT_SIZE）。
-- `model`：当前生效模型名，前端可点击切换（POST /api/config 写入）。
-- `timeout` / `max_retry`：模型请求超时（秒）与重试次数（原 `.env` TIMEOUT / MAX_RETRY）。
-
-### 2. `model_config.json`（模型配置列表，根目录）
+格式：模型配置数组，每个条目含模型参数，**新增 `content_size`**（该模型的上下文窗口，tokens）与 `active`（当前生效标记）：
 
 ```json
 [
+  {
+    "model_name": "gemini-2.5-flash",
+    "model_provider": "google_genai",
+    "endpoint": "https://api.ai-service.global.fujitsu.com/ai-【待补全】",
+    "temperature": 0.1,
+    "top_p": 0.1,
+    "max_tokens": 65535,
+    "content_size": 1048576,
+    "active": false
+  },
+  {
+    "model_name": "gemini-2.5-pro",
+    "model_provider": "google_genai",
+    "endpoint": "https://api.ai-service.global.fujitsu.com/ai-【待补全】",
+    "temperature": 0.1,
+    "top_p": 0.5,
+    "max_tokens": 65535,
+    "content_size": 1048576,
+    "active": false
+  },
   {
     "model_name": "qwen3.6-14b-a3a",
     "model_provider": "openai",
@@ -35,36 +40,38 @@
     "api_key": "-",
     "temperature": 0,
     "max_tokens": 20480,
-    "top_p": 0.5
+    "top_p": 0.5,
+    "content_size": 262144,
+    "active": true
   }
 ]
 ```
 
-- 每项一条模型配置，供 `utils/model_util.create_model(model_name)` 按名构建模型。
-- 初始列表来自：`.env` 当前配置（qwen3.6-14b-a3a）、`.env.bak` 历史配置（Ornith-1.5-9B）、端点探测（GLM-4.6V-Flash-UD-Q6_K_XL.gguf，llama.cpp 实际加载）。
-- 新增/调整模型：直接编辑此文件。
+说明：
+- `content_size`：画面上上下文使用率的总数、context_compactor 的 CONTENT_SIZE 均以 **active 模型**的 content_size 为准（切换模型后自动变化）。
+- `active`：当前生效模型（前端切换模型时由后端移动该标记）。
+- Gemini 两个条目的 endpoint 来自用户截图，**完整 URL 被截图截断**，标注「待补全」；补全后即可切换使用。qwen3.6-14b-a3a 为当前本地可用模型（active）。
 
 ## 代码改动
 
-### `utils/model_util.py`（重写，采用上传附件版本为基础）
+### `utils/model_util.py`（采用附件版本逻辑）
 
-- `create_model(model_name=None)`：每次调用重新加载 mode_config.json / model_config.json；`model_name` 缺省取 `mode_config.json["model"]`。
-- 新增 `load_mode_config()` / `current_model_name()` / `list_models()` 供 app.py 与 context_compactor 使用。
-- 移除了旧的 env 读取与全局单例 MODEL（注意：**其他模块不得再引用 `MODEL`**）。
+- `create_model(model_name=None)` 工厂：每次调用重读 mode_config.json；model_name 缺省取 active 条目；timeout/max_retry 从 `.env` 读取（附件版行为）。
+- 新增 `current_model_name()` / `current_content_size()` / `list_models()` 供 app.py 与 context_compactor 使用。
+- 已删除旧的 env 全局单例 MODEL（其他模块不得再引用）。
 
 ### `utils/context_compactor.py`
 
-- `CONTENT_SIZE = int(load_mode_config().get("content_size") or 32768)`（不再读 env）。
-- 摘要模型改用 `create_model()` 每次构建（对齐附件版本）。
+- `CONTENT_SIZE = current_content_size() or 32768`（active 模型的 content_size）。
+- 摘要模型用 `create_model()` 每次构建（附件版）。
 
 ### `acp_agent.py`
 
-- `from utils.model_util import MODEL` → `create_model`；task 分支与 Chat 分支均 `model=create_model()`。
-- 保留工作目录版的 ExecuteTimeoutGuard、完整 system_prompt、Chat 分支、todo 工具描述。
+- `MODEL` → `create_model()`（task / Chat 分支），保留工作目录版 Chat 分支、ExecuteTimeoutGuard、完整 system_prompt。
 
 ### `api/timers_engine.py`
 
-- `explain_cron_ai` 中 `MODEL` → `create_model()`（原引用已删除的全局单例，必须同步）。
+- `explain_cron_ai` 中 `MODEL` → `create_model()`。
 
 ### `tests/test_context_compactor.py`
 
@@ -72,31 +79,29 @@
 
 ### `app.py`
 
-- `GET /api/config`：返回 `{ contentSize, model, models[] }`（contentSize 来自 mode_config.json）。
-- `POST /api/config`：`{ "model": "xxx" }` 写入 mode_config.json（切换当前模型）。
+- `GET /api/config` → `{ contentSize, model, models[] }`（contentSize = active 模型 content_size）。
+- `POST /api/config {"model": "xxx"}` → 移动 active 标记并写回 mode_config.json。
 
 ### 前端 `web/src/pages/ChatPage.vue`
 
-- `loadContextSize` → `loadAppConfig`：读取 contentSize + 当前模型名 + 模型列表。
-- 新增 `currentModel` / `modelList` ref 与 `switchModel(name)`（POST /api/config）。
-- 输入框工具栏右侧、content 使用率左侧新增模型名 pill（HardwareChip 图标），hover 弹出模型列表点击切换，当前模型 ✓ 高亮。
-- locale（zh/ja/en）新增 `modelSwitchSuccess` / `modelSwitchFailed`。
+- `loadAppConfig` 读取 contentSize + 当前模型名 + 模型列表；`switchModel(name)` POST 切换。
+- 输入框工具栏 content 使用率左侧显示当前模型名（HardwareChip 图标），hover 弹出模型列表点击切换；三语提示（modelSwitchSuccess / modelSwitchFailed）。
 
-### `.env` 清理
+### `.env`
 
-删除：`MODEL_PROVIDER` / `API_KEY` / `ENDPOINT` / `MODEL_NAME` / `TEMPERATURE` / `TOP_P` / `MAX_TOKENS` / `STREAM` / `CONTENT_SIZE` / `TIMEOUT` / `MAX_RETRY`。
-保留：TTS、MOOFILE、CONTEXT_COMPACT_*（压缩阈值等仍走 env）、TIMER、TAVILY_API_KEY 等。
-改动前已备份为 `.env.model_backup`。
+- 删除模型相关：MODEL_PROVIDER / API_KEY / ENDPOINT / MODEL_NAME / TEMPERATURE / TOP_P / MAX_TOKENS / STREAM / CONTENT_SIZE。
+- **恢复 TIMEOUT=300 / MAX_RETRY=2**（附件版 model_util 从 env 读取）。
+- 备份 `.env.model_backup`；.gitignore 追加 `**/.env.*`。
 
 ## 验证结果
 
-- `py_compile` 全部通过；`tests/test_context_compactor.py` 17/17 断言通过。
-- `GET /api/config` → `{"contentSize":262144,"model":"qwen3.6-14b-a3a","models":[...]}`。
-- `POST /api/config {"model":"Ornith-1.5-9B"}` → mode_config.json 更新、GET 返回新值；验证后已恢复默认模型。
-- 前端构建通过，浏览器实测右下角显示模型名 `qwen3.6-14b-a3a`（发送按钮左侧）。
-- 模型调用链路正常：`POST http://127.0.0.1:8088/chat/completions → HTTP 200`。
+- py_compile 全部通过；`tests/test_context_compactor.py` 17/17。
+- `GET /api/config` → `{"contentSize":262144,"model":"qwen3.6-14b-a3a","models":["gemini-2.5-flash","gemini-2.5-pro","qwen3.6-14b-a3a"]}`。
+- 切换 `gemini-2.5-flash` → `contentSize` 变 1048576、model 更新；切回 qwen 正常。
+- 前端构建通过，浏览器实测显示当前模型名。
+- 模型调用链路：`POST http://127.0.0.1:8088/chat/completions → HTTP 200`。
 
-## 已知问题（与本次改造无关，供参考）
+## 待办
 
-- 模型端点 8088（llama.cpp）当前实际加载 **GLM-4.6V-Flash-UD-Q6_K_XL.gguf**（推理模型，9.4B）。其回复放在 `reasoning_content` 字段、`content` 为空，deepagents 流式对话可能因此无可见输出（agent 收到空 content 后停滞）。此为模型服务行为，非本次配置整合引入；如需 Agent 正常对话，建议在 8088 端点加载非推理模型（如 qwen 系 / Ornith），或对 reasoning_content 做适配。
-- `chat.agent.md` 文件名小写问题（Linux 部署需统一大小写）见 docs/chat-task-mode-plan.md。
+- 用户提供 gemini-2.5-flash / gemini-2.5-pro 的完整 endpoint（截图截断处），补入 mode_config.json 后即可切换。
+- 已知环境问题（与本次改造无关）：8088 端点当前加载 GLM-4.6V-Flash（推理模型，回复在 reasoning_content、content 为空），agent 流式对话可能无可见输出；建议端点换非推理模型或做 reasoning_content 适配。
