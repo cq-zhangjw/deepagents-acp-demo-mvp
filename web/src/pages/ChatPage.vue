@@ -150,6 +150,8 @@ interface Conversation {
   todoId?: string
   /** 'chat' = lightweight Chat agent (no tools/agents/skills UI); 'task' = full agent workspace. */
   mode?: 'chat' | 'task'
+  /** Model chosen for this conversation (name in model_config.json); passed to the backend via WS query param like agent. */
+  model?: string
 }
 
 interface TodoItem {
@@ -552,7 +554,8 @@ function createConversation(mode: 'chat' | 'task' = 'task') {
     title: t('newSessionTitle'),
     updatedAt: Date.now(),
     messages: [],
-    mode
+    mode,
+    model: currentModel.value || localStorage.getItem(MODEL_STORAGE_KEY) || undefined
   }
   conversations.value.unshift(conversation)
   activeConversationId.value = conversation.id
@@ -599,6 +602,12 @@ function selectConversation(id: string) {
   } else if (currentAgentName.value === 'Chat') {
     currentAgentName.value = 'default'
     localStorage.setItem(AGENT_STORAGE_KEY, 'default')
+    resetSocketForAgentChange()
+  }
+  // 模型按会话持久化：进入会话时恢复其模型（老会话无记录则保持当前选择）
+  const convModel = modeConv?.model
+  if (convModel && convModel !== currentModel.value) {
+    currentModel.value = convModel
     resetSocketForAgentChange()
   }
   contextOverride.value = null // usage is per-session; refreshed after history load
@@ -952,35 +961,55 @@ async function compactContext() {
   }
 }
 
-const contextSize = ref(0)
+/** Model list from /api/config (model_config.json); the chosen model is passed
+ *  to the backend via the WS query param (same pattern as agent). */
+interface ModelEntry {
+  model_name: string
+  content_size: number
+}
+
+/** 模型偏好：浏览器存储，新建会话默认取最近一次使用的模型。 */
+const MODEL_STORAGE_KEY = 'chat_model'
+
 const currentModel = ref('')
-const modelList = ref<string[]>([])
+const modelList = ref<ModelEntry[]>([])
+
+/** Context window (tokens) of the currently selected model — drives the
+ *  context-usage percentage in the composer. */
+const contextSize = computed(() => {
+  const hit = modelList.value.find((m) => m.model_name === currentModel.value)
+  return hit?.content_size ?? 0
+})
 async function loadAppConfig() {
   try {
     const res = await fetch('/api/config')
     const data = await res.json()
-    contextSize.value = Number(data.contentSize) || 0
-    currentModel.value = data.model || ''
     modelList.value = Array.isArray(data.models) ? data.models : []
+    // 恢复顺序：当前会话记录 > 浏览器上次选择 > 第一个模型
+    const convModel = activeConversation.value?.model
+    currentModel.value =
+      convModel
+      || localStorage.getItem(MODEL_STORAGE_KEY)
+      || modelList.value[0]?.model_name
+      || ''
   } catch {
-    contextSize.value = 0
+    modelList.value = []
   }
 }
 
-async function switchModel(name: string) {
+function switchModel(name: string) {
   if (!name || name === currentModel.value) return
-  try {
-    const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: name })
-    })
-    if (!res.ok) throw new Error()
-    currentModel.value = name
-    message.success(t('modelSwitchSuccess'))
-  } catch {
-    message.error(t('modelSwitchFailed'))
+  currentModel.value = name
+  localStorage.setItem(MODEL_STORAGE_KEY, name)
+  const conv = activeConversation.value
+  if (conv) {
+    conv.model = name
+    void saveConversation(conv)
   }
+  contextOverride.value = null
+  // 模型随 WS 查询参数传递到后台子进程（同 agent），重建连接使新模型生效
+  resetSocketForAgentChange()
+  message.success(t('modelSwitchSuccess'))
 }
 
 const sidebarCollapsed = ref(false)
@@ -2014,7 +2043,9 @@ function websocketUrl() {
   if (import.meta.env.VITE_ACP_WS_URL) return import.meta.env.VITE_ACP_WS_URL
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const agent = currentAgentName.value || 'default'
-  return `${protocol}//${window.location.host}/acp-ws?agent=${encodeURIComponent(agent)}`
+  const model = currentModel.value || ''
+  const modelParam = model ? `&model=${encodeURIComponent(model)}` : ''
+  return `${protocol}//${window.location.host}/acp-ws?agent=${encodeURIComponent(agent)}${modelParam}`
 }
 
 function connect() {
@@ -3663,8 +3694,8 @@ onBeforeUnmount(() => {
                     </span>
                   </template>
                   <div class="model-picker">
-                    <div v-for="m in modelList" :key="m" class="model-picker-item" :class="{ 'model-picker-item--active': m === currentModel }" role="button" tabindex="0" @click="switchModel(m)" @keydown.enter.prevent="switchModel(m)">
-                      <span class="model-picker-check">{{ m === currentModel ? '✓' : '' }}</span>{{ m }}
+                    <div v-for="m in modelList" :key="m.model_name" class="model-picker-item" :class="{ 'model-picker-item--active': m.model_name === currentModel }" role="button" tabindex="0" @click="switchModel(m.model_name)" @keydown.enter.prevent="switchModel(m.model_name)">
+                      <span class="model-picker-check">{{ m.model_name === currentModel ? '✓' : '' }}</span>{{ m.model_name }}
                     </div>
                   </div>
                 </NPopover>

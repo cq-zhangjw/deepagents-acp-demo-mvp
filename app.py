@@ -168,6 +168,12 @@ async def acp_bridge(websocket: WebSocket):
     agent_name = websocket.query_params.get("agent", "default") or "default"
     agent_env = os.environ.copy()
     agent_env["AGENT_NAME"] = agent_name
+    # The frontend also picks the model by name; it travels the same way
+    # (WS query param -> MODEL_NAME env) so model_util.create_model resolves
+    # the matching entry in model_config.json per subprocess.
+    model_name = websocket.query_params.get("model", "") or ""
+    if model_name:
+        agent_env["MODEL_NAME"] = model_name
     proc = await asyncio.create_subprocess_exec(
         *AGENT_CMD,
         stdin=subprocess.PIPE,
@@ -252,36 +258,21 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 @app.get("/api/config")
 async def get_config():
-    """Serve frontend config: context window size, active model name, model list.
+    """Serve the model list from model_config.json.
 
-    Source of truth is mode_config.json (model array; active entry's
-    content_size drives the frontend context-usage percentage).
+    The frontend shows every model entry and picks one; the chosen name is
+    passed back via the WS query param (like agent), there is no active flag.
+    content_size per model drives the frontend context-usage percentage.
     """
-    from utils.model_util import current_content_size, current_model_name, list_models
+    from utils.model_util import list_models
+    models = list_models()
     return {
-        "contentSize": current_content_size(),
-        "model": current_model_name(),
-        "models": [m.get("model_name") for m in list_models() if m.get("model_name")],
+        "models": [
+            {"model_name": m.get("model_name"), "content_size": m.get("content_size") or 0}
+            for m in models
+            if m.get("model_name")
+        ]
     }
-
-
-@app.post("/api/config")
-async def set_config(payload: dict):
-    """Switch the active model: move the `active` flag in mode_config.json."""
-    import json as _json
-
-    from utils.model_util import MODE_CONFIG_PATH, current_content_size, current_model_name, list_models
-    model = (payload or {}).get("model")
-    if not model:
-        return {"ok": False, "error": "model required"}
-    configs = list_models()
-    if not any(c.get("model_name") == model for c in configs):
-        return {"ok": False, "error": f"model '{model}' not in mode_config.json"}
-    for cfg in configs:
-        cfg["active"] = cfg.get("model_name") == model
-    with open(MODE_CONFIG_PATH, "w", encoding="utf-8") as f:
-        _json.dump(configs, f, ensure_ascii=False, indent=2)
-    return {"ok": True, "model": model}
 
 
 # Mount the SPA after API and WebSocket routes so it only handles client asset requests.

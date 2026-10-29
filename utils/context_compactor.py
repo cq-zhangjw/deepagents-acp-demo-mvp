@@ -26,7 +26,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 from utils.model_util import create_model, current_content_size
 
 # Context window size (tokens), same as the frontend display value.
-# Source: mode_config.json -> active model's content_size field.
+# Source: model_config.json -> the model selected by the frontend (WS query
+# param -> env MODEL_NAME, same pattern as AGENT_NAME).
 CONTENT_SIZE = current_content_size() or 32768
 # Compaction triggers when estimated tokens >= CONTENT_SIZE * RATIO.
 COMPACT_RATIO = float(os.getenv("CONTEXT_COMPACT_RATIO") or 0.80)
