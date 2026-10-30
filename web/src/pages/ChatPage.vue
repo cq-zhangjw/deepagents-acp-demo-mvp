@@ -539,11 +539,17 @@ function createConversation(mode: 'chat' | 'task' = 'task') {
   } else {
     resetAgentToDefault()
   }
+  // Pending draft attachments (e.g. an image attached on the start page) must
+  // survive conversation creation: submitPrompt reads attachments.value AFTER
+  // this call. selectConversation below clears the draft, so capture and
+  // restore it in both branches.
+  const pendingAttachments = [...attachments.value]
   const existingEmpty = conversations.value.find(
     (conversation) => conversation.messages.length === 0 && (conversation.mode ?? 'task') === mode
   )
   if (existingEmpty) {
     selectConversation(existingEmpty.id)
+    attachments.value = pendingAttachments
     conversationSearch.value = ''
     sidebarVisible.value = false
     nextTick(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())
@@ -560,7 +566,8 @@ function createConversation(mode: 'chat' | 'task' = 'task') {
   conversations.value.unshift(conversation)
   activeConversationId.value = conversation.id
   conversationSearch.value = ''
-  attachments.value = []
+  // NOTE: do NOT reset attachments.value here — submitPrompt captures the
+  // pending attachments right after createConversation returns.
   input.value = ''
   errorText.value = ''
   sidebarVisible.value = false
@@ -2411,11 +2418,19 @@ async function sendAgentPrompt(
 
     const promptLines: string[] = []
     if (text) promptLines.push(text)
+    const imageBlocks: Array<Record<string, unknown>> = []
     for (const resource of uploaded) {
       if (resource.file_id) {
         const pathHint = resource.path ? `（附件路径：${resource.path}）` : ''
         if (resource.kind === 'image') {
-          promptLines.push(`[图片: ${resource.file_id}]${pathHint}\n如需要分析图片内容，请使用本地文件工具读取该路径。`)
+          // Embed the image bytes directly so the model sees the picture
+          // without read_file: Chat has no filesystem backend (read_file would
+          // return "not found"), and Agent mode would otherwise surface the raw
+          // base64 in the tool card. The conversation keeps only the light ref;
+          // the base64 lives in this transient prompt (same as pre-MooFile).
+          promptLines.push(`[图片: ${resource.file_id}]${pathHint}（图片内容已随消息提供，直接分析即可，无需读取文件）`)
+          const block = await imageContentBlock(resource)
+          if (block) imageBlocks.push(block)
         } else {
           promptLines.push(`[文件: ${resource.file_id}]${pathHint}\n请直接使用本地文件工具读取该路径；不要转换为 Windows 路径或 HTTP 地址。`)
         }
@@ -2429,6 +2444,7 @@ async function sendAgentPrompt(
     if (promptText) {
       content.push({ type: 'text', text: promptText })
     }
+    content.push(...imageBlocks)
     cancelRequested = false // reset the cancel flag for a new run
     // retry re-sends the same user text with _meta.retry so the backend rolls the
     // checkpoint back by one turn before re-answering (no stitching on the old reply)
@@ -2832,6 +2848,35 @@ async function uploadResource(resource: AttachmentRef, sessionId: string): Promi
     name: body.attachment?.filename ?? resource.name,
     mimeType: body.attachment?.mime ?? resource.mimeType,
     kind: resource.kind ?? 'file'
+  }
+}
+
+/**
+ * Fetch a stored image attachment and build an ACP image content block
+ * ({type:'image', data: base64, mimeType}). The conversation keeps only the
+ * lightweight ref; the base64 exists in the transient prompt only. Returns
+ * null when the blob cannot be fetched, so the model still has the
+ * [图片: id] + path hint to fall back on (works in Agent mode).
+ */
+async function imageContentBlock(resource: AttachmentRef): Promise<Record<string, unknown> | null> {
+  try {
+    const url = resource.url ?? (resource.file_id ? `/api/attachments/${resource.file_id}` : undefined)
+    if (!url) return null
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const blob = await response.blob()
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
+    })
+    const data = dataUrl.slice(dataUrl.indexOf(',') + 1)
+    if (!data) return null
+    return { type: 'image', data, mimeType: resource.mimeType ?? blob.type ?? 'image/png' }
+  } catch (error) {
+    console.warn('[imageContentBlock] fetch failed, falling back to path hint:', error)
+    return null
   }
 }
 
